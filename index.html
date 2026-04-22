@@ -30,8 +30,8 @@
               <div class="eyebrow">Cloudflare Pages + D1</div>
               <h1 class="display-title mt-3 mb-3">Text Admin Control Room</h1>
               <p class="lead-copy mb-4">
-                A single admin workspace for LiveChat and HelpDesk agent lifecycle,
-                memberships, and audit logs.
+                A single admin workspace for LiveChat agent lifecycle, group priorities,
+                and audit logs.
               </p>
 
               <div class="hero-strip mb-4">
@@ -70,10 +70,10 @@
           <div class="row align-items-center g-3">
             <div class="col-12 col-xl-7">
               <div class="eyebrow">Admin workspace</div>
-              <h1 class="display-title mt-3 mb-2">User management across Text products</h1>
+              <h1 class="display-title mt-3 mb-2">Agent and group management</h1>
               <p class="lead-copy mb-0">
-                Create users, suspend or remove them, manage memberships in bulk, and review
-                the latest log history.
+                View every agent in the account, edit their groups in bulk, and review the
+                latest log history.
               </p>
             </div>
             <div class="col-12 col-xl-5">
@@ -98,25 +98,13 @@
           <li class="nav-item" role="presentation">
             <button
               class="nav-link active"
-              id="livechat-tab"
+              id="agents-tab"
               data-bs-toggle="tab"
-              data-bs-target="#livechat-pane"
+              data-bs-target="#agents-pane"
               type="button"
               role="tab"
             >
-              LiveChat
-            </button>
-          </li>
-          <li class="nav-item" role="presentation">
-            <button
-              class="nav-link"
-              id="helpdesk-tab"
-              data-bs-toggle="tab"
-              data-bs-target="#helpdesk-pane"
-              type="button"
-              role="tab"
-            >
-              HelpDesk
+              Agents
             </button>
           </li>
           <li class="nav-item" role="presentation">
@@ -134,11 +122,8 @@
         </ul>
 
         <div class="tab-content">
-          <div class="tab-pane fade show active" id="livechat-pane" role="tabpanel">
+          <div class="tab-pane fade show active" id="agents-pane" role="tabpanel">
             <div id="livechatContent"></div>
-          </div>
-          <div class="tab-pane fade" id="helpdesk-pane" role="tabpanel">
-            <div id="helpdeskContent"></div>
           </div>
           <div class="tab-pane fade" id="logs-pane" role="tabpanel">
             <div id="logsContent"></div>

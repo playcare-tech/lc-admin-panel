@@ -1,8 +1,8 @@
 const state = {
   user: null,
   livechat: { agents: [], groups: [] },
-  helpdesk: { agents: [], teams: [] },
   logs: [],
+  logsWarning: "",
 };
 
 const loginView = document.getElementById("loginView");
@@ -13,7 +13,6 @@ const statusMessage = document.getElementById("statusMessage");
 const sessionBadge = document.getElementById("sessionBadge");
 const metricRow = document.getElementById("metricRow");
 const livechatContent = document.getElementById("livechatContent");
-const helpdeskContent = document.getElementById("helpdeskContent");
 const logsContent = document.getElementById("logsContent");
 const refreshBtn = document.getElementById("refreshBtn");
 const logoutBtn = document.getElementById("logoutBtn");
@@ -74,30 +73,29 @@ function priorityLabel(priority) {
 
 function renderMetrics() {
   const livechatSuspended = state.livechat.agents.filter((agent) => agent.suspended).length;
-  const helpdeskInvited = state.helpdesk.agents.filter((agent) => agent.status === "invited").length;
   const metricCards = [
     {
-      label: "LiveChat agents",
+      label: "Agents",
       value: state.livechat.agents.length,
       meta: `${state.livechat.groups.length} groups available`,
       icon: "bi-people",
     },
     {
-      label: "LiveChat suspended",
+      label: "Suspended",
       value: livechatSuspended,
-      meta: "ready for manual reactivation outside this app",
+      meta: "deactivated from agent routing",
       icon: "bi-pause-circle",
     },
     {
-      label: "HelpDesk agents",
-      value: state.helpdesk.agents.length,
-      meta: `${state.helpdesk.teams.length} teams available`,
-      icon: "bi-life-preserver",
+      label: "Groups",
+      value: state.livechat.groups.length,
+      meta: "available for bulk updates",
+      icon: "bi-collection",
     },
     {
       label: "Log rows",
       value: state.logs.length,
-      meta: `${helpdeskInvited} invited HelpDesk users`,
+      meta: state.logsWarning || "latest D1 audit history",
       icon: "bi-journal-text",
     },
   ];
@@ -143,51 +141,29 @@ function renderOptionPills(items, name, emptyText) {
   `;
 }
 
-function renderAgentRows(agents, checkboxName, type) {
+function renderAgentRows(agents, checkboxName) {
   if (!agents.length) {
     return `<tr><td colspan="5" class="text-center py-4 muted-copy">No agents found.</td></tr>`;
   }
 
   return agents
     .map((agent) => {
-      const memberships =
-        type === "livechat"
-          ? agent.groups
-              .map(
-                (group) => `
-                  <span class="badge-soft ${statusBadge(group.priority)} me-1 mb-1">
-                    ${group.name} · ${priorityLabel(group.priority)}
-                  </span>
-                `,
-              )
-              .join("")
-          : agent.teams
-              .map(
-                (team) => `
-                  <span class="badge-soft neutral me-1 mb-1">${team.name}</span>
-                `,
-              )
-              .join("");
+      const memberships = agent.groups
+        .map(
+          (group) => `
+            <span class="badge-soft ${statusBadge(group.priority)} me-1 mb-1">
+              ${group.name} · ${priorityLabel(group.priority)}
+            </span>
+          `,
+        )
+        .join("");
 
-      const status = type === "livechat" ? (agent.suspended ? "Suspended" : "Active") : agent.status;
+      const status = agent.suspended ? "Suspended" : "Active";
       const tone = ["active", "online"].includes(`${status}`.toLowerCase())
         ? "neutral"
         : `${status}`.toLowerCase() === "suspended"
           ? "last"
           : "primary";
-
-      const actionButton =
-        type === "livechat"
-          ? `
-            <button class="btn btn-sm btn-outline-danger" data-livechat-suspend="${agent.id}" type="button">
-              Suspend
-            </button>
-          `
-          : `
-            <button class="btn btn-sm btn-outline-danger" data-helpdesk-deactivate="${agent.id}" type="button">
-              Remove
-            </button>
-          `;
 
       return `
         <tr>
@@ -202,7 +178,11 @@ function renderAgentRows(agents, checkboxName, type) {
             <span class="badge-soft ${tone}">${status}</span>
           </td>
           <td>${memberships || '<span class="muted-copy">No memberships</span>'}</td>
-          <td class="text-end">${actionButton}</td>
+          <td class="text-end">
+            <button class="btn btn-sm btn-outline-danger" data-livechat-suspend="${agent.id}" type="button">
+              Deactivate
+            </button>
+          </td>
         </tr>
       `;
     })
@@ -215,7 +195,7 @@ function renderLiveChat() {
       <div class="col-12 col-xl-4">
         <div class="glass-card p-4 h-100">
           <div class="section-tag">Create agent</div>
-          <h2 class="section-title">Invite a new LiveChat user</h2>
+          <h2 class="section-title">Create a new agent</h2>
           <p class="helper-copy mb-4">Assign one or more groups immediately and decide whether they should join as primary or last.</p>
           <form id="livechatCreateForm" class="row g-3">
             <div class="col-12">
@@ -228,7 +208,7 @@ function renderLiveChat() {
             </div>
             <div class="col-12">
               <label class="form-label">Initial groups</label>
-              ${renderOptionPills(state.livechat.groups, "livechat-create-group", "No LiveChat groups available.")}
+              ${renderOptionPills(state.livechat.groups, "livechat-create-group", "No groups available.")}
             </div>
             <div class="col-12">
               <label class="form-label" for="livechat-create-priority">Assignment priority</label>
@@ -239,7 +219,7 @@ function renderLiveChat() {
             </div>
             <div class="col-12 d-grid">
               <button class="btn btn-primary" type="submit">
-                <i class="bi bi-person-plus me-2"></i>Create LiveChat agent
+                <i class="bi bi-person-plus me-2"></i>Create agent
               </button>
             </div>
           </form>
@@ -248,11 +228,11 @@ function renderLiveChat() {
 
       <div class="col-12 col-xl-8">
         <div class="glass-card p-4 h-100">
-          <div class="section-tag">Bulk group actions</div>
+          <div class="section-tag">Bulk group editor</div>
           <div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-3">
             <div>
-              <h2 class="section-title">Assign or remove groups</h2>
-              <p class="helper-copy mb-0">Select multiple agents and multiple groups, then update memberships in one request.</p>
+              <h2 class="section-title">Edit groups for selected agents</h2>
+              <p class="helper-copy mb-0">Select multiple agents or all of them, then assign or remove multiple groups with one priority choice.</p>
             </div>
             <div class="priority-box">
               <label class="form-label mb-1" for="livechat-bulk-priority">Assignment priority</label>
@@ -265,12 +245,14 @@ function renderLiveChat() {
 
           <div class="selection-toolbar p-3 mb-3">
             <div class="fw-semibold mb-2">Available groups</div>
-            ${renderOptionPills(state.livechat.groups, "livechat-group", "No LiveChat groups available.")}
+            ${renderOptionPills(state.livechat.groups, "livechat-group", "No groups available.")}
           </div>
 
           <div class="d-flex flex-wrap gap-2 mb-3">
             <button id="livechatAssignBtn" class="btn btn-primary" type="button">Assign selected groups</button>
             <button id="livechatRemoveBtn" class="btn btn-outline-light" type="button">Remove selected groups</button>
+            <button id="livechatSelectAllBtn" class="btn btn-outline-light" type="button">Select all agents</button>
+            <button id="livechatClearSelectionBtn" class="btn btn-outline-light" type="button">Clear selection</button>
           </div>
 
           <div class="table-responsive">
@@ -278,82 +260,14 @@ function renderLiveChat() {
               <thead>
                 <tr>
                   <th style="width: 48px;"></th>
-                  <th>Agent</th>
+                  <th>Agent email</th>
                   <th>Status</th>
                   <th>Current groups</th>
                   <th class="text-end">Action</th>
                 </tr>
               </thead>
               <tbody>
-                ${renderAgentRows(state.livechat.agents, "livechat-agent", "livechat")}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function renderHelpDesk() {
-  helpdeskContent.innerHTML = `
-    <div class="row g-4">
-      <div class="col-12 col-xl-4">
-        <div class="glass-card p-4 h-100">
-          <div class="section-tag">Create agent</div>
-          <h2 class="section-title">Invite a new HelpDesk user</h2>
-          <p class="helper-copy mb-4">Assign one or more teams during creation and update them later in bulk.</p>
-          <form id="helpdeskCreateForm" class="row g-3">
-            <div class="col-12">
-              <label class="form-label" for="helpdesk-name">Full name</label>
-              <input id="helpdesk-name" class="form-control" type="text" />
-            </div>
-            <div class="col-12">
-              <label class="form-label" for="helpdesk-email">Email</label>
-              <input id="helpdesk-email" class="form-control" type="email" required />
-            </div>
-            <div class="col-12">
-              <label class="form-label">Initial teams</label>
-              ${renderOptionPills(state.helpdesk.teams, "helpdesk-create-team", "No HelpDesk teams available.")}
-            </div>
-            <div class="col-12 d-grid">
-              <button class="btn btn-primary" type="submit">
-                <i class="bi bi-person-plus me-2"></i>Create HelpDesk agent
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-
-      <div class="col-12 col-xl-8">
-        <div class="glass-card p-4 h-100">
-          <div class="section-tag">Bulk team actions</div>
-          <h2 class="section-title">Assign or remove teams</h2>
-          <p class="helper-copy mb-3">Manage multiple users and multiple teams in one go.</p>
-
-          <div class="selection-toolbar p-3 mb-3">
-            <div class="fw-semibold mb-2">Available teams</div>
-            ${renderOptionPills(state.helpdesk.teams, "helpdesk-team", "No HelpDesk teams available.")}
-          </div>
-
-          <div class="d-flex flex-wrap gap-2 mb-3">
-            <button id="helpdeskAssignBtn" class="btn btn-primary" type="button">Assign selected teams</button>
-            <button id="helpdeskRemoveBtn" class="btn btn-outline-light" type="button">Remove selected teams</button>
-          </div>
-
-          <div class="table-responsive">
-            <table class="table admin-table align-middle mb-0">
-              <thead>
-                <tr>
-                  <th style="width: 48px;"></th>
-                  <th>Agent</th>
-                  <th>Status</th>
-                  <th>Current teams</th>
-                  <th class="text-end">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${renderAgentRows(state.helpdesk.agents, "helpdesk-agent", "helpdesk")}
+                ${renderAgentRows(state.livechat.agents, "livechat-agent")}
               </tbody>
             </table>
           </div>
@@ -369,7 +283,7 @@ function renderLogs() {
       <div class="glass-card p-4">
         <div class="section-tag">Audit history</div>
         <h2 class="section-title">No logs yet</h2>
-        <p class="helper-copy mb-0">Once admins start creating users or changing memberships, the history will appear here.</p>
+        <p class="helper-copy mb-0">${state.logsWarning || "Once admins start creating users or changing memberships, the history will appear here."}</p>
       </div>
     `;
     return;
@@ -417,7 +331,6 @@ function renderLogs() {
 function renderAll() {
   renderMetrics();
   renderLiveChat();
-  renderHelpDesk();
   renderLogs();
   bindDynamicActions();
 }
@@ -427,18 +340,28 @@ function selectedValues(name) {
 }
 
 async function refreshData() {
-  setMessage(statusMessage, "Refreshing LiveChat, HelpDesk, and logs...");
-  const [livechat, helpdesk, logsResponse] = await Promise.all([
+  setMessage(statusMessage, "Refreshing agents and logs...");
+  const [livechatResult, logsResult] = await Promise.allSettled([
     api("/api/livechat/dashboard"),
-    api("/api/helpdesk/dashboard"),
     api("/api/logs"),
   ]);
 
-  state.livechat = livechat;
-  state.helpdesk = helpdesk;
-  state.logs = logsResponse.logs || [];
+  if (livechatResult.status !== "fulfilled") {
+    throw livechatResult.reason;
+  }
+
+  state.livechat = livechatResult.value;
+  state.logs = logsResult.status === "fulfilled" ? logsResult.value.logs || [] : [];
+  state.logsWarning =
+    logsResult.status === "fulfilled"
+      ? logsResult.value.warning || ""
+      : "Logs are temporarily unavailable, but agent data loaded successfully.";
   renderAll();
-  setMessage(statusMessage, "Workspace updated.", "success");
+  setMessage(
+    statusMessage,
+    state.logsWarning ? `Workspace updated. ${state.logsWarning}` : "Workspace updated.",
+    state.logsWarning ? "info" : "success",
+  );
 }
 
 async function withBusyState(action, successMessage) {
@@ -461,11 +384,10 @@ function escapeHtml(value) {
 
 function bindDynamicActions() {
   const livechatCreateForm = document.getElementById("livechatCreateForm");
-  const helpdeskCreateForm = document.getElementById("helpdeskCreateForm");
   const livechatAssignBtn = document.getElementById("livechatAssignBtn");
   const livechatRemoveBtn = document.getElementById("livechatRemoveBtn");
-  const helpdeskAssignBtn = document.getElementById("helpdeskAssignBtn");
-  const helpdeskRemoveBtn = document.getElementById("helpdeskRemoveBtn");
+  const livechatSelectAllBtn = document.getElementById("livechatSelectAllBtn");
+  const livechatClearSelectionBtn = document.getElementById("livechatClearSelectionBtn");
 
   livechatCreateForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -482,23 +404,6 @@ function bindDynamicActions() {
         });
       },
       "LiveChat agent created.",
-    );
-  });
-
-  helpdeskCreateForm?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await withBusyState(
-      async () => {
-        await api("/api/helpdesk/agents", {
-          method: "POST",
-          body: {
-            name: document.getElementById("helpdesk-name").value.trim(),
-            email: document.getElementById("helpdesk-email").value.trim(),
-            teamIds: selectedValues("helpdesk-create-team"),
-          },
-        });
-      },
-      "HelpDesk agent created.",
     );
   });
 
@@ -535,36 +440,16 @@ function bindDynamicActions() {
     );
   });
 
-  helpdeskAssignBtn?.addEventListener("click", async () => {
-    await withBusyState(
-      async () => {
-        await api("/api/helpdesk/memberships", {
-          method: "POST",
-          body: {
-            agentIds: selectedValues("helpdesk-agent"),
-            teamIds: selectedValues("helpdesk-team"),
-            mode: "assign",
-          },
-        });
-      },
-      "HelpDesk teams updated.",
-    );
+  livechatSelectAllBtn?.addEventListener("click", () => {
+    document.querySelectorAll('input[name="livechat-agent"]').forEach((input) => {
+      input.checked = true;
+    });
   });
 
-  helpdeskRemoveBtn?.addEventListener("click", async () => {
-    await withBusyState(
-      async () => {
-        await api("/api/helpdesk/memberships", {
-          method: "POST",
-          body: {
-            agentIds: selectedValues("helpdesk-agent"),
-            teamIds: selectedValues("helpdesk-team"),
-            mode: "remove",
-          },
-        });
-      },
-      "Selected HelpDesk teams removed.",
-    );
+  livechatClearSelectionBtn?.addEventListener("click", () => {
+    document.querySelectorAll('input[name="livechat-agent"]').forEach((input) => {
+      input.checked = false;
+    });
   });
 
   document.querySelectorAll("[data-livechat-suspend]").forEach((button) => {
@@ -582,20 +467,6 @@ function bindDynamicActions() {
     });
   });
 
-  document.querySelectorAll("[data-helpdesk-deactivate]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const agentId = button.getAttribute("data-helpdesk-deactivate");
-      await withBusyState(
-        async () => {
-          await api("/api/helpdesk/agents/deactivate", {
-            method: "POST",
-            body: { agentId },
-          });
-        },
-        `HelpDesk agent ${agentId} removed.`,
-      );
-    });
-  });
 }
 
 loginForm?.addEventListener("submit", async (event) => {

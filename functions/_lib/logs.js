@@ -1,21 +1,8 @@
-const CREATE_TABLE_SQL = `
-  CREATE TABLE IF NOT EXISTS logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at TEXT NOT NULL,
-    actor TEXT NOT NULL,
-    area TEXT NOT NULL,
-    action TEXT NOT NULL,
-    target TEXT,
-    status TEXT NOT NULL,
-    details TEXT,
-    metadata TEXT
-  )
-;
-`;
+const CREATE_TABLE_SQL =
+  "CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, actor TEXT NOT NULL, area TEXT NOT NULL, action TEXT NOT NULL, target TEXT, status TEXT NOT NULL, details TEXT, metadata TEXT)";
 
-const CREATE_INDEX_SQL = `
-  CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs (created_at DESC)
-`;
+const CREATE_INDEX_SQL =
+  "CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs (created_at DESC)";
 
 export async function ensureLogsTable(db) {
   if (!db) {
