@@ -207,7 +207,7 @@ body {
 
 .section-grid {
   display: grid;
-  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+  grid-template-columns: minmax(360px, 440px) minmax(0, 1fr);
   gap: 14px;
 }
 
@@ -232,10 +232,17 @@ body {
 }
 
 .toolbar-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   margin-bottom: 10px;
+}
+
+.toolbar-row .form-control,
+.toolbar-row .form-select {
+  flex: 1 1 240px;
+  min-width: 0;
 }
 
 .action-row {
@@ -257,10 +264,21 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  justify-content: space-between;
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 8px 10px;
   background: rgba(255, 255, 255, 0.9);
+}
+
+.check-pill span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.modal-priority-select,
+[data-group-member-priority] {
+  width: 108px;
 }
 
 .check-pill input,
@@ -412,7 +430,7 @@ body {
   }
 
   .toolbar-row {
-    grid-template-columns: 1fr 1fr;
+    align-items: stretch;
   }
 
   .workspace-topbar {

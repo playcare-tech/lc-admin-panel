@@ -164,6 +164,51 @@ function filterByName(items, search) {
   return items.filter((item) => item.name.toLowerCase().includes(normalized));
 }
 
+function livechatGroupsWithCounts() {
+  const counts = new Map();
+  state.livechat.agents.forEach((agent) => {
+    agent.groups.forEach((group) => {
+      counts.set(String(group.id), (counts.get(String(group.id)) || 0) + 1);
+    });
+  });
+
+  return state.livechat.groups.map((group) => ({
+    ...group,
+    agentCount: counts.get(String(group.id)) || 0,
+  }));
+}
+
+function helpdeskGroupsWithCounts() {
+  const counts = new Map();
+  state.helpdesk.agents.forEach((agent) => {
+    agent.teams.forEach((team) => {
+      counts.set(String(team.id), (counts.get(String(team.id)) || 0) + 1);
+    });
+  });
+
+  return state.helpdesk.teams.map((team) => ({
+    ...team,
+    agentCount: counts.get(String(team.id)) || 0,
+  }));
+}
+
+function renderMembershipTable(rows, columns, emptyMessage) {
+  if (!rows.length) {
+    return `<div class="empty-state">${escapeHtml(emptyMessage)}</div>`;
+  }
+
+  return `
+    <div class="table-responsive">
+      <table class="table admin-table">
+        <thead>
+          <tr>${columns.map((column) => `<th>${column}</th>`).join("")}</tr>
+        </thead>
+        <tbody>${rows.join("")}</tbody>
+      </table>
+    </div>
+  `;
+}
+
 function renderStats(cards) {
   return `
     <div class="stats-grid">
@@ -190,11 +235,11 @@ function renderBulkEditor({ title, searchId, searchValue, searchPlaceholder, ite
         <input id="${searchId}" class="form-control" type="search" placeholder="${searchPlaceholder}" value="${escapeHtml(searchValue)}" />
         <button id="${selectAllId}" class="btn btn-outline-secondary" type="button">Select all shown</button>
         <button id="${clearId}" class="btn btn-outline-secondary" type="button">Clear shown</button>
-        ${extraControl}
       </div>
       <div class="action-row">
         <button id="${primaryActionId}" class="btn btn-primary" type="button">${primaryLabel}</button>
         <button id="${secondaryActionId}" class="btn btn-outline-secondary" type="button">${secondaryLabel}</button>
+        ${extraControl}
       </div>
       <div class="checkbox-grid">
         ${
@@ -252,6 +297,7 @@ function renderLiveChatUsers() {
           primaryLabel: "Add groups",
           secondaryActionId: "livechatRemoveBtn",
           secondaryLabel: "Remove groups",
+          extraControl: '<button id="livechatChangePriorityBtn" class="btn btn-outline-secondary" type="button">Change priority</button>',
         })}
       </div>
       <div class="table-shell">
@@ -270,7 +316,7 @@ function renderLiveChatUsers() {
                     <tr>
                       <th style="width:36px;"></th>
                       <th>Email</th>
-                      <th>Groups</th>
+                      <th>Groups count</th>
                       <th>Status</th>
                       <th style="width:132px;"></th>
                     </tr>
@@ -282,7 +328,7 @@ function renderLiveChatUsers() {
                           <tr>
                             <td><input type="checkbox" class="form-check-input" name="livechat-agent" value="${agent.id}" /></td>
                             <td>${escapeHtml(agent.email)}</td>
-                            <td>${renderGroupChips(agent.groups)}</td>
+                            <td>${agent.groups.length}</td>
                             <td>${agent.suspended ? '<span class="chip last">Suspended</span>' : '<span class="chip primary">Active</span>'}</td>
                             <td class="text-end">
                               <div class="d-flex gap-2 justify-content-end">
@@ -391,25 +437,70 @@ function renderHelpDeskUsers() {
   `;
 }
 
-function renderGroupList(title, items) {
+function renderLiveChatGroups() {
+  const groups = filterByName(livechatGroupsWithCounts(), state.livechatGroupSearch);
+
   return `
     ${renderStats([
-      { label: title, value: items.length, meta: "Configured entries" },
-      { label: "Selected", value: items.length, meta: "Visible in directory" },
-      { label: "Active", value: items.length, meta: "Available for assignment" },
-      { label: "Scope", value: title.includes("LiveChat") ? "LC" : "HD", meta: "Product" },
+      { label: "Groups", value: state.livechat.groups.length, meta: "Configured entries" },
+      { label: "Shown", value: groups.length, meta: "Filtered groups" },
+      { label: "Agents", value: state.livechat.agents.length, meta: "LiveChat users" },
+      { label: "Scope", value: "LC", meta: "Product" },
     ])}
     <div class="table-shell">
-      ${
-        items.length
-          ? `<div class="table-responsive">
-              <table class="table admin-table">
-                <thead><tr><th>ID</th><th>Name</th></tr></thead>
-                <tbody>${items.map((item) => `<tr><td>${escapeHtml(item.id)}</td><td>${escapeHtml(item.name)}</td></tr>`).join("")}</tbody>
-              </table>
-            </div>`
-          : '<div class="empty-state">Nothing returned.</div>'
-      }
+      <div class="toolbar-row">
+        <input id="livechatGroupSearchInput" class="form-control" type="search" placeholder="Search LiveChat groups" value="${escapeHtml(state.livechatGroupSearch)}" />
+        <div class="subtle d-flex align-items-center px-2">${groups.length} results</div>
+      </div>
+      ${renderMembershipTable(
+        groups.map(
+          (group) => `
+            <tr>
+              <td>${escapeHtml(group.name)}</td>
+              <td>${group.agentCount}</td>
+              <td class="text-end">
+                <button class="btn btn-sm btn-outline-secondary" type="button" data-open-livechat-group="${group.id}">Open group</button>
+              </td>
+            </tr>
+          `,
+        ),
+        ["Group", "Agents", ""],
+        "No LiveChat groups returned.",
+      )}
+    </div>
+  `;
+}
+
+function renderHelpDeskGroups() {
+  const groups = filterByName(helpdeskGroupsWithCounts(), state.helpdeskTeamSearch);
+
+  return `
+    ${renderStats([
+      { label: "Groups", value: state.helpdesk.teams.length, meta: "Configured entries" },
+      { label: "Shown", value: groups.length, meta: "Filtered groups" },
+      { label: "Agents", value: state.helpdesk.agents.length, meta: "HelpDesk users" },
+      { label: "Scope", value: "HD", meta: "Product" },
+    ])}
+    <div class="table-shell">
+      <div class="toolbar-row">
+        <input id="helpdeskTeamSearchInput" class="form-control" type="search" placeholder="Search HelpDesk groups" value="${escapeHtml(state.helpdeskTeamSearch)}" />
+        <div class="subtle d-flex align-items-center px-2">${groups.length} results</div>
+      </div>
+      ${renderMembershipTable(
+        groups.map(
+          (group) => `
+            <tr>
+              <td>${escapeHtml(group.name)}</td>
+              <td>${group.agentCount}</td>
+              <td class="text-end">
+                <button class="btn btn-sm btn-outline-secondary" type="button" data-open-helpdesk-group="${group.id}">Open group</button>
+              </td>
+            </tr>
+          `,
+        ),
+        ["Group", "Agents", ""],
+        "No HelpDesk groups returned.",
+      )}
     </div>
   `;
 }
@@ -443,8 +534,8 @@ function renderCreateUserForm(type) {
             isLiveChat
               ? `<div class="col-12">
                   <select id="createLiveChatPriority" class="form-select">
-                    <option value="first">Primary</option>
-                    <option value="normal" selected>Last</option>
+                    <option value="normal" selected>Primary</option>
+                    <option value="last">Last</option>
                   </select>
                 </div>`
               : ""
@@ -587,71 +678,172 @@ function renderModal() {
     return;
   }
 
-  const isLiveChat = state.modalType === "livechat";
-  const allItems = isLiveChat ? state.livechat.groups : state.helpdesk.teams;
+  const isLiveChatUser = state.modalType === "livechat";
+  const isHelpDeskUser = state.modalType === "helpdesk";
+  const isLiveChatGroup = state.modalType === "livechat-group";
+  const isHelpDeskGroup = state.modalType === "helpdesk-group";
+  const isGroupModal = isLiveChatGroup || isHelpDeskGroup;
+  const allItems = isLiveChatUser ? state.livechat.groups : isHelpDeskUser ? state.helpdesk.teams : [];
   const filteredItems = filterByName(allItems, state.modalSearch);
-  const selectedMap = isLiveChat
+  const selectedMap = isLiveChatUser
     ? new Map(state.modalAgent.groups.map((group) => [String(group.id), group.priority]))
-    : new Set(state.modalAgent.teams.map((team) => String(team.id)));
+    : isHelpDeskUser
+      ? new Set(state.modalAgent.teams.map((team) => String(team.id)))
+      : null;
+  const filteredMembers = isGroupModal
+    ? state.modalAgent.members.filter((member) =>
+        `${member.email} ${member.priority || ""}`.toLowerCase().includes(state.modalSearch.trim().toLowerCase()),
+      )
+    : [];
+  const currentMembershipMarkup = isLiveChatUser
+    ? renderMembershipTable(
+        state.modalAgent.groups.map(
+          (group) => `
+            <tr>
+              <td>${escapeHtml(group.name)}</td>
+              <td>${priorityLabel(group.priority)}</td>
+            </tr>
+          `,
+        ),
+        ["Group", "Priority"],
+        "No active groups on this user.",
+      )
+    : isHelpDeskUser
+      ? renderMembershipTable(
+          state.modalAgent.teams.map(
+            (team) => `
+              <tr>
+                <td>${escapeHtml(team.name)}</td>
+              </tr>
+            `,
+          ),
+          ["Group"],
+          "No active groups on this user.",
+        )
+      : isLiveChatGroup
+        ? renderMembershipTable(
+            filteredMembers.map(
+              (member) => `
+                <tr>
+                  <td><input type="checkbox" class="form-check-input" name="modal-livechat-agent" value="${member.id}" /></td>
+                  <td>${escapeHtml(member.email)}</td>
+                  <td>
+                    <select class="form-select form-select-sm" data-group-member-priority="${member.id}">
+                      <option value="normal" ${member.priority !== "last" ? "selected" : ""}>Primary</option>
+                      <option value="last" ${member.priority === "last" ? "selected" : ""}>Last</option>
+                    </select>
+                  </td>
+                </tr>
+              `,
+            ),
+            ["", "User", "Priority"],
+            "No users match this search.",
+          )
+        : renderMembershipTable(
+            filteredMembers.map(
+              (member) => `
+                <tr>
+                  <td><input type="checkbox" class="form-check-input" name="modal-helpdesk-agent" value="${member.id}" /></td>
+                  <td>${escapeHtml(member.email)}</td>
+                </tr>
+              `,
+            ),
+            ["", "User"],
+            "No users match this search.",
+          );
 
   modalRoot.innerHTML = `
     <div class="modal-overlay">
       <div class="modal-card">
         <div class="modal-head">
           <div>
-            <div class="modal-title">${escapeHtml(state.modalAgent.email)}</div>
-            <div class="subtle">${isLiveChat ? "LiveChat profile" : "HelpDesk profile"}</div>
+            <div class="modal-title">${escapeHtml(isGroupModal ? state.modalAgent.name : state.modalAgent.email)}</div>
+            <div class="subtle">${
+              isLiveChatUser
+                ? "LiveChat profile"
+                : isHelpDeskUser
+                  ? "HelpDesk profile"
+                  : isLiveChatGroup
+                    ? "LiveChat group members"
+                    : "HelpDesk group members"
+            }</div>
           </div>
           <button id="closeModalBtn" class="btn btn-sm btn-outline-secondary" type="button">Close</button>
         </div>
         <div class="modal-layout">
-          <div class="editor-shell">
-            <div class="section-title">Change memberships</div>
-            <div class="toolbar-row">
-              <input id="modalSearchInput" class="form-control" type="search" placeholder="Search ${isLiveChat ? "groups" : "groups"}" value="${escapeHtml(state.modalSearch)}" />
-              <button id="modalSelectAllBtn" class="btn btn-outline-secondary" type="button">Select all shown</button>
-              <button id="modalClearBtn" class="btn btn-outline-secondary" type="button">Clear shown</button>
-              <div class="subtle d-flex align-items-center px-2">${filteredItems.length} shown</div>
-            </div>
-            <div class="checkbox-grid">
-              ${
-                filteredItems.length
-                  ? filteredItems
-                      .map((item) => {
-                        const checked = isLiveChat
-                          ? selectedMap.has(String(item.id))
-                          : selectedMap.has(String(item.id));
-                        const priority = isLiveChat
-                          ? selectedMap.get(String(item.id)) || "normal"
-                          : "";
+          ${
+            isGroupModal
+              ? `
+                <div class="editor-shell">
+                  <div class="section-title">Manage members</div>
+                  <div class="toolbar-row">
+                    <input id="modalSearchInput" class="form-control" type="search" placeholder="Search users" value="${escapeHtml(state.modalSearch)}" />
+                    <button id="modalSelectAllBtn" class="btn btn-outline-secondary" type="button">Select shown</button>
+                    <button id="modalClearBtn" class="btn btn-outline-secondary" type="button">Clear shown</button>
+                    <div class="subtle d-flex align-items-center px-2">${filteredMembers.length} shown</div>
+                  </div>
+                  ${currentMembershipMarkup}
+                  <div class="action-row mt-3">
+                    ${isLiveChatGroup ? '<button id="changePriorityModalBtn" class="btn btn-primary" type="button">Change priority</button>' : ""}
+                    <button id="removeModalBtn" class="btn btn-outline-danger" type="button">Remove selected</button>
+                  </div>
+                </div>
+                <div class="card-shell">
+                  <div class="section-title">Group summary</div>
+                  <div class="chip-list">
+                    <span class="chip">${escapeHtml(state.modalAgent.name)}</span>
+                    <span class="chip">${state.modalAgent.members.length} users</span>
+                  </div>
+                </div>
+              `
+              : `
+                <div class="editor-shell">
+                  <div class="section-title">Change memberships</div>
+                  <div class="toolbar-row">
+                    <input id="modalSearchInput" class="form-control" type="search" placeholder="Search groups" value="${escapeHtml(state.modalSearch)}" />
+                    <button id="modalSelectAllBtn" class="btn btn-outline-secondary" type="button">Select shown</button>
+                    <button id="modalClearBtn" class="btn btn-outline-secondary" type="button">Clear shown</button>
+                    <div class="subtle d-flex align-items-center px-2">${filteredItems.length} shown</div>
+                  </div>
+                  <div class="checkbox-grid">
+                    ${
+                      filteredItems.length
+                        ? filteredItems
+                            .map((item) => {
+                              const checked = selectedMap.has(String(item.id));
+                              const priority = isLiveChatUser
+                                ? selectedMap.get(String(item.id)) || "normal"
+                                : "";
 
-                        return `
-                          <label class="check-pill">
-                            <input type="checkbox" name="${isLiveChat ? "modal-livechat-group" : "modal-helpdesk-team"}" value="${item.id}" ${checked ? "checked" : ""} />
-                            <span>${escapeHtml(item.name)}</span>
-                            ${
-                              isLiveChat
-                                ? `<select class="form-select form-select-sm modal-priority-select" data-group-priority="${item.id}">
-                                    <option value="normal" ${priority !== "last" ? "selected" : ""}>Primary</option>
-                                    <option value="last" ${priority === "last" ? "selected" : ""}>Last</option>
-                                  </select>`
-                                : ""
-                            }
-                          </label>
-                        `;
-                      })
-                      .join("")
-                  : '<div class="empty-state">Nothing matches the current search.</div>'
-              }
-            </div>
-            <div class="action-row mt-3">
-              <button id="saveModalBtn" class="btn btn-primary" type="button">Save</button>
-            </div>
-          </div>
-          <div class="card-shell">
-            <div class="section-title">Current memberships</div>
-            ${isLiveChat ? renderGroupChips(state.modalAgent.groups) : renderTeamChips(state.modalAgent.teams)}
-          </div>
+                              return `
+                                <label class="check-pill">
+                                  <input type="checkbox" name="${isLiveChatUser ? "modal-livechat-group" : "modal-helpdesk-team"}" value="${item.id}" ${checked ? "checked" : ""} />
+                                  <span>${escapeHtml(item.name)}</span>
+                                  ${
+                                    isLiveChatUser
+                                      ? `<select class="form-select form-select-sm modal-priority-select" data-group-priority="${item.id}">
+                                          <option value="normal" ${priority !== "last" ? "selected" : ""}>Primary</option>
+                                          <option value="last" ${priority === "last" ? "selected" : ""}>Last</option>
+                                        </select>`
+                                      : ""
+                                  }
+                                </label>
+                              `;
+                            })
+                            .join("")
+                        : '<div class="empty-state">Nothing matches the current search.</div>'
+                    }
+                  </div>
+                  <div class="action-row mt-3">
+                    <button id="saveModalBtn" class="btn btn-primary" type="button">Save</button>
+                  </div>
+                </div>
+                <div class="card-shell">
+                  <div class="section-title">Current memberships</div>
+                  ${currentMembershipMarkup}
+                </div>
+              `
+          }
         </div>
       </div>
     </div>
@@ -667,13 +859,13 @@ function renderApp() {
   if (state.section === "livechat-users") {
     appContent.innerHTML = renderLiveChatUsers();
   } else if (state.section === "livechat-groups") {
-    appContent.innerHTML = renderGroupList("LiveChat Groups", state.livechat.groups);
+    appContent.innerHTML = renderLiveChatGroups();
   } else if (state.section === "create-livechat-user") {
     appContent.innerHTML = renderCreateUserForm("livechat");
   } else if (state.section === "helpdesk-users") {
     appContent.innerHTML = renderHelpDeskUsers();
   } else if (state.section === "helpdesk-groups") {
-    appContent.innerHTML = renderGroupList("HelpDesk Groups", state.helpdesk.teams);
+    appContent.innerHTML = renderHelpDeskGroups();
   } else if (state.section === "create-helpdesk-user") {
     appContent.innerHTML = renderCreateUserForm("helpdesk");
   } else if (state.section === "admin-users") {
@@ -745,10 +937,21 @@ function openModal(type, agent) {
 }
 
 async function openLiveChatModal(agentId) {
+  const fallbackAgent = state.livechat.agents.find((item) => item.id === agentId);
+
   try {
     const result = await api(`/api/livechat/agent?id=${encodeURIComponent(agentId)}`);
-    openModal("livechat", result.agent);
+    const mergedAgent =
+      fallbackAgent && (!result.agent.groups || !result.agent.groups.length)
+        ? { ...result.agent, groups: fallbackAgent.groups }
+        : result.agent;
+    openModal("livechat", mergedAgent);
   } catch (error) {
+    if (fallbackAgent) {
+      openModal("livechat", fallbackAgent);
+      setMessage(statusMessage, `${error.message} Showing cached memberships.`, "info");
+      return;
+    }
     setMessage(statusMessage, error.message, "error");
   }
 }
@@ -760,6 +963,44 @@ function openHelpDeskModal(agentId) {
   }
 }
 
+function openLiveChatGroupModal(groupId) {
+  const group = state.livechat.groups.find((item) => String(item.id) === String(groupId));
+  if (!group) {
+    return;
+  }
+
+  const members = state.livechat.agents
+    .filter((agent) => agent.groups.some((item) => String(item.id) === String(groupId)))
+    .map((agent) => {
+      const membership = agent.groups.find((item) => String(item.id) === String(groupId));
+      return {
+        id: agent.id,
+        email: agent.email,
+        priority: membership?.priority || "normal",
+      };
+    })
+    .sort((left, right) => left.email.localeCompare(right.email));
+
+  openModal("livechat-group", { ...group, members });
+}
+
+function openHelpDeskGroupModal(groupId) {
+  const group = state.helpdesk.teams.find((item) => String(item.id) === String(groupId));
+  if (!group) {
+    return;
+  }
+
+  const members = state.helpdesk.agents
+    .filter((agent) => agent.teams.some((item) => String(item.id) === String(groupId)))
+    .map((agent) => ({
+      id: agent.id,
+      email: agent.email,
+    }))
+    .sort((left, right) => left.email.localeCompare(right.email));
+
+  openModal("helpdesk-group", { ...group, members });
+}
+
 function buildModalLiveChatPayload() {
   const selectedIds = selectedValues("modal-livechat-group");
   ensureSelection(selectedIds, "group");
@@ -768,7 +1009,7 @@ function buildModalLiveChatPayload() {
     const select = document.querySelector(`[data-group-priority="${CSS.escape(id)}"]`);
     return {
       id,
-      priority: select?.value === "first" ? "first" : "normal",
+      priority: select?.value === "last" ? "last" : "normal",
     };
   });
 
@@ -968,6 +1209,24 @@ function bindAppEvents() {
     }, "LiveChat groups updated.");
   });
 
+  bindClick("livechatChangePriorityBtn", async () => {
+    await withBusyState(async () => {
+      const agentIds = selectedValues("livechat-agent");
+      const groupIds = selectedValues("livechat-group");
+      ensureSelection(agentIds, "agent");
+      ensureSelection(groupIds, "group");
+      await api("/api/livechat/memberships", {
+        method: "POST",
+        body: {
+          agentIds,
+          groupIds,
+          mode: "assign",
+          priority: document.getElementById("livechatBulkPriority").value,
+        },
+      });
+    }, "LiveChat priority updated.");
+  });
+
   bindClick("livechatRemoveBtn", async () => {
     await withBusyState(async () => {
       const agentIds = selectedValues("livechat-agent");
@@ -1012,6 +1271,12 @@ function bindAppEvents() {
   });
   document.querySelectorAll("[data-open-helpdesk]").forEach((button) => {
     button.onclick = () => openHelpDeskModal(button.dataset.openHelpdesk);
+  });
+  document.querySelectorAll("[data-open-livechat-group]").forEach((button) => {
+    button.onclick = () => openLiveChatGroupModal(button.dataset.openLivechatGroup);
+  });
+  document.querySelectorAll("[data-open-helpdesk-group]").forEach((button) => {
+    button.onclick = () => openHelpDeskGroupModal(button.dataset.openHelpdeskGroup);
   });
   document.querySelectorAll("[data-livechat-suspend]").forEach((button) => {
     button.onclick = async () => {
@@ -1118,11 +1383,25 @@ function bindAppEvents() {
     renderModal();
   });
   bindClick("modalSelectAllBtn", () => {
-    const selector = state.modalType === "livechat" ? 'input[name="modal-livechat-group"]' : 'input[name="modal-helpdesk-team"]';
+    const selector =
+      state.modalType === "livechat"
+        ? 'input[name="modal-livechat-group"]'
+        : state.modalType === "helpdesk"
+          ? 'input[name="modal-helpdesk-team"]'
+          : state.modalType === "livechat-group"
+            ? 'input[name="modal-livechat-agent"]'
+            : 'input[name="modal-helpdesk-agent"]';
     document.querySelectorAll(selector).forEach((input) => (input.checked = true));
   });
   bindClick("modalClearBtn", () => {
-    const selector = state.modalType === "livechat" ? 'input[name="modal-livechat-group"]' : 'input[name="modal-helpdesk-team"]';
+    const selector =
+      state.modalType === "livechat"
+        ? 'input[name="modal-livechat-group"]'
+        : state.modalType === "helpdesk"
+          ? 'input[name="modal-helpdesk-team"]'
+          : state.modalType === "livechat-group"
+            ? 'input[name="modal-livechat-agent"]'
+            : 'input[name="modal-helpdesk-agent"]';
     document.querySelectorAll(selector).forEach((input) => (input.checked = false));
   });
   bindClick("saveModalBtn", async () => {
@@ -1149,6 +1428,70 @@ function bindAppEvents() {
         });
       }, "HelpDesk profile updated.");
     }
+
+    state.modalOpen = false;
+    state.modalAgent = null;
+    renderModal();
+  });
+  bindClick("changePriorityModalBtn", async () => {
+    await withBusyState(async () => {
+      const agentIds = selectedValues("modal-livechat-agent");
+      ensureSelection(agentIds, "user");
+      const priorityBuckets = new Map();
+
+      agentIds.forEach((agentId) => {
+        const select = document.querySelector(`[data-group-member-priority="${CSS.escape(agentId)}"]`);
+        const priority = select?.value === "last" ? "last" : "normal";
+        const current = priorityBuckets.get(priority) || [];
+        current.push(agentId);
+        priorityBuckets.set(priority, current);
+      });
+
+      for (const [priority, ids] of priorityBuckets.entries()) {
+        await api("/api/livechat/memberships", {
+          method: "POST",
+          body: {
+            agentIds: ids,
+            groupIds: [state.modalAgent.id],
+            mode: "assign",
+            priority,
+          },
+        });
+      }
+    }, "Group priority updated.");
+
+    state.modalOpen = false;
+    state.modalAgent = null;
+    renderModal();
+  });
+  bindClick("removeModalBtn", async () => {
+    const agentIds =
+      state.modalType === "livechat-group"
+        ? selectedValues("modal-livechat-agent")
+        : selectedValues("modal-helpdesk-agent");
+
+    await withBusyState(async () => {
+      ensureSelection(agentIds, "user");
+      if (state.modalType === "livechat-group") {
+        await api("/api/livechat/memberships", {
+          method: "POST",
+          body: {
+            agentIds,
+            groupIds: [state.modalAgent.id],
+            mode: "remove",
+          },
+        });
+      } else {
+        await api("/api/helpdesk/memberships", {
+          method: "POST",
+          body: {
+            agentIds,
+            teamIds: [state.modalAgent.id],
+            mode: "remove",
+          },
+        });
+      }
+    }, "Selected users removed from group.");
 
     state.modalOpen = false;
     state.modalAgent = null;
