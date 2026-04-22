@@ -1,5 +1,5 @@
 import { requireAuth } from "../../_lib/auth.js";
-import { helpdeskRequest } from "../../_lib/helpdesk.js";
+import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
 import { errorResponse, json, methodNotAllowed, readJson } from "../../_lib/http.js";
 import { writeLogSafely } from "../../_lib/logs.js";
 
@@ -22,6 +22,10 @@ export async function onRequest(context) {
       return errorResponse("agentId is required.", 400);
     }
 
+    const dashboard = await getHelpDeskDashboard(context.env);
+    const agent = dashboard.agents.find((item) => item.id === agentId);
+    const teamNameById = new Map(dashboard.teams.map((team) => [team.id, team.name]));
+
     await helpdeskRequest(context.env, `/agents/${agentId}`, {
       method: "PATCH",
       body: {
@@ -36,7 +40,17 @@ export async function onRequest(context) {
       target: agentId,
       status: "success",
       details: `Updated HelpDesk profile teams for ${agentId}.`,
-      metadata: { teamIds },
+      metadata: {
+        agentId,
+        before: (agent?.teams || []).map((team) => ({
+          id: String(team.id),
+          name: team.name,
+        })),
+        after: teamIds.map((teamId) => ({
+          id: String(teamId),
+          name: teamNameById.get(String(teamId)) || `Team ${teamId}`,
+        })),
+      },
     });
 
     return json({ ok: true });

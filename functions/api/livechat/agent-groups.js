@@ -23,6 +23,11 @@ export async function onRequest(context) {
     }
 
     const currentAgent = await getLiveChatAgent(context.env, agentId);
+    const groupsPayload = await livechatRequest(context.env, "list_groups", {});
+    const rawGroups = Array.isArray(groupsPayload)
+      ? groupsPayload
+      : groupsPayload.groups || groupsPayload.data || groupsPayload.items || [];
+    const groupNameById = new Map(rawGroups.map((group) => [String(group.id), group.name]));
 
     const groups = groupPriorities.map((group) => ({
       id: Number.isNaN(Number(group.id)) ? group.id : Number(group.id),
@@ -42,8 +47,17 @@ export async function onRequest(context) {
       status: "success",
       details: `Updated LiveChat profile groups for ${agentId}.`,
       metadata: {
-        previousGroupCount: currentAgent.groups.length,
-        nextGroupCount: groups.length,
+        agentId,
+        before: currentAgent.groups.map((group) => ({
+          id: String(group.id),
+          name: group.name,
+          priority: group.priority,
+        })),
+        after: groups.map((group) => ({
+          id: String(group.id),
+          name: groupNameById.get(String(group.id)) || `Group ${group.id}`,
+          priority: group.priority,
+        })),
       },
     });
 

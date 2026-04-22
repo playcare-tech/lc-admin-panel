@@ -25,6 +25,8 @@ export async function onRequest(context) {
 
     const dashboard = await getHelpDeskDashboard(context.env);
     const agentById = new Map(dashboard.agents.map((agent) => [agent.id, agent]));
+    const teamNameById = new Map(dashboard.teams.map((team) => [team.id, team.name]));
+    const changedAgents = [];
 
     for (const agentId of agentIds) {
       const agent = agentById.get(agentId);
@@ -33,6 +35,10 @@ export async function onRequest(context) {
       }
 
       const nextTeamIds = new Set(agent.teamIDs);
+      const previousTeams = agent.teams.map((team) => ({
+        id: String(team.id),
+        name: team.name,
+      }));
       if (mode === "assign") {
         for (const teamId of teamIds) {
           nextTeamIds.add(teamId);
@@ -49,6 +55,16 @@ export async function onRequest(context) {
           teamIDs: Array.from(nextTeamIds),
         },
       });
+
+      changedAgents.push({
+        id: agent.id,
+        email: agent.email,
+        before: previousTeams,
+        after: Array.from(nextTeamIds).map((teamId) => ({
+          id: String(teamId),
+          name: teamNameById.get(String(teamId)) || `Team ${teamId}`,
+        })),
+      });
     }
 
     await writeLog(context.env, {
@@ -58,7 +74,14 @@ export async function onRequest(context) {
       target: agentIds.join(", "),
       status: "success",
       details: `${mode === "assign" ? "Updated" : "Removed"} HelpDesk teams for ${agentIds.length} agent(s).`,
-      metadata: { agentIds, teamIds },
+      metadata: {
+        mode,
+        changedAgents,
+        teams: teamIds.map((teamId) => ({
+          id: teamId,
+          name: teamNameById.get(String(teamId)) || `Team ${teamId}`,
+        })),
+      },
     });
 
     return json({ ok: true, updatedAgents: agentIds.length });

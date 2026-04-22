@@ -39,6 +39,11 @@ export async function onRequest(context) {
     }
 
     const agent = await livechatRequest(context.env, "create_agent", payload);
+    const groupsPayload = await livechatRequest(context.env, "list_groups", {});
+    const rawGroups = Array.isArray(groupsPayload)
+      ? groupsPayload
+      : groupsPayload.groups || groupsPayload.data || groupsPayload.items || [];
+    const groupNameById = new Map(rawGroups.map((group) => [String(group.id), group.name]));
     await writeLog(context.env, {
       actor: auth.session.user,
       area: "livechat",
@@ -46,7 +51,14 @@ export async function onRequest(context) {
       target: email,
       status: "success",
       details: `Created LiveChat agent ${email}.`,
-      metadata: { groupIds, priority },
+      metadata: {
+        agentId: email,
+        createdGroups: groupIds.map((groupId) => ({
+          id: groupId,
+          name: groupNameById.get(String(groupId)) || `Group ${groupId}`,
+          priority,
+        })),
+      },
     });
 
     return json({ ok: true, agent });

@@ -625,6 +625,125 @@ function renderAdminUsers() {
   `;
 }
 
+function renderNamedList(items, emptyLabel = "None") {
+  if (!items?.length) {
+    return `<span class="subtle">${emptyLabel}</span>`;
+  }
+
+  return items
+    .map((item) => {
+      const name = item.name || item.email || item.id || "-";
+      const priority = item.priority ? ` (${priorityLabel(item.priority)})` : "";
+      return `<span class="chip">${escapeHtml(`${name}${priority}`)}</span>`;
+    })
+    .join("");
+}
+
+function renderLogMetadata(entry) {
+  const metadata = entry.metadata || {};
+  const rows = [];
+
+  if (entry.actor) {
+    rows.push(`
+      <div class="log-row">
+        <div class="log-label">Changed by</div>
+        <div class="log-value">${escapeHtml(entry.actor)}</div>
+      </div>
+    `);
+  }
+
+  if (metadata.groups?.length) {
+    rows.push(`
+      <div class="log-row">
+        <div class="log-label">Groups</div>
+        <div class="log-value chip-list">${renderNamedList(metadata.groups)}</div>
+      </div>
+    `);
+  }
+
+  if (metadata.teams?.length) {
+    rows.push(`
+      <div class="log-row">
+        <div class="log-label">Teams</div>
+        <div class="log-value chip-list">${renderNamedList(metadata.teams)}</div>
+      </div>
+    `);
+  }
+
+  if (metadata.createdGroups?.length) {
+    rows.push(`
+      <div class="log-row">
+        <div class="log-label">Assigned groups</div>
+        <div class="log-value chip-list">${renderNamedList(metadata.createdGroups)}</div>
+      </div>
+    `);
+  }
+
+  if (metadata.createdTeams?.length) {
+    rows.push(`
+      <div class="log-row">
+        <div class="log-label">Assigned teams</div>
+        <div class="log-value chip-list">${renderNamedList(metadata.createdTeams)}</div>
+      </div>
+    `);
+  }
+
+  if (metadata.before || metadata.after) {
+    rows.push(`
+      <div class="log-grid-two">
+        <div class="log-row">
+          <div class="log-label">Before</div>
+          <div class="log-value chip-list">${renderNamedList(metadata.before, "Empty")}</div>
+        </div>
+        <div class="log-row">
+          <div class="log-label">After</div>
+          <div class="log-value chip-list">${renderNamedList(metadata.after, "Empty")}</div>
+        </div>
+      </div>
+    `);
+  }
+
+  if (metadata.changedAgents?.length) {
+    rows.push(`
+      <div class="log-row">
+        <div class="log-label">Changed users</div>
+        <div class="log-value log-stack">
+          ${metadata.changedAgents
+            .map(
+              (agent) => `
+                <div class="log-agent-card">
+                  <div class="log-agent-email">${escapeHtml(agent.email || agent.id)}</div>
+                  <div class="log-grid-two">
+                    <div class="log-row">
+                      <div class="log-label">Before</div>
+                      <div class="log-value chip-list">${renderNamedList(agent.before, "Empty")}</div>
+                    </div>
+                    <div class="log-row">
+                      <div class="log-label">After</div>
+                      <div class="log-value chip-list">${renderNamedList(agent.after, "Empty")}</div>
+                    </div>
+                  </div>
+                </div>
+              `,
+            )
+            .join("")}
+        </div>
+      </div>
+    `);
+  }
+
+  if (metadata.priority) {
+    rows.push(`
+      <div class="log-row">
+        <div class="log-label">Priority</div>
+        <div class="log-value">${escapeHtml(priorityLabel(metadata.priority))}</div>
+      </div>
+    `);
+  }
+
+  return rows.length ? `<div class="log-details">${rows.join("")}</div>` : "";
+}
+
 function renderLogs() {
   return `
     ${renderStats([
@@ -646,8 +765,9 @@ function renderLogs() {
                       <span class="chip">${escapeHtml(entry.status)}</span>
                       <span class="chip">${new Date(entry.created_at).toLocaleString()}</span>
                     </div>
-                    <div>${escapeHtml(entry.target || "")}</div>
+                    <div class="log-target">${escapeHtml(entry.target || "")}</div>
                     <div class="subtle mt-1">${escapeHtml(entry.details || "")}</div>
+                    ${renderLogMetadata(entry)}
                   </div>
                 `,
               )

@@ -24,8 +24,20 @@ export async function onRequest(context) {
       return errorResponse("Select at least one agent and one group.", 400);
     }
 
+    const groupsPayload = await livechatRequest(context.env, "list_groups", {});
+    const rawGroups = Array.isArray(groupsPayload)
+      ? groupsPayload
+      : groupsPayload.groups || groupsPayload.data || groupsPayload.items || [];
+    const groupNameById = new Map(rawGroups.map((group) => [String(group.id), group.name]));
+    const changedAgents = [];
+
     for (const agentId of agentIds) {
       const agent = await getLiveChatAgent(context.env, agentId);
+      const previousGroups = agent.groups.map((group) => ({
+        id: String(group.id),
+        name: group.name,
+        priority: group.priority,
+      }));
 
       const nextGroups = new Map(agent.groups.map((group) => [String(group.id), group.priority]));
       if (mode === "assign") {
@@ -52,6 +64,17 @@ export async function onRequest(context) {
         id: agentId,
         groups,
       });
+
+      changedAgents.push({
+        id: agent.id,
+        email: agent.email,
+        before: previousGroups,
+        after: groups.map((group) => ({
+          id: String(group.id),
+          name: groupNameById.get(String(group.id)) || `Group ${group.id}`,
+          priority: group.priority,
+        })),
+      });
     }
 
     await writeLog(context.env, {
@@ -61,7 +84,15 @@ export async function onRequest(context) {
       target: agentIds.join(", "),
       status: "success",
       details: `${mode === "assign" ? "Updated" : "Removed"} LiveChat groups for ${agentIds.length} agent(s).`,
-      metadata: { agentIds, groupIds, priority },
+      metadata: {
+        mode,
+        priority,
+        changedAgents,
+        groups: groupIds.map((groupId) => ({
+          id: groupId,
+          name: groupNameById.get(String(groupId)) || `Group ${groupId}`,
+        })),
+      },
     });
 
     return json({ ok: true, updatedAgents: agentIds.length });

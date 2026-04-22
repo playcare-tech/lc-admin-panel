@@ -1,5 +1,5 @@
 import { requireAuth } from "../../_lib/auth.js";
-import { helpdeskRequest } from "../../_lib/helpdesk.js";
+import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
 import { errorResponse, json, methodNotAllowed, readJson } from "../../_lib/http.js";
 import { writeLog } from "../../_lib/logs.js";
 
@@ -34,6 +34,9 @@ export async function onRequest(context) {
       },
     });
 
+    const dashboard = await getHelpDeskDashboard(context.env);
+    const teamNameById = new Map(dashboard.teams.map((team) => [team.id, team.name]));
+
     await writeLog(context.env, {
       actor: auth.session.user,
       area: "helpdesk",
@@ -41,7 +44,13 @@ export async function onRequest(context) {
       target: email,
       status: "success",
       details: `Created HelpDesk agent ${email}.`,
-      metadata: { teamIds },
+      metadata: {
+        agentId: email,
+        createdTeams: teamIds.map((teamId) => ({
+          id: teamId,
+          name: teamNameById.get(String(teamId)) || `Team ${teamId}`,
+        })),
+      },
     });
 
     return json({ ok: true, agent });
