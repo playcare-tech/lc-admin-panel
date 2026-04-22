@@ -48,7 +48,9 @@ export async function livechatRequest(env, action, body = {}) {
 
 export async function getLiveChatDashboard(env) {
   const [agentsPayload, groupsPayload] = await Promise.all([
-    livechatRequest(env, "list_agents", {}),
+    livechatRequest(env, "list_agents", {
+      fields: ["groups", "suspended"],
+    }),
     livechatRequest(env, "list_groups", {}),
   ]);
 
@@ -79,7 +81,9 @@ export async function getLiveChatDashboard(env) {
       groups: (agent.groups || agent.group_ids || []).map((group) => ({
         id: String(group.id),
         name: groupNameById.get(String(group.id)) || `Group ${group.id}`,
-        priority: group.priority === "first" ? "first" : "normal",
+        priority: ["first", "normal", "last", "supervisor"].includes(group.priority)
+          ? group.priority
+          : "normal",
       })),
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
@@ -108,7 +112,9 @@ export async function getLiveChatAgent(env, agentId) {
     groups: (rawAgent.groups || []).map((group) => ({
       id: String(group.id),
       name: groupNameById.get(String(group.id)) || `Group ${group.id}`,
-      priority: group.priority === "first" ? "first" : "normal",
+      priority: ["first", "normal", "last", "supervisor"].includes(group.priority)
+        ? group.priority
+        : "normal",
     })),
   };
 }
@@ -116,6 +122,6 @@ export async function getLiveChatAgent(env, agentId) {
 export function buildLiveChatGroups(groupIds, priority) {
   return groupIds.map((groupId) => ({
     id: normalizeGroupId(groupId),
-    priority: priority === "first" ? "first" : "normal",
+    priority: priority === "last" ? "last" : priority === "first" ? "first" : "normal",
   }));
 }

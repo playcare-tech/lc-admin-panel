@@ -18,7 +18,7 @@ export async function onRequest(context) {
     const agentIds = Array.isArray(body.agentIds) ? body.agentIds.filter(Boolean).map(String) : [];
     const groupIds = Array.isArray(body.groupIds) ? body.groupIds.filter(Boolean).map(String) : [];
     const mode = body.mode === "remove" ? "remove" : "assign";
-    const priority = body.priority === "first" ? "first" : "normal";
+    const priority = body.priority === "last" ? "last" : body.priority === "first" ? "first" : "normal";
 
     if (!agentIds.length || !groupIds.length) {
       return errorResponse("Select at least one agent and one group.", 400);
@@ -43,7 +43,9 @@ export async function onRequest(context) {
         "normal",
       ).map((group) => ({
         ...group,
-        priority: nextGroups.get(String(group.id)) === "first" ? "first" : "normal",
+        priority: ["first", "normal", "last", "supervisor"].includes(nextGroups.get(String(group.id)))
+          ? nextGroups.get(String(group.id))
+          : "normal",
       }));
 
       await livechatRequest(context.env, "update_agent", {

@@ -1,18 +1,24 @@
+const APP_URL = "https://lc-admin.pages.dev/";
+
 const state = {
   user: null,
+  section: "livechat-users",
   livechat: { agents: [], groups: [] },
   helpdesk: { agents: [], teams: [] },
+  adminUsers: [],
   logs: [],
   logsWarning: "",
   livechatSearch: "",
   helpdeskSearch: "",
-  livechatBulkGroupSearch: "",
-  helpdeskBulkTeamSearch: "",
-  modal: null,
+  livechatGroupSearch: "",
+  helpdeskTeamSearch: "",
+  livechatCreateSearch: "",
+  helpdeskCreateSearch: "",
+  modalOpen: false,
   modalType: null,
-  modalAgentId: null,
-  modalSearch: "",
   modalAgent: null,
+  modalSearch: "",
+  generatedAdminPassword: "",
 };
 
 const loginView = document.getElementById("loginView");
@@ -21,9 +27,9 @@ const loginForm = document.getElementById("loginForm");
 const loginMessage = document.getElementById("loginMessage");
 const statusMessage = document.getElementById("statusMessage");
 const sessionBadge = document.getElementById("sessionBadge");
-const livechatContent = document.getElementById("livechatContent");
-const helpdeskContent = document.getElementById("helpdeskContent");
-const logsContent = document.getElementById("logsContent");
+const pageTitle = document.getElementById("pageTitle");
+const appContent = document.getElementById("appContent");
+const modalRoot = document.getElementById("modalRoot");
 const refreshBtn = document.getElementById("refreshBtn");
 const logoutBtn = document.getElementById("logoutBtn");
 
@@ -61,7 +67,6 @@ function showApp() {
 function showLogin() {
   appView.classList.add("d-none");
   loginView.classList.remove("d-none");
-  sessionBadge.textContent = "";
 }
 
 function escapeHtml(value) {
@@ -81,12 +86,27 @@ function ensureSelection(values, label) {
   }
 }
 
+function generatePassword(length = 14) {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
+  const bytes = crypto.getRandomValues(new Uint8Array(length));
+  return Array.from(bytes, (value) => alphabet[value % alphabet.length]).join("");
+}
+
 function priorityLabel(priority) {
-  return priority === "first" ? "Primary" : "Last";
+  if (priority === "first") {
+    return "First";
+  }
+  if (priority === "last") {
+    return "Last";
+  }
+  if (priority === "supervisor") {
+    return "Supervisor";
+  }
+  return "Primary";
 }
 
 function chipTone(priority) {
-  return priority === "first" ? "primary" : "last";
+  return priority === "last" ? "last" : "primary";
 }
 
 function renderGroupChips(groups) {
@@ -94,20 +114,12 @@ function renderGroupChips(groups) {
     return '<span class="subtle">No groups</span>';
   }
 
-  return `
-    <div class="chip-list">
-      ${groups
-        .map(
-          (group) => `
-            <span class="chip ${chipTone(group.priority)}">
-              ${escapeHtml(group.name)}
-              <span>${priorityLabel(group.priority)}</span>
-            </span>
-          `,
-        )
-        .join("")}
-    </div>
-  `;
+  return `<div class="chip-list">${groups
+    .map(
+      (group) =>
+        `<span class="chip ${chipTone(group.priority)}">${escapeHtml(group.name)} <span>${priorityLabel(group.priority)}</span></span>`,
+    )
+    .join("")}</div>`;
 }
 
 function renderTeamChips(teams) {
@@ -115,27 +127,9 @@ function renderTeamChips(teams) {
     return '<span class="subtle">No teams</span>';
   }
 
-  return `
-    <div class="chip-list">
-      ${teams
-        .map(
-          (team) => `
-            <span class="chip">${escapeHtml(team.name)}</span>
-          `,
-        )
-        .join("")}
-    </div>
-  `;
-}
-
-function toggleCheckboxes(name, checked) {
-  document.querySelectorAll(`input[name="${name}"]`).forEach((input) => {
-    input.checked = checked;
-  });
-}
-
-function visibleCheckboxes(name) {
-  return Array.from(document.querySelectorAll(`input[name="${name}"]`));
+  return `<div class="chip-list">${teams
+    .map((team) => `<span class="chip">${escapeHtml(team.name)}</span>`)
+    .join("")}</div>`;
 }
 
 function filteredLiveChatAgents() {
@@ -157,245 +151,412 @@ function filteredHelpDeskAgents() {
   }
 
   return state.helpdesk.agents.filter((agent) => {
-    const teamText = agent.teams.map((team) => team.name).join(" ");
-    return `${agent.email} ${teamText}`.toLowerCase().includes(search);
+    const teamsText = agent.teams.map((team) => team.name).join(" ");
+    return `${agent.email} ${teamsText}`.toLowerCase().includes(search);
   });
 }
 
-function filteredLiveChatGroups() {
-  const search = state.livechatBulkGroupSearch.trim().toLowerCase();
-  if (!search) {
-    return state.livechat.groups;
+function filterByName(items, search) {
+  const normalized = search.trim().toLowerCase();
+  if (!normalized) {
+    return items;
   }
-
-  return state.livechat.groups.filter((group) => group.name.toLowerCase().includes(search));
+  return items.filter((item) => item.name.toLowerCase().includes(normalized));
 }
 
-function filteredHelpDeskTeams() {
-  const search = state.helpdeskBulkTeamSearch.trim().toLowerCase();
-  if (!search) {
-    return state.helpdesk.teams;
-  }
-
-  return state.helpdesk.teams.filter((team) => team.name.toLowerCase().includes(search));
-}
-
-function renderLiveChatBulkEditor() {
-  const groups = filteredLiveChatGroups();
-
+function renderStats(cards) {
   return `
-    <div class="panel">
-      <div class="section-title">Change groups</div>
-      <div class="toolbar-grid">
-        <input id="livechatBulkGroupSearchInput" class="form-control" type="search" placeholder="Search groups" value="${escapeHtml(state.livechatBulkGroupSearch)}" />
-        <button id="livechatSelectAllAgentsBtn" class="btn btn-outline-secondary" type="button">Select all agents</button>
-        <button id="livechatClearAgentsBtn" class="btn btn-outline-secondary" type="button">Clear agents</button>
-        <select id="livechat-bulk-priority" class="form-select">
-          <option value="first">Primary</option>
-          <option value="normal" selected>Last</option>
-        </select>
+    <div class="stats-grid">
+      ${cards
+        .map(
+          (card) => `
+            <div class="stats-card">
+              <div class="stats-label">${card.label}</div>
+              <div class="stats-value">${card.value}</div>
+              <div class="subtle mt-1">${card.meta}</div>
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderBulkEditor({ title, searchId, searchValue, searchPlaceholder, items, checkboxName, selectAllId, clearId, primaryActionId, primaryLabel, secondaryActionId, secondaryLabel, extraControl = "" }) {
+  return `
+    <div class="editor-shell">
+      <div class="section-title">${title}</div>
+      <div class="toolbar-row">
+        <input id="${searchId}" class="form-control" type="search" placeholder="${searchPlaceholder}" value="${escapeHtml(searchValue)}" />
+        <button id="${selectAllId}" class="btn btn-outline-secondary" type="button">Select all shown</button>
+        <button id="${clearId}" class="btn btn-outline-secondary" type="button">Clear shown</button>
+        ${extraControl}
       </div>
-      <div class="detail-actions mt-2">
-        <button id="livechatSelectAllGroupsBtn" class="btn btn-outline-secondary" type="button">Select all groups</button>
-        <button id="livechatClearGroupsBtn" class="btn btn-outline-secondary" type="button">Clear groups</button>
-        <button id="livechatAssignBtn" class="btn btn-primary" type="button">Add groups</button>
-        <button id="livechatRemoveBtn" class="btn btn-outline-secondary" type="button">Remove groups</button>
+      <div class="action-row">
+        <button id="${primaryActionId}" class="btn btn-primary" type="button">${primaryLabel}</button>
+        <button id="${secondaryActionId}" class="btn btn-outline-secondary" type="button">${secondaryLabel}</button>
       </div>
       <div class="checkbox-grid">
         ${
-          groups.length
-            ? groups
+          items.length
+            ? items
                 .map(
-                  (group) => `
+                  (item) => `
                     <label class="check-pill">
-                      <input type="checkbox" name="livechat-group" value="${group.id}" />
-                      <span>${escapeHtml(group.name)}</span>
+                      <input type="checkbox" name="${checkboxName}" value="${item.id}" />
+                      <span>${escapeHtml(item.name)}</span>
                     </label>
                   `,
                 )
                 .join("")
-            : '<div class="empty-state">No groups match the search.</div>'
+            : '<div class="empty-state">Nothing matches the current search.</div>'
         }
       </div>
     </div>
   `;
 }
 
-function renderHelpDeskBulkEditor() {
-  const teams = filteredHelpDeskTeams();
-
-  return `
-    <div class="panel">
-      <div class="section-title">Change teams</div>
-      <div class="toolbar-grid">
-        <input id="helpdeskBulkTeamSearchInput" class="form-control" type="search" placeholder="Search teams" value="${escapeHtml(state.helpdeskBulkTeamSearch)}" />
-        <button id="helpdeskSelectAllAgentsBtn" class="btn btn-outline-secondary" type="button">Select all agents</button>
-        <button id="helpdeskClearAgentsBtn" class="btn btn-outline-secondary" type="button">Clear agents</button>
-        <div class="subtle d-flex align-items-center px-2">${teams.length} teams</div>
-      </div>
-      <div class="detail-actions mt-2">
-        <button id="helpdeskSelectAllTeamsBtn" class="btn btn-outline-secondary" type="button">Select all teams</button>
-        <button id="helpdeskClearTeamsBtn" class="btn btn-outline-secondary" type="button">Clear teams</button>
-        <button id="helpdeskAssignBtn" class="btn btn-primary" type="button">Add teams</button>
-        <button id="helpdeskRemoveBtn" class="btn btn-outline-secondary" type="button">Remove teams</button>
-      </div>
-      <div class="checkbox-grid">
-        ${
-          teams.length
-            ? teams
-                .map(
-                  (team) => `
-                    <label class="check-pill">
-                      <input type="checkbox" name="helpdesk-team" value="${team.id}" />
-                      <span>${escapeHtml(team.name)}</span>
-                    </label>
-                  `,
-                )
-                .join("")
-            : '<div class="empty-state">No teams match the search.</div>'
-        }
-      </div>
-    </div>
-  `;
-}
-
-function renderLiveChatTable() {
+function renderLiveChatUsers() {
   const agents = filteredLiveChatAgents();
-  if (!agents.length) {
-    return `
-      <div class="table-wrap">
-        <div class="empty-state">
-          No LiveChat agents returned. This usually means the Text credentials do not have access to read all agents, or the credentials point to a different account.
+  const groups = filterByName(state.livechat.groups, state.livechatGroupSearch);
+
+  return `
+    ${renderStats([
+      { label: "Agents", value: state.livechat.agents.length, meta: "LiveChat users" },
+      { label: "Groups", value: state.livechat.groups.length, meta: "Available groups" },
+      { label: "Selected", value: selectedValues("livechat-agent").length, meta: "Ready for bulk change" },
+      { label: "Suspended", value: state.livechat.agents.filter((agent) => agent.suspended).length, meta: "Inactive users" },
+    ])}
+    <div class="section-grid">
+      <div class="card-shell">
+        <div class="section-title">Bulk change</div>
+        <div class="toolbar-row">
+          <button id="livechatSelectAllAgentsBtn" class="btn btn-outline-secondary" type="button">Select all agents</button>
+          <button id="livechatClearAgentsBtn" class="btn btn-outline-secondary" type="button">Clear agents</button>
+          <select id="livechatBulkPriority" class="form-select">
+            <option value="normal" selected>Primary</option>
+            <option value="last">Last</option>
+          </select>
+          <div class="subtle d-flex align-items-center px-2">${selectedValues("livechat-agent").length} selected</div>
         </div>
+        ${renderBulkEditor({
+          title: "Groups",
+          searchId: "livechatGroupSearchInput",
+          searchValue: state.livechatGroupSearch,
+          searchPlaceholder: "Search groups",
+          items: groups,
+          checkboxName: "livechat-group",
+          selectAllId: "livechatSelectAllGroupsBtn",
+          clearId: "livechatClearGroupsBtn",
+          primaryActionId: "livechatAssignBtn",
+          primaryLabel: "Add groups",
+          secondaryActionId: "livechatRemoveBtn",
+          secondaryLabel: "Remove groups",
+        })}
       </div>
-    `;
-  }
-
-  return `
-    <div class="table-wrap">
-      <div class="toolbar-grid mb-2">
-        <input id="livechatSearchInput" class="form-control" type="search" placeholder="Search LiveChat agents" value="${escapeHtml(state.livechatSearch)}" />
-        <button id="livechatToolbarSelectAllBtn" class="btn btn-outline-secondary" type="button">Select all</button>
-        <button id="livechatToolbarClearBtn" class="btn btn-outline-secondary" type="button">Clear</button>
-        <div class="subtle d-flex align-items-center px-2">${agents.length} agents</div>
-      </div>
-      <div class="table-responsive">
-        <table class="table admin-table">
-          <thead>
-            <tr>
-              <th style="width:36px;"></th>
-              <th>Email</th>
-              <th>Groups</th>
-              <th>Status</th>
-              <th style="width:132px;"></th>
-            </tr>
-          </thead>
-          <tbody>
-            ${agents
-              .map(
-                (agent) => `
-                  <tr>
-                    <td><input type="checkbox" class="form-check-input" name="livechat-agent" value="${agent.id}" /></td>
-                    <td>${escapeHtml(agent.email)}</td>
-                    <td>${renderGroupChips(agent.groups)}</td>
-                    <td>${agent.suspended ? '<span class="chip last">Suspended</span>' : '<span class="chip primary">Active</span>'}</td>
-                    <td class="text-end">
-                      <div class="agent-open">
-                        <button class="btn btn-sm btn-outline-secondary" type="button" data-open-livechat-agent="${agent.id}">Open</button>
-                        <button class="btn btn-sm btn-outline-danger" type="button" data-livechat-suspend="${agent.id}">Deactivate</button>
-                      </div>
-                    </td>
-                  </tr>
-                `,
-              )
-              .join("")}
-          </tbody>
-        </table>
+      <div class="table-shell">
+        <div class="toolbar-row">
+          <input id="livechatSearchInput" class="form-control" type="search" placeholder="Search LiveChat users" value="${escapeHtml(state.livechatSearch)}" />
+          <button id="livechatSelectVisibleBtn" class="btn btn-outline-secondary" type="button">Select visible</button>
+          <button id="livechatClearVisibleBtn" class="btn btn-outline-secondary" type="button">Clear visible</button>
+          <div class="subtle d-flex align-items-center px-2">${agents.length} results</div>
+        </div>
+        ${
+          agents.length
+            ? `
+              <div class="table-responsive">
+                <table class="table admin-table">
+                  <thead>
+                    <tr>
+                      <th style="width:36px;"></th>
+                      <th>Email</th>
+                      <th>Groups</th>
+                      <th>Status</th>
+                      <th style="width:132px;"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${agents
+                      .map(
+                        (agent) => `
+                          <tr>
+                            <td><input type="checkbox" class="form-check-input" name="livechat-agent" value="${agent.id}" /></td>
+                            <td>${escapeHtml(agent.email)}</td>
+                            <td>${renderGroupChips(agent.groups)}</td>
+                            <td>${agent.suspended ? '<span class="chip last">Suspended</span>' : '<span class="chip primary">Active</span>'}</td>
+                            <td class="text-end">
+                              <div class="d-flex gap-2 justify-content-end">
+                                <button class="btn btn-sm btn-outline-secondary" type="button" data-open-livechat="${agent.id}">Open</button>
+                                <button class="btn btn-sm btn-outline-danger" type="button" data-livechat-suspend="${agent.id}">Deactivate</button>
+                              </div>
+                            </td>
+                          </tr>
+                        `,
+                      )
+                      .join("")}
+                  </tbody>
+                </table>
+              </div>
+            `
+            : '<div class="empty-state">No LiveChat users returned. This usually means the Text token does not have permission to read users or belongs to a different account.</div>'
+        }
       </div>
     </div>
   `;
 }
 
-function renderHelpDeskTable() {
+function renderHelpDeskUsers() {
   const agents = filteredHelpDeskAgents();
-  if (!agents.length) {
-    return `
-      <div class="table-wrap">
-        <div class="empty-state">No HelpDesk agents returned.</div>
-      </div>
-    `;
-  }
+  const teams = filterByName(state.helpdesk.teams, state.helpdeskTeamSearch);
 
   return `
-    <div class="table-wrap">
-      <div class="toolbar-grid mb-2">
-        <input id="helpdeskSearchInput" class="form-control" type="search" placeholder="Search HelpDesk agents" value="${escapeHtml(state.helpdeskSearch)}" />
-        <button id="helpdeskToolbarSelectAllBtn" class="btn btn-outline-secondary" type="button">Select all</button>
-        <button id="helpdeskToolbarClearBtn" class="btn btn-outline-secondary" type="button">Clear</button>
-        <div class="subtle d-flex align-items-center px-2">${agents.length} agents</div>
+    ${renderStats([
+      { label: "Agents", value: state.helpdesk.agents.length, meta: "HelpDesk users" },
+      { label: "Groups", value: state.helpdesk.teams.length, meta: "Available groups" },
+      { label: "Selected", value: selectedValues("helpdesk-agent").length, meta: "Ready for bulk change" },
+      { label: "Invited", value: state.helpdesk.agents.filter((agent) => agent.status === "invited").length, meta: "Pending access" },
+    ])}
+    <div class="section-grid">
+      <div class="card-shell">
+        <div class="section-title">Bulk change</div>
+        <div class="toolbar-row">
+          <button id="helpdeskSelectAllAgentsBtn" class="btn btn-outline-secondary" type="button">Select all agents</button>
+          <button id="helpdeskClearAgentsBtn" class="btn btn-outline-secondary" type="button">Clear agents</button>
+          <div class="subtle d-flex align-items-center px-2">${selectedValues("helpdesk-agent").length} selected</div>
+          <div></div>
+        </div>
+        ${renderBulkEditor({
+          title: "Groups",
+          searchId: "helpdeskTeamSearchInput",
+          searchValue: state.helpdeskTeamSearch,
+          searchPlaceholder: "Search groups",
+          items: teams,
+          checkboxName: "helpdesk-team",
+          selectAllId: "helpdeskSelectAllTeamsBtn",
+          clearId: "helpdeskClearTeamsBtn",
+          primaryActionId: "helpdeskAssignBtn",
+          primaryLabel: "Add groups",
+          secondaryActionId: "helpdeskRemoveBtn",
+          secondaryLabel: "Remove groups",
+        })}
       </div>
-      <div class="table-responsive">
-        <table class="table admin-table">
-          <thead>
-            <tr>
-              <th style="width:36px;"></th>
-              <th>Email</th>
-              <th>Teams count</th>
-              <th>Status</th>
-              <th style="width:132px;"></th>
-            </tr>
-          </thead>
-          <tbody>
-            ${agents
-              .map(
-                (agent) => `
-                  <tr>
-                    <td><input type="checkbox" class="form-check-input" name="helpdesk-agent" value="${agent.id}" /></td>
-                    <td>${escapeHtml(agent.email)}</td>
-                    <td>${agent.teams.length}</td>
-                    <td><span class="chip">${escapeHtml(agent.status)}</span></td>
-                    <td class="text-end">
-                      <div class="agent-open">
-                        <button class="btn btn-sm btn-outline-secondary" type="button" data-open-helpdesk-agent="${agent.id}">Open</button>
-                        <button class="btn btn-sm btn-outline-danger" type="button" data-helpdesk-deactivate="${agent.id}">Deactivate</button>
-                      </div>
-                    </td>
-                  </tr>
-                `,
-              )
-              .join("")}
-          </tbody>
-        </table>
+      <div class="table-shell">
+        <div class="toolbar-row">
+          <input id="helpdeskSearchInput" class="form-control" type="search" placeholder="Search HelpDesk users" value="${escapeHtml(state.helpdeskSearch)}" />
+          <button id="helpdeskSelectVisibleBtn" class="btn btn-outline-secondary" type="button">Select visible</button>
+          <button id="helpdeskClearVisibleBtn" class="btn btn-outline-secondary" type="button">Clear visible</button>
+          <div class="subtle d-flex align-items-center px-2">${agents.length} results</div>
+        </div>
+        ${
+          agents.length
+            ? `
+              <div class="table-responsive">
+                <table class="table admin-table">
+                  <thead>
+                    <tr>
+                      <th style="width:36px;"></th>
+                      <th>Email</th>
+                      <th>Groups count</th>
+                      <th>Status</th>
+                      <th style="width:132px;"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${agents
+                      .map(
+                        (agent) => `
+                          <tr>
+                            <td><input type="checkbox" class="form-check-input" name="helpdesk-agent" value="${agent.id}" /></td>
+                            <td>${escapeHtml(agent.email)}</td>
+                            <td>${agent.teams.length}</td>
+                            <td><span class="chip">${escapeHtml(agent.status)}</span></td>
+                            <td class="text-end">
+                              <div class="d-flex gap-2 justify-content-end">
+                                <button class="btn btn-sm btn-outline-secondary" type="button" data-open-helpdesk="${agent.id}">Open</button>
+                                <button class="btn btn-sm btn-outline-danger" type="button" data-helpdesk-deactivate="${agent.id}">Deactivate</button>
+                              </div>
+                            </td>
+                          </tr>
+                        `,
+                      )
+                      .join("")}
+                  </tbody>
+                </table>
+              </div>
+            `
+            : '<div class="empty-state">No HelpDesk users returned.</div>'
+        }
       </div>
     </div>
   `;
 }
 
-function renderLiveChatView() {
-  livechatContent.innerHTML = `${renderLiveChatBulkEditor()}${renderLiveChatTable()}`;
+function renderGroupList(title, items) {
+  return `
+    ${renderStats([
+      { label: title, value: items.length, meta: "Configured entries" },
+      { label: "Selected", value: items.length, meta: "Visible in directory" },
+      { label: "Active", value: items.length, meta: "Available for assignment" },
+      { label: "Scope", value: title.includes("LiveChat") ? "LC" : "HD", meta: "Product" },
+    ])}
+    <div class="table-shell">
+      ${
+        items.length
+          ? `<div class="table-responsive">
+              <table class="table admin-table">
+                <thead><tr><th>ID</th><th>Name</th></tr></thead>
+                <tbody>${items.map((item) => `<tr><td>${escapeHtml(item.id)}</td><td>${escapeHtml(item.name)}</td></tr>`).join("")}</tbody>
+              </table>
+            </div>`
+          : '<div class="empty-state">Nothing returned.</div>'
+      }
+    </div>
+  `;
 }
 
-function renderHelpDeskView() {
-  helpdeskContent.innerHTML = `${renderHelpDeskBulkEditor()}${renderHelpDeskTable()}`;
+function renderCreateUserForm(type) {
+  const isLiveChat = type === "livechat";
+  const items = isLiveChat
+    ? filterByName(state.livechat.groups, state.livechatCreateSearch)
+    : filterByName(state.helpdesk.teams, state.helpdeskCreateSearch);
+  const searchValue = isLiveChat ? state.livechatCreateSearch : state.helpdeskCreateSearch;
+  const checkboxName = isLiveChat ? "create-livechat-group" : "create-helpdesk-team";
+
+  return `
+    ${renderStats([
+      { label: "Available groups", value: items.length, meta: isLiveChat ? "LiveChat groups" : "HelpDesk groups" },
+      { label: "All groups", value: isLiveChat ? state.livechat.groups.length : state.helpdesk.teams.length, meta: "Directory total" },
+      { label: "Product", value: isLiveChat ? "LC" : "HD", meta: "Target" },
+      { label: "Mode", value: "Create", meta: "New user" },
+    ])}
+    <div class="section-grid">
+      <div class="card-shell">
+        <div class="section-title">${isLiveChat ? "Create LiveChat user" : "Create HelpDesk user"}</div>
+        <form id="${isLiveChat ? "createLiveChatForm" : "createHelpDeskForm"}" class="row g-2">
+          <div class="col-12">
+            <input id="${isLiveChat ? "createLiveChatName" : "createHelpDeskName"}" class="form-control" type="text" placeholder="Full name" />
+          </div>
+          <div class="col-12">
+            <input id="${isLiveChat ? "createLiveChatEmail" : "createHelpDeskEmail"}" class="form-control" type="email" placeholder="Email" required />
+          </div>
+          ${
+            isLiveChat
+              ? `<div class="col-12">
+                  <select id="createLiveChatPriority" class="form-select">
+                    <option value="first">Primary</option>
+                    <option value="normal" selected>Last</option>
+                  </select>
+                </div>`
+              : ""
+          }
+          <div class="col-12 d-grid">
+            <button type="submit" class="btn btn-primary">${isLiveChat ? "Create LiveChat user" : "Create HelpDesk user"}</button>
+          </div>
+        </form>
+      </div>
+      <div class="editor-shell">
+        ${renderBulkEditor({
+          title: "Assign groups",
+          searchId: isLiveChat ? "livechatCreateSearchInput" : "helpdeskCreateSearchInput",
+          searchValue,
+          searchPlaceholder: "Search groups",
+          items,
+          checkboxName,
+          selectAllId: isLiveChat ? "livechatCreateSelectAllBtn" : "helpdeskCreateSelectAllBtn",
+          clearId: isLiveChat ? "livechatCreateClearBtn" : "helpdeskCreateClearBtn",
+          primaryActionId: `${type}CreateInfoBtn`,
+          primaryLabel: "Review selection",
+          secondaryActionId: `${type}CreateResetBtn`,
+          secondaryLabel: "Clear selection",
+        })}
+      </div>
+    </div>
+  `;
+}
+
+function renderAdminUsers() {
+  const credentialsText = state.generatedAdminPassword
+    ? `App: ${APP_URL}\nUsername: ${document.getElementById("adminUsername")?.value || ""}\nPassword: ${state.generatedAdminPassword}`
+    : "";
+
+  return `
+    ${renderStats([
+      { label: "Admin users", value: state.adminUsers.length, meta: "App login accounts" },
+      { label: "Logs", value: state.logs.length, meta: "Recent actions loaded" },
+      { label: "App URL", value: "LC", meta: APP_URL },
+      { label: "Mode", value: "D1", meta: "Managed in database" },
+    ])}
+    <div class="section-grid">
+      <div class="card-shell">
+        <div class="section-title">Create admin user</div>
+        <form id="createAdminUserForm" class="row g-2">
+          <div class="col-12">
+            <input id="adminUsername" class="form-control" type="text" placeholder="Username" required />
+          </div>
+          <div class="col-12">
+            <input id="adminPassword" class="form-control" type="text" placeholder="Password" required value="${escapeHtml(state.generatedAdminPassword)}" />
+          </div>
+          <div class="col-12 d-flex gap-2 flex-wrap">
+            <button type="button" id="generateAdminPasswordBtn" class="btn btn-outline-secondary">Generate password</button>
+            <button type="button" id="copyAdminCredentialsBtn" class="btn btn-outline-secondary">Copy credentials</button>
+          </div>
+          <div class="col-12 d-grid">
+            <button type="submit" class="btn btn-primary">Create admin</button>
+          </div>
+        </form>
+        <div class="credentials-box mt-3">${escapeHtml(credentialsText || "Generated credentials will appear here for quick copy.")}</div>
+      </div>
+      <div class="table-shell">
+        ${
+          state.adminUsers.length
+            ? `<div class="table-responsive">
+                <table class="table admin-table">
+                  <thead><tr><th>Username</th><th>Created at</th><th>Created by</th></tr></thead>
+                  <tbody>
+                    ${state.adminUsers
+                      .map(
+                        (user) => `
+                          <tr>
+                            <td>${escapeHtml(user.username)}</td>
+                            <td>${new Date(user.created_at).toLocaleString()}</td>
+                            <td>${escapeHtml(user.created_by || "-")}</td>
+                          </tr>
+                        `,
+                      )
+                      .join("")}
+                  </tbody>
+                </table>
+              </div>`
+            : '<div class="empty-state">No admin users created in D1 yet. You can still log in with the secret-based fallback admin.</div>'
+        }
+      </div>
+    </div>
+  `;
 }
 
 function renderLogs() {
-  logsContent.innerHTML = `
-    <div class="log-card">
+  return `
+    ${renderStats([
+      { label: "Rows", value: state.logs.length, meta: "Loaded from D1" },
+      { label: "Status", value: state.logsWarning ? "Warn" : "OK", meta: state.logsWarning || "Logs available" },
+      { label: "Area", value: "Audit", meta: "Latest events" },
+      { label: "Mode", value: "Read", meta: "Newest first" },
+    ])}
+    <div class="table-shell">
       ${
         state.logs.length
           ? state.logs
               .map(
                 (entry) => `
-                  <div class="log-item">
-                    <div class="log-meta">
+                  <div class="card-shell mb-2">
+                    <div class="chip-list mb-2">
                       <span class="chip">${escapeHtml(entry.area)}</span>
                       <span class="chip">${escapeHtml(entry.action)}</span>
                       <span class="chip">${escapeHtml(entry.status)}</span>
                       <span class="chip">${new Date(entry.created_at).toLocaleString()}</span>
                     </div>
                     <div>${escapeHtml(entry.target || "")}</div>
-                    <div class="subtle">${escapeHtml(entry.details || "")}</div>
+                    <div class="subtle mt-1">${escapeHtml(entry.details || "")}</div>
                   </div>
                 `,
               )
@@ -406,176 +567,132 @@ function renderLogs() {
   `;
 }
 
-function ensureModal() {
-  if (state.modal) {
-    return state.modal;
+function currentSectionTitle() {
+  const titles = {
+    "livechat-users": "LiveChat Users",
+    "livechat-groups": "LiveChat Groups",
+    "create-livechat-user": "Create LiveChat User",
+    "helpdesk-users": "HelpDesk Users",
+    "helpdesk-groups": "HelpDesk Groups",
+    "create-helpdesk-user": "Create HelpDesk User",
+    "admin-users": "Admin Users",
+    logs: "Logs",
+  };
+  return titles[state.section] || "LC Admin";
+}
+
+function renderModal() {
+  if (!state.modalOpen || !state.modalAgent) {
+    modalRoot.innerHTML = "";
+    return;
   }
 
-  const wrapper = document.createElement("div");
-  wrapper.innerHTML = `
-    <div class="modal fade" id="agentProfileModal" tabindex="-1" aria-hidden="true">
-      <div class="modal-dialog modal-lg modal-dialog-scrollable">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title" id="agentProfileModalTitle">Profile</h5>
-            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+  const isLiveChat = state.modalType === "livechat";
+  const allItems = isLiveChat ? state.livechat.groups : state.helpdesk.teams;
+  const filteredItems = filterByName(allItems, state.modalSearch);
+  const selectedMap = isLiveChat
+    ? new Map(state.modalAgent.groups.map((group) => [String(group.id), group.priority]))
+    : new Set(state.modalAgent.teams.map((team) => String(team.id)));
+
+  modalRoot.innerHTML = `
+    <div class="modal-overlay">
+      <div class="modal-card">
+        <div class="modal-head">
+          <div>
+            <div class="modal-title">${escapeHtml(state.modalAgent.email)}</div>
+            <div class="subtle">${isLiveChat ? "LiveChat profile" : "HelpDesk profile"}</div>
           </div>
-          <div class="modal-body" id="agentProfileModalBody"></div>
+          <button id="closeModalBtn" class="btn btn-sm btn-outline-secondary" type="button">Close</button>
+        </div>
+        <div class="modal-layout">
+          <div class="editor-shell">
+            <div class="section-title">Change memberships</div>
+            <div class="toolbar-row">
+              <input id="modalSearchInput" class="form-control" type="search" placeholder="Search ${isLiveChat ? "groups" : "groups"}" value="${escapeHtml(state.modalSearch)}" />
+              <button id="modalSelectAllBtn" class="btn btn-outline-secondary" type="button">Select all shown</button>
+              <button id="modalClearBtn" class="btn btn-outline-secondary" type="button">Clear shown</button>
+              <div class="subtle d-flex align-items-center px-2">${filteredItems.length} shown</div>
+            </div>
+            <div class="checkbox-grid">
+              ${
+                filteredItems.length
+                  ? filteredItems
+                      .map((item) => {
+                        const checked = isLiveChat
+                          ? selectedMap.has(String(item.id))
+                          : selectedMap.has(String(item.id));
+                        const priority = isLiveChat
+                          ? selectedMap.get(String(item.id)) || "normal"
+                          : "";
+
+                        return `
+                          <label class="check-pill">
+                            <input type="checkbox" name="${isLiveChat ? "modal-livechat-group" : "modal-helpdesk-team"}" value="${item.id}" ${checked ? "checked" : ""} />
+                            <span>${escapeHtml(item.name)}</span>
+                            ${
+                              isLiveChat
+                                ? `<select class="form-select form-select-sm modal-priority-select" data-group-priority="${item.id}">
+                                    <option value="normal" ${priority !== "last" ? "selected" : ""}>Primary</option>
+                                    <option value="last" ${priority === "last" ? "selected" : ""}>Last</option>
+                                  </select>`
+                                : ""
+                            }
+                          </label>
+                        `;
+                      })
+                      .join("")
+                  : '<div class="empty-state">Nothing matches the current search.</div>'
+              }
+            </div>
+            <div class="action-row mt-3">
+              <button id="saveModalBtn" class="btn btn-primary" type="button">Save</button>
+            </div>
+          </div>
+          <div class="card-shell">
+            <div class="section-title">Current memberships</div>
+            ${isLiveChat ? renderGroupChips(state.modalAgent.groups) : renderTeamChips(state.modalAgent.teams)}
+          </div>
         </div>
       </div>
     </div>
   `;
-  document.body.appendChild(wrapper.firstElementChild);
-  const BootstrapModal = window.bootstrap?.Modal;
-  if (!BootstrapModal) {
-    throw new Error("Bootstrap modal is not available.");
-  }
-  state.modal = new BootstrapModal(document.getElementById("agentProfileModal"));
-  return state.modal;
 }
 
-function getModalAgent() {
-  if (state.modalAgent) {
-    return state.modalAgent;
-  }
-  if (state.modalType === "livechat") {
-    return state.livechat.agents.find((agent) => agent.id === state.modalAgentId) || null;
-  }
-  if (state.modalType === "helpdesk") {
-    return state.helpdesk.agents.find((agent) => agent.id === state.modalAgentId) || null;
-  }
-  return null;
-}
+function renderApp() {
+  pageTitle.textContent = currentSectionTitle();
+  document.querySelectorAll(".sidebar-link").forEach((button) => {
+    button.classList.toggle("active", button.dataset.section === state.section);
+  });
 
-function getModalItems() {
-  const search = state.modalSearch.trim().toLowerCase();
-  const source = state.modalType === "livechat" ? state.livechat.groups : state.helpdesk.teams;
-  if (!search) {
-    return source;
-  }
-  return source.filter((item) => item.name.toLowerCase().includes(search));
-}
-
-function renderModalContent() {
-  const title = document.getElementById("agentProfileModalTitle");
-  const body = document.getElementById("agentProfileModalBody");
-  const agent = getModalAgent();
-  const items = getModalItems();
-
-  if (!agent) {
-    title.textContent = "Profile";
-    body.innerHTML = '<div class="empty-state">Agent not found.</div>';
-    return;
-  }
-
-  if (state.modalType === "livechat") {
-    const selectedMap = new Map(agent.groups.map((group) => [String(group.id), group.priority]));
-    title.textContent = agent.email;
-    body.innerHTML = `
-      <div class="panel">
-        <div class="section-title">Current groups</div>
-        ${renderGroupChips(agent.groups)}
-      </div>
-      <div class="panel mt-2">
-        <div class="toolbar-grid">
-          <input id="modalSearchInput" class="form-control" type="search" placeholder="Search groups" value="${escapeHtml(state.modalSearch)}" />
-          <button id="modalSelectAllBtn" class="btn btn-outline-secondary" type="button">Select all shown</button>
-          <button id="modalClearBtn" class="btn btn-outline-secondary" type="button">Clear shown</button>
-          <select id="modalPrioritySelect" class="form-select">
-            <option value="first">Primary</option>
-            <option value="normal" selected>Last</option>
-          </select>
-        </div>
-        <div class="checkbox-grid mt-2">
-          ${items
-            .map(
-              (group) => `
-                <label class="check-pill">
-                  <input type="checkbox" name="modal-livechat-group" value="${group.id}" ${selectedMap.has(String(group.id)) ? "checked" : ""} />
-                  <span>${escapeHtml(group.name)}</span>
-                </label>
-              `,
-            )
-            .join("")}
-        </div>
-        <div class="detail-actions">
-          <button id="saveLiveChatProfileBtn" class="btn btn-primary" type="button">Save groups</button>
-        </div>
-      </div>
-    `;
+  if (state.section === "livechat-users") {
+    appContent.innerHTML = renderLiveChatUsers();
+  } else if (state.section === "livechat-groups") {
+    appContent.innerHTML = renderGroupList("LiveChat Groups", state.livechat.groups);
+  } else if (state.section === "create-livechat-user") {
+    appContent.innerHTML = renderCreateUserForm("livechat");
+  } else if (state.section === "helpdesk-users") {
+    appContent.innerHTML = renderHelpDeskUsers();
+  } else if (state.section === "helpdesk-groups") {
+    appContent.innerHTML = renderGroupList("HelpDesk Groups", state.helpdesk.teams);
+  } else if (state.section === "create-helpdesk-user") {
+    appContent.innerHTML = renderCreateUserForm("helpdesk");
+  } else if (state.section === "admin-users") {
+    appContent.innerHTML = renderAdminUsers();
   } else {
-    const selected = new Set(agent.teams.map((team) => String(team.id)));
-    title.textContent = agent.email;
-    body.innerHTML = `
-      <div class="panel">
-        <div class="section-title">Current teams</div>
-        ${renderTeamChips(agent.teams)}
-      </div>
-      <div class="panel mt-2">
-        <div class="toolbar-grid">
-          <input id="modalSearchInput" class="form-control" type="search" placeholder="Search teams" value="${escapeHtml(state.modalSearch)}" />
-          <button id="modalSelectAllBtn" class="btn btn-outline-secondary" type="button">Select all shown</button>
-          <button id="modalClearBtn" class="btn btn-outline-secondary" type="button">Clear shown</button>
-          <div class="subtle d-flex align-items-center px-2">${items.length} teams</div>
-        </div>
-        <div class="checkbox-grid mt-2">
-          ${items
-            .map(
-              (team) => `
-                <label class="check-pill">
-                  <input type="checkbox" name="modal-helpdesk-team" value="${team.id}" ${selected.has(String(team.id)) ? "checked" : ""} />
-                  <span>${escapeHtml(team.name)}</span>
-                </label>
-              `,
-            )
-            .join("")}
-        </div>
-        <div class="detail-actions">
-          <button id="saveHelpDeskProfileBtn" class="btn btn-primary" type="button">Save teams</button>
-        </div>
-      </div>
-    `;
+    appContent.innerHTML = renderLogs();
   }
 
-  bindModalActions();
-}
-
-function openAgentModal(type, agentId) {
-  state.modalType = type;
-  state.modalAgentId = agentId;
-  state.modalSearch = "";
-  state.modalAgent = null;
-  ensureModal();
-
-  if (type === "livechat") {
-    api(`/api/livechat/agent?id=${encodeURIComponent(agentId)}`)
-      .then((result) => {
-        state.modalAgent = result.agent;
-        renderModalContent();
-        state.modal.show();
-      })
-      .catch((error) => {
-        setMessage(statusMessage, error.message, "error");
-      });
-    return;
-  }
-
-  renderModalContent();
-  state.modal.show();
-}
-
-function renderAll() {
-  renderLiveChatView();
-  renderHelpDeskView();
-  renderLogs();
-  bindDynamicActions();
+  renderModal();
+  bindAppEvents();
 }
 
 async function refreshData() {
   setMessage(statusMessage, "Refreshing...");
-  const [livechatResult, helpdeskResult, logsResult] = await Promise.allSettled([
+
+  const [livechatResult, helpdeskResult, adminUsersResult, logsResult] = await Promise.allSettled([
     api("/api/livechat/dashboard"),
     api("/api/helpdesk/dashboard"),
+    api("/api/admin-users"),
     api("/api/logs"),
   ]);
 
@@ -585,17 +702,18 @@ async function refreshData() {
   if (helpdeskResult.status === "fulfilled") {
     state.helpdesk = helpdeskResult.value;
   }
+  if (adminUsersResult.status === "fulfilled") {
+    state.adminUsers = adminUsersResult.value.adminUsers || [];
+  }
   state.logs = logsResult.status === "fulfilled" ? logsResult.value.logs || [] : [];
-  state.logsWarning =
-    logsResult.status === "fulfilled"
-      ? logsResult.value.warning || ""
-      : "Logs are temporarily unavailable.";
+  state.logsWarning = logsResult.status === "fulfilled" ? logsResult.value.warning || "" : "Logs unavailable.";
 
-  renderAll();
+  renderApp();
 
   const warnings = [
     livechatResult.status !== "fulfilled" ? `LiveChat: ${livechatResult.reason.message}` : "",
     helpdeskResult.status !== "fulfilled" ? `HelpDesk: ${helpdeskResult.reason.message}` : "",
+    adminUsersResult.status !== "fulfilled" ? `Admin users: ${adminUsersResult.reason.message}` : "",
     state.logsWarning,
   ].filter(Boolean);
 
@@ -617,268 +735,424 @@ async function withBusyState(action, successMessage) {
   }
 }
 
-function rerenderSection(section, preserveId) {
-  const scrollY = window.scrollY;
-  const value = preserveId ? document.getElementById(preserveId)?.value || "" : "";
+function openModal(type, agent) {
+  state.modalType = type;
+  state.modalAgent = agent;
+  state.modalSearch = "";
+  state.modalOpen = true;
+  renderModal();
+  bindAppEvents();
+}
 
-  if (section === "livechat") {
-    renderLiveChatView();
-  } else if (section === "helpdesk") {
-    renderHelpDeskView();
+async function openLiveChatModal(agentId) {
+  try {
+    const result = await api(`/api/livechat/agent?id=${encodeURIComponent(agentId)}`);
+    openModal("livechat", result.agent);
+  } catch (error) {
+    setMessage(statusMessage, error.message, "error");
   }
-  bindDynamicActions();
+}
 
-  if (preserveId) {
-    const input = document.getElementById(preserveId);
-    if (input) {
-      input.value = value;
-      input.focus();
-      input.setSelectionRange(value.length, value.length);
+function openHelpDeskModal(agentId) {
+  const agent = state.helpdesk.agents.find((item) => item.id === agentId);
+  if (agent) {
+    openModal("helpdesk", agent);
+  }
+}
+
+function buildModalLiveChatPayload() {
+  const selectedIds = selectedValues("modal-livechat-group");
+  ensureSelection(selectedIds, "group");
+
+  const groupPriorities = selectedIds.map((id) => {
+    const select = document.querySelector(`[data-group-priority="${CSS.escape(id)}"]`);
+    return {
+      id,
+      priority: select?.value === "first" ? "first" : "normal",
+    };
+  });
+
+  return groupPriorities;
+}
+
+function buildCopyCredentialsText(username, password) {
+  return `App: ${APP_URL}\nUsername: ${username}\nPassword: ${password}`;
+}
+
+function bindClick(id, handler) {
+  const element = document.getElementById(id);
+  if (element) {
+    element.onclick = handler;
+  }
+}
+
+function rerenderPreservingInput(inputId) {
+  const input = inputId ? document.getElementById(inputId) : null;
+  const value = input?.value || "";
+  const selectionStart = input?.selectionStart ?? value.length;
+  const selectionEnd = input?.selectionEnd ?? value.length;
+  const scrollY = window.scrollY;
+
+  renderApp();
+
+  if (inputId) {
+    const nextInput = document.getElementById(inputId);
+    if (nextInput) {
+      nextInput.focus();
+      nextInput.value = value;
+      nextInput.setSelectionRange(selectionStart, selectionEnd);
     }
   }
+
   window.scrollTo(0, scrollY);
 }
 
-function bindDynamicActions() {
-  document.getElementById("livechatSearchInput")?.addEventListener("input", (event) => {
-    state.livechatSearch = event.target.value;
-    rerenderSection("livechat", "livechatSearchInput");
-  });
+function syncSelectionsFromLiveChatAgents() {
+  const selectedAgentIds = selectedValues("livechat-agent");
+  const selectedGroupIds = new Set(
+    state.livechat.agents
+      .filter((agent) => selectedAgentIds.includes(agent.id))
+      .flatMap((agent) => agent.groups.map((group) => String(group.id))),
+  );
 
-  document.getElementById("helpdeskSearchInput")?.addEventListener("input", (event) => {
-    state.helpdeskSearch = event.target.value;
-    rerenderSection("helpdesk", "helpdeskSearchInput");
-  });
-
-  document.getElementById("livechatBulkGroupSearchInput")?.addEventListener("input", (event) => {
-    state.livechatBulkGroupSearch = event.target.value;
-    rerenderSection("livechat", "livechatBulkGroupSearchInput");
-  });
-
-  document.getElementById("helpdeskBulkTeamSearchInput")?.addEventListener("input", (event) => {
-    state.helpdeskBulkTeamSearch = event.target.value;
-    rerenderSection("helpdesk", "helpdeskBulkTeamSearchInput");
-  });
-
-  document.getElementById("livechatToolbarSelectAllBtn")?.addEventListener("click", () => toggleCheckboxes("livechat-agent", true));
-  document.getElementById("livechatToolbarClearBtn")?.addEventListener("click", () => toggleCheckboxes("livechat-agent", false));
-  document.getElementById("livechatSelectAllAgentsBtn")?.addEventListener("click", () => toggleCheckboxes("livechat-agent", true));
-  document.getElementById("livechatClearAgentsBtn")?.addEventListener("click", () => toggleCheckboxes("livechat-agent", false));
-  document.getElementById("helpdeskToolbarSelectAllBtn")?.addEventListener("click", () => toggleCheckboxes("helpdesk-agent", true));
-  document.getElementById("helpdeskToolbarClearBtn")?.addEventListener("click", () => toggleCheckboxes("helpdesk-agent", false));
-  document.getElementById("helpdeskSelectAllAgentsBtn")?.addEventListener("click", () => toggleCheckboxes("helpdesk-agent", true));
-  document.getElementById("helpdeskClearAgentsBtn")?.addEventListener("click", () => toggleCheckboxes("helpdesk-agent", false));
-
-  document.getElementById("livechatSelectAllGroupsBtn")?.addEventListener("click", () => {
-    visibleCheckboxes("livechat-group").forEach((input) => {
-      input.checked = true;
-    });
-  });
-  document.getElementById("livechatClearGroupsBtn")?.addEventListener("click", () => {
-    visibleCheckboxes("livechat-group").forEach((input) => {
-      input.checked = false;
-    });
-  });
-  document.getElementById("helpdeskSelectAllTeamsBtn")?.addEventListener("click", () => {
-    visibleCheckboxes("helpdesk-team").forEach((input) => {
-      input.checked = true;
-    });
-  });
-  document.getElementById("helpdeskClearTeamsBtn")?.addEventListener("click", () => {
-    visibleCheckboxes("helpdesk-team").forEach((input) => {
-      input.checked = false;
-    });
-  });
-
-  document.querySelectorAll("[data-open-livechat-agent]").forEach((button) => {
-    button.addEventListener("click", () => openAgentModal("livechat", button.getAttribute("data-open-livechat-agent")));
-  });
-  document.querySelectorAll("[data-open-helpdesk-agent]").forEach((button) => {
-    button.addEventListener("click", () => openAgentModal("helpdesk", button.getAttribute("data-open-helpdesk-agent")));
-  });
-
-  document.querySelectorAll("[data-livechat-suspend]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const agentId = button.getAttribute("data-livechat-suspend");
-      await withBusyState(
-        async () => {
-          await api("/api/livechat/agents/suspend", { method: "POST", body: { agentId } });
-        },
-        `LiveChat agent ${agentId} deactivated.`,
-      );
-    });
-  });
-
-  document.querySelectorAll("[data-helpdesk-deactivate]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const agentId = button.getAttribute("data-helpdesk-deactivate");
-      await withBusyState(
-        async () => {
-          await api("/api/helpdesk/agents/deactivate", { method: "POST", body: { agentId } });
-        },
-        `HelpDesk agent ${agentId} deactivated.`,
-      );
-    });
-  });
-
-  document.getElementById("livechatAssignBtn")?.addEventListener("click", async () => {
-    await withBusyState(
-      async () => {
-        const agentIds = selectedValues("livechat-agent");
-        const groupIds = selectedValues("livechat-group");
-        ensureSelection(agentIds, "agent");
-        ensureSelection(groupIds, "group");
-        await api("/api/livechat/memberships", {
-          method: "POST",
-          body: {
-            agentIds,
-            groupIds,
-            mode: "assign",
-            priority: document.getElementById("livechat-bulk-priority").value,
-          },
-        });
-      },
-      "LiveChat groups updated.",
-    );
-  });
-
-  document.getElementById("livechatRemoveBtn")?.addEventListener("click", async () => {
-    await withBusyState(
-      async () => {
-        const agentIds = selectedValues("livechat-agent");
-        const groupIds = selectedValues("livechat-group");
-        ensureSelection(agentIds, "agent");
-        ensureSelection(groupIds, "group");
-        await api("/api/livechat/memberships", {
-          method: "POST",
-          body: {
-            agentIds,
-            groupIds,
-            mode: "remove",
-          },
-        });
-      },
-      "LiveChat groups removed.",
-    );
-  });
-
-  document.getElementById("helpdeskAssignBtn")?.addEventListener("click", async () => {
-    await withBusyState(
-      async () => {
-        const agentIds = selectedValues("helpdesk-agent");
-        const teamIds = selectedValues("helpdesk-team");
-        ensureSelection(agentIds, "agent");
-        ensureSelection(teamIds, "team");
-        await api("/api/helpdesk/memberships", {
-          method: "POST",
-          body: {
-            agentIds,
-            teamIds,
-            mode: "assign",
-          },
-        });
-      },
-      "HelpDesk teams updated.",
-    );
-  });
-
-  document.getElementById("helpdeskRemoveBtn")?.addEventListener("click", async () => {
-    await withBusyState(
-      async () => {
-        const agentIds = selectedValues("helpdesk-agent");
-        const teamIds = selectedValues("helpdesk-team");
-        ensureSelection(agentIds, "agent");
-        ensureSelection(teamIds, "team");
-        await api("/api/helpdesk/memberships", {
-          method: "POST",
-          body: {
-            agentIds,
-            teamIds,
-            mode: "remove",
-          },
-        });
-      },
-      "HelpDesk teams removed.",
-    );
+  document.querySelectorAll('input[name="livechat-group"]').forEach((input) => {
+    input.checked = selectedGroupIds.has(String(input.value));
   });
 }
 
-function bindModalActions() {
-  document.getElementById("modalSearchInput")?.addEventListener("input", (event) => {
-    state.modalSearch = event.target.value;
-    renderModalContent();
+function syncSelectionsFromHelpDeskAgents() {
+  const selectedAgentIds = selectedValues("helpdesk-agent");
+  const selectedTeamIds = new Set(
+    state.helpdesk.agents
+      .filter((agent) => selectedAgentIds.includes(agent.id))
+      .flatMap((agent) => agent.teams.map((team) => String(team.id))),
+  );
+
+  document.querySelectorAll('input[name="helpdesk-team"]').forEach((input) => {
+    input.checked = selectedTeamIds.has(String(input.value));
+  });
+}
+
+function bindAppEvents() {
+  document.querySelectorAll(".sidebar-link").forEach((button) => {
+    button.onclick = () => {
+      state.section = button.dataset.section;
+      renderApp();
+    };
   });
 
-  document.getElementById("modalSelectAllBtn")?.addEventListener("click", () => {
-    const name = state.modalType === "livechat" ? "modal-livechat-group" : "modal-helpdesk-team";
-    visibleCheckboxes(name).forEach((input) => {
+  const bindSearch = (id, stateKey) => {
+    document.getElementById(id)?.addEventListener("input", (event) => {
+      state[stateKey] = event.target.value;
+      rerenderPreservingInput(id);
+    });
+  };
+
+  bindSearch("livechatSearchInput", "livechatSearch");
+  bindSearch("helpdeskSearchInput", "helpdeskSearch");
+  bindSearch("livechatGroupSearchInput", "livechatGroupSearch");
+  bindSearch("helpdeskTeamSearchInput", "helpdeskTeamSearch");
+  bindSearch("livechatCreateSearchInput", "livechatCreateSearch");
+  bindSearch("helpdeskCreateSearchInput", "helpdeskCreateSearch");
+  bindSearch("modalSearchInput", "modalSearch");
+
+  refreshBtn.onclick = async () => {
+    await withBusyState(async () => refreshData(), "Updated.");
+  };
+
+  logoutBtn.onclick = async () => {
+    try {
+      await api("/api/auth/logout", { method: "POST" });
+    } finally {
+      state.user = null;
+      showLogin();
+    }
+  };
+
+  bindClick("livechatSelectAllAgentsBtn", () => {
+    document.querySelectorAll('input[name="livechat-agent"]').forEach((input) => {
+      input.checked = true;
+    });
+    syncSelectionsFromLiveChatAgents();
+  });
+  bindClick("livechatClearAgentsBtn", () => {
+    document.querySelectorAll('input[name="livechat-agent"]').forEach((input) => {
+      input.checked = false;
+    });
+    syncSelectionsFromLiveChatAgents();
+  });
+  bindClick("helpdeskSelectAllAgentsBtn", () => {
+    document.querySelectorAll('input[name="helpdesk-agent"]').forEach((input) => {
+      input.checked = true;
+    });
+    syncSelectionsFromHelpDeskAgents();
+  });
+  bindClick("helpdeskClearAgentsBtn", () => {
+    document.querySelectorAll('input[name="helpdesk-agent"]').forEach((input) => {
+      input.checked = false;
+    });
+    syncSelectionsFromHelpDeskAgents();
+  });
+  bindClick("livechatSelectAllGroupsBtn", () => {
+    document.querySelectorAll('input[name="livechat-group"]').forEach((input) => {
       input.checked = true;
     });
   });
-
-  document.getElementById("modalClearBtn")?.addEventListener("click", () => {
-    const name = state.modalType === "livechat" ? "modal-livechat-group" : "modal-helpdesk-team";
-    visibleCheckboxes(name).forEach((input) => {
+  bindClick("livechatClearGroupsBtn", () => {
+    document.querySelectorAll('input[name="livechat-group"]').forEach((input) => {
       input.checked = false;
     });
   });
-
-  document.getElementById("saveLiveChatProfileBtn")?.addEventListener("click", async () => {
-    const groupIds = selectedValues("modal-livechat-group");
-    const priority = document.getElementById("modalPrioritySelect").value;
-    await withBusyState(
-      async () => {
-        ensureSelection(groupIds, "group");
-        await api("/api/livechat/memberships", {
-          method: "POST",
-          body: {
-            agentIds: [state.modalAgentId],
-            groupIds,
-            mode: "assign",
-            priority,
-          },
-        });
-      },
-      "LiveChat profile updated.",
-    );
-    state.modal.hide();
+  bindClick("helpdeskSelectAllTeamsBtn", () => {
+    document.querySelectorAll('input[name="helpdesk-team"]').forEach((input) => {
+      input.checked = true;
+    });
+  });
+  bindClick("helpdeskClearTeamsBtn", () => {
+    document.querySelectorAll('input[name="helpdesk-team"]').forEach((input) => {
+      input.checked = false;
+    });
+  });
+  bindClick("livechatSelectVisibleBtn", () => {
+    document.querySelectorAll('input[name="livechat-agent"]').forEach((input) => {
+      input.checked = true;
+    });
+    syncSelectionsFromLiveChatAgents();
+  });
+  bindClick("livechatClearVisibleBtn", () => {
+    document.querySelectorAll('input[name="livechat-agent"]').forEach((input) => {
+      input.checked = false;
+    });
+    syncSelectionsFromLiveChatAgents();
+  });
+  bindClick("helpdeskSelectVisibleBtn", () => {
+    document.querySelectorAll('input[name="helpdesk-agent"]').forEach((input) => {
+      input.checked = true;
+    });
+    syncSelectionsFromHelpDeskAgents();
+  });
+  bindClick("helpdeskClearVisibleBtn", () => {
+    document.querySelectorAll('input[name="helpdesk-agent"]').forEach((input) => {
+      input.checked = false;
+    });
+    syncSelectionsFromHelpDeskAgents();
   });
 
-  document.getElementById("saveHelpDeskProfileBtn")?.addEventListener("click", async () => {
-    const agent = getModalAgent();
-    const selectedTeamIds = selectedValues("modal-helpdesk-team");
-    const currentIds = new Set(agent.teams.map((team) => String(team.id)));
-    const selectedIds = new Set(selectedTeamIds.map(String));
+  document.querySelectorAll('input[name="livechat-agent"]').forEach((input) => {
+    input.onchange = () => {
+      syncSelectionsFromLiveChatAgents();
+    };
+  });
 
-    const toAssign = selectedTeamIds.filter((id) => !currentIds.has(String(id)));
-    const toRemove = Array.from(currentIds).filter((id) => !selectedIds.has(String(id)));
+  document.querySelectorAll('input[name="helpdesk-agent"]').forEach((input) => {
+    input.onchange = () => {
+      syncSelectionsFromHelpDeskAgents();
+    };
+  });
 
-    await withBusyState(
-      async () => {
-        if (toAssign.length) {
-          await api("/api/helpdesk/memberships", {
-            method: "POST",
-            body: {
-              agentIds: [state.modalAgentId],
-              teamIds: toAssign,
-              mode: "assign",
-            },
-          });
-        }
-        if (toRemove.length) {
-          await api("/api/helpdesk/memberships", {
-            method: "POST",
-            body: {
-              agentIds: [state.modalAgentId],
-              teamIds: toRemove,
-              mode: "remove",
-            },
-          });
-        }
-      },
-      "HelpDesk profile updated.",
-    );
-    state.modal.hide();
+  bindClick("livechatAssignBtn", async () => {
+    await withBusyState(async () => {
+      const agentIds = selectedValues("livechat-agent");
+      const groupIds = selectedValues("livechat-group");
+      ensureSelection(agentIds, "agent");
+      ensureSelection(groupIds, "group");
+      await api("/api/livechat/memberships", {
+        method: "POST",
+        body: {
+          agentIds,
+          groupIds,
+          mode: "assign",
+          priority: document.getElementById("livechatBulkPriority").value,
+        },
+      });
+    }, "LiveChat groups updated.");
+  });
+
+  bindClick("livechatRemoveBtn", async () => {
+    await withBusyState(async () => {
+      const agentIds = selectedValues("livechat-agent");
+      const groupIds = selectedValues("livechat-group");
+      ensureSelection(agentIds, "agent");
+      ensureSelection(groupIds, "group");
+      await api("/api/livechat/memberships", {
+        method: "POST",
+        body: { agentIds, groupIds, mode: "remove" },
+      });
+    }, "LiveChat groups removed.");
+  });
+
+  bindClick("helpdeskAssignBtn", async () => {
+    await withBusyState(async () => {
+      const agentIds = selectedValues("helpdesk-agent");
+      const teamIds = selectedValues("helpdesk-team");
+      ensureSelection(agentIds, "agent");
+      ensureSelection(teamIds, "group");
+      await api("/api/helpdesk/memberships", {
+        method: "POST",
+        body: { agentIds, teamIds, mode: "assign" },
+      });
+    }, "HelpDesk groups updated.");
+  });
+
+  bindClick("helpdeskRemoveBtn", async () => {
+    await withBusyState(async () => {
+      const agentIds = selectedValues("helpdesk-agent");
+      const teamIds = selectedValues("helpdesk-team");
+      ensureSelection(agentIds, "agent");
+      ensureSelection(teamIds, "group");
+      await api("/api/helpdesk/memberships", {
+        method: "POST",
+        body: { agentIds, teamIds, mode: "remove" },
+      });
+    }, "HelpDesk groups removed.");
+  });
+
+  document.querySelectorAll("[data-open-livechat]").forEach((button) => {
+    button.onclick = () => openLiveChatModal(button.dataset.openLivechat);
+  });
+  document.querySelectorAll("[data-open-helpdesk]").forEach((button) => {
+    button.onclick = () => openHelpDeskModal(button.dataset.openHelpdesk);
+  });
+  document.querySelectorAll("[data-livechat-suspend]").forEach((button) => {
+    button.onclick = async () => {
+      await withBusyState(async () => {
+        await api("/api/livechat/agents/suspend", {
+          method: "POST",
+          body: { agentId: button.dataset.livechatSuspend },
+        });
+      }, `LiveChat user ${button.dataset.livechatSuspend} deactivated.`);
+    };
+  });
+  document.querySelectorAll("[data-helpdesk-deactivate]").forEach((button) => {
+    button.onclick = async () => {
+      await withBusyState(async () => {
+        await api("/api/helpdesk/agents/deactivate", {
+          method: "POST",
+          body: { agentId: button.dataset.helpdeskDeactivate },
+        });
+      }, `HelpDesk user ${button.dataset.helpdeskDeactivate} deactivated.`);
+    };
+  });
+
+  document.getElementById("createLiveChatForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await withBusyState(async () => {
+      const groupIds = selectedValues("create-livechat-group");
+      await api("/api/livechat/agents", {
+        method: "POST",
+        body: {
+          name: document.getElementById("createLiveChatName").value.trim(),
+          email: document.getElementById("createLiveChatEmail").value.trim(),
+          groupIds,
+          priority: document.getElementById("createLiveChatPriority").value,
+        },
+      });
+    }, "LiveChat user created.");
+  });
+
+  document.getElementById("createHelpDeskForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await withBusyState(async () => {
+      const teamIds = selectedValues("create-helpdesk-team");
+      await api("/api/helpdesk/agents", {
+        method: "POST",
+        body: {
+          name: document.getElementById("createHelpDeskName").value.trim(),
+          email: document.getElementById("createHelpDeskEmail").value.trim(),
+          teamIds,
+        },
+      });
+    }, "HelpDesk user created.");
+  });
+
+  bindClick("livechatCreateSelectAllBtn", () => {
+    document.querySelectorAll('input[name="create-livechat-group"]').forEach((input) => (input.checked = true));
+  });
+  bindClick("livechatCreateClearBtn", () => {
+    document.querySelectorAll('input[name="create-livechat-group"]').forEach((input) => (input.checked = false));
+  });
+  bindClick("helpdeskCreateSelectAllBtn", () => {
+    document.querySelectorAll('input[name="create-helpdesk-team"]').forEach((input) => (input.checked = true));
+  });
+  bindClick("helpdeskCreateClearBtn", () => {
+    document.querySelectorAll('input[name="create-helpdesk-team"]').forEach((input) => (input.checked = false));
+  });
+  bindClick("livechatCreateInfoBtn", () => {});
+  bindClick("helpdeskCreateInfoBtn", () => {});
+  bindClick("livechatCreateResetBtn", () => {
+    document.querySelectorAll('input[name="create-livechat-group"]').forEach((input) => (input.checked = false));
+  });
+  bindClick("helpdeskCreateResetBtn", () => {
+    document.querySelectorAll('input[name="create-helpdesk-team"]').forEach((input) => (input.checked = false));
+  });
+
+  bindClick("generateAdminPasswordBtn", () => {
+    state.generatedAdminPassword = generatePassword();
+    renderApp();
+  });
+
+  bindClick("copyAdminCredentialsBtn", async () => {
+    const username = document.getElementById("adminUsername")?.value || "";
+    const password = document.getElementById("adminPassword")?.value || "";
+    await navigator.clipboard.writeText(buildCopyCredentialsText(username, password));
+    setMessage(statusMessage, "Credentials copied.", "success");
+  });
+
+  document.getElementById("createAdminUserForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await withBusyState(async () => {
+      await api("/api/admin-users", {
+        method: "POST",
+        body: {
+          username: document.getElementById("adminUsername").value.trim(),
+          password: document.getElementById("adminPassword").value,
+        },
+      });
+      state.generatedAdminPassword = document.getElementById("adminPassword").value;
+    }, "Admin user created.");
+  });
+
+  bindClick("closeModalBtn", () => {
+    state.modalOpen = false;
+    state.modalAgent = null;
+    renderModal();
+  });
+  bindClick("modalSelectAllBtn", () => {
+    const selector = state.modalType === "livechat" ? 'input[name="modal-livechat-group"]' : 'input[name="modal-helpdesk-team"]';
+    document.querySelectorAll(selector).forEach((input) => (input.checked = true));
+  });
+  bindClick("modalClearBtn", () => {
+    const selector = state.modalType === "livechat" ? 'input[name="modal-livechat-group"]' : 'input[name="modal-helpdesk-team"]';
+    document.querySelectorAll(selector).forEach((input) => (input.checked = false));
+  });
+  bindClick("saveModalBtn", async () => {
+    if (state.modalType === "livechat") {
+      await withBusyState(async () => {
+        const groupPriorities = buildModalLiveChatPayload();
+        await api("/api/livechat/agent-groups", {
+          method: "POST",
+          body: {
+            agentId: state.modalAgent.id,
+            groupPriorities,
+          },
+        });
+      }, "LiveChat profile updated.");
+    } else if (state.modalType === "helpdesk") {
+      await withBusyState(async () => {
+        const teamIds = selectedValues("modal-helpdesk-team");
+        await api("/api/helpdesk/agent-teams", {
+          method: "POST",
+          body: {
+            agentId: state.modalAgent.id,
+            teamIds,
+          },
+        });
+      }, "HelpDesk profile updated.");
+    }
+
+    state.modalOpen = false;
+    state.modalAgent = null;
+    renderModal();
   });
 }
 
@@ -898,24 +1172,9 @@ loginForm?.addEventListener("submit", async (event) => {
 
     state.user = result.user;
     showApp();
-    setMessage(loginMessage, "");
     await refreshData();
   } catch (error) {
     setMessage(loginMessage, error.message, "error");
-  }
-});
-
-refreshBtn?.addEventListener("click", async () => {
-  await withBusyState(async () => refreshData(), "Updated.");
-});
-
-logoutBtn?.addEventListener("click", async () => {
-  try {
-    await api("/api/auth/logout", { method: "POST" });
-  } finally {
-    state.user = null;
-    showLogin();
-    setMessage(statusMessage, "");
   }
 });
 

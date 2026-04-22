@@ -18,7 +18,7 @@ export async function onRequest(context) {
     const name = `${body.name || ""}`.trim();
     const email = `${body.email || ""}`.trim().toLowerCase();
     const groupIds = Array.isArray(body.groupIds) ? body.groupIds.filter(Boolean).map(String) : [];
-    const priority = body.priority === "first" ? "first" : "normal";
+    const priority = body.priority === "last" ? "last" : body.priority === "first" ? "first" : "normal";
 
     if (!email) {
       return errorResponse("Email is required.", 400);
