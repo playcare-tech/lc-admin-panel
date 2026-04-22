@@ -56,13 +56,25 @@
           <li class="nav-item" role="presentation">
             <button
               class="nav-link active"
-              id="agents-tab"
+              id="livechat-tab"
               data-bs-toggle="tab"
-              data-bs-target="#agents-pane"
+              data-bs-target="#livechat-pane"
               type="button"
               role="tab"
             >
-              Agents
+              LiveChat
+            </button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button
+              class="nav-link"
+              id="helpdesk-tab"
+              data-bs-toggle="tab"
+              data-bs-target="#helpdesk-pane"
+              type="button"
+              role="tab"
+            >
+              HelpDesk
             </button>
           </li>
           <li class="nav-item" role="presentation">
@@ -80,8 +92,11 @@
         </ul>
 
         <div class="tab-content">
-          <div class="tab-pane fade show active" id="agents-pane" role="tabpanel">
+          <div class="tab-pane fade show active" id="livechat-pane" role="tabpanel">
             <div id="livechatContent"></div>
+          </div>
+          <div class="tab-pane fade" id="helpdesk-pane" role="tabpanel">
+            <div id="helpdeskContent"></div>
           </div>
           <div class="tab-pane fade" id="logs-pane" role="tabpanel">
             <div id="logsContent"></div>
