@@ -259,6 +259,14 @@ body {
   margin-top: 8px;
 }
 
+.modal .panel {
+  padding: 10px;
+}
+
+.modal .toolbar-grid {
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+}
+
 .detail-header {
   display: flex;
   align-items: center;

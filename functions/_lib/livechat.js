@@ -69,20 +69,47 @@ export async function getLiveChatDashboard(env) {
 
   const groupNameById = new Map(groups.map((group) => [group.id, group.name]));
 
-  const agents = rawAgents
+  const baseAgents = rawAgents
     .map((agent) => ({
       id: agent.id,
       email: agent.id,
       name: agent.name || agent.id,
       role: agent.role || "agent",
       suspended: Boolean(agent.suspended),
-      groups: (agent.groups || []).map((group) => ({
+      groups: (agent.groups || agent.group_ids || []).map((group) => ({
         id: String(group.id),
         name: groupNameById.get(String(group.id)) || `Group ${group.id}`,
         priority: group.priority === "first" ? "first" : "normal",
       })),
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
+
+  // Some LiveChat payloads omit full group membership data in list responses.
+  // Enrich missing memberships per agent when needed so the UI can still show groups.
+  const agents = await Promise.all(
+    baseAgents.map(async (agent) => {
+      if (agent.groups.length) {
+        return agent;
+      }
+
+      try {
+        const details = await livechatRequest(env, "get_agent", { id: agent.id });
+        const detailGroups = details.groups || details.agent?.groups || [];
+
+        return {
+          ...agent,
+          suspended: Boolean(details.suspended ?? details.agent?.suspended ?? agent.suspended),
+          groups: detailGroups.map((group) => ({
+            id: String(group.id),
+            name: groupNameById.get(String(group.id)) || `Group ${group.id}`,
+            priority: group.priority === "first" ? "first" : "normal",
+          })),
+        };
+      } catch {
+        return agent;
+      }
+    }),
+  );
 
   return { agents, groups };
 }
