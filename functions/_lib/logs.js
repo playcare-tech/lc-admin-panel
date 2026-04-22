@@ -17,6 +17,10 @@ const CREATE_INDEX_SQL = `
 `;
 
 export async function ensureLogsTable(db) {
+  if (!db) {
+    throw new Error("Missing DB binding.");
+  }
+
   await db.exec(CREATE_TABLE_SQL);
   await db.exec(CREATE_INDEX_SQL);
 }
@@ -40,6 +44,14 @@ export async function writeLog(env, entry) {
       entry.metadata ? JSON.stringify(entry.metadata) : null,
     )
     .run();
+}
+
+export async function writeLogSafely(env, entry) {
+  try {
+    await writeLog(env, entry);
+  } catch (error) {
+    console.error("Failed to write audit log.", error);
+  }
 }
 
 export async function listLogs(env, limit = 250) {

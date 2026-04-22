@@ -3,6 +3,9 @@ name = "lc-admin"
 compatibility_date = "2026-04-22"
 pages_build_output_dir = "."
 
+[vars]
+LIVECHAT_API_VERSION = "v3.6"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "live_chat_admin"

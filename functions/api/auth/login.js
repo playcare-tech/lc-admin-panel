@@ -1,6 +1,6 @@
 import { createSessionCookie } from "../../_lib/auth.js";
 import { errorResponse, json, methodNotAllowed, readJson } from "../../_lib/http.js";
-import { writeLog } from "../../_lib/logs.js";
+import { writeLogSafely } from "../../_lib/logs.js";
 
 export async function onRequest(context) {
   if (context.request.method !== "POST") {
@@ -17,7 +17,7 @@ export async function onRequest(context) {
     }
 
     if (username !== context.env.ADMIN_USERNAME || password !== context.env.ADMIN_PASSWORD) {
-      await writeLog(context.env, {
+      await writeLogSafely(context.env, {
         actor: username || "unknown",
         area: "auth",
         action: "login",
@@ -28,7 +28,7 @@ export async function onRequest(context) {
     }
 
     const sessionCookie = await createSessionCookie(context.env, username);
-    await writeLog(context.env, {
+    await writeLogSafely(context.env, {
       actor: username,
       area: "auth",
       action: "login",
