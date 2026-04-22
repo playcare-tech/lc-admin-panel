@@ -69,7 +69,7 @@ export async function getLiveChatDashboard(env) {
 
   const groupNameById = new Map(groups.map((group) => [group.id, group.name]));
 
-  const baseAgents = rawAgents
+  const agents = rawAgents
     .map((agent) => ({
       id: agent.id,
       email: agent.id,
@@ -84,34 +84,33 @@ export async function getLiveChatDashboard(env) {
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
 
-  // Some LiveChat payloads omit full group membership data in list responses.
-  // Enrich missing memberships per agent when needed so the UI can still show groups.
-  const agents = await Promise.all(
-    baseAgents.map(async (agent) => {
-      if (agent.groups.length) {
-        return agent;
-      }
-
-      try {
-        const details = await livechatRequest(env, "get_agent", { id: agent.id });
-        const detailGroups = details.groups || details.agent?.groups || [];
-
-        return {
-          ...agent,
-          suspended: Boolean(details.suspended ?? details.agent?.suspended ?? agent.suspended),
-          groups: detailGroups.map((group) => ({
-            id: String(group.id),
-            name: groupNameById.get(String(group.id)) || `Group ${group.id}`,
-            priority: group.priority === "first" ? "first" : "normal",
-          })),
-        };
-      } catch {
-        return agent;
-      }
-    }),
-  );
-
   return { agents, groups };
+}
+
+export async function getLiveChatAgent(env, agentId) {
+  const [agentPayload, groupsPayload] = await Promise.all([
+    livechatRequest(env, "get_agent", { id: agentId }),
+    livechatRequest(env, "list_groups", {}),
+  ]);
+
+  const rawAgent = agentPayload.agent || agentPayload;
+  const rawGroups = Array.isArray(groupsPayload)
+    ? groupsPayload
+    : groupsPayload.groups || groupsPayload.data || groupsPayload.items || [];
+  const groupNameById = new Map(rawGroups.map((group) => [String(group.id), group.name]));
+
+  return {
+    id: rawAgent.id,
+    email: rawAgent.id,
+    name: rawAgent.name || rawAgent.id,
+    role: rawAgent.role || "agent",
+    suspended: Boolean(rawAgent.suspended),
+    groups: (rawAgent.groups || []).map((group) => ({
+      id: String(group.id),
+      name: groupNameById.get(String(group.id)) || `Group ${group.id}`,
+      priority: group.priority === "first" ? "first" : "normal",
+    })),
+  };
 }
 
 export function buildLiveChatGroups(groupIds, priority) {

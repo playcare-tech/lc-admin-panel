@@ -1,6 +1,6 @@
 import { requireAuth } from "../../_lib/auth.js";
 import { errorResponse, json, methodNotAllowed, readJson } from "../../_lib/http.js";
-import { buildLiveChatGroups, getLiveChatDashboard, livechatRequest } from "../../_lib/livechat.js";
+import { buildLiveChatGroups, getLiveChatAgent, livechatRequest } from "../../_lib/livechat.js";
 import { writeLog } from "../../_lib/logs.js";
 
 export async function onRequest(context) {
@@ -24,14 +24,8 @@ export async function onRequest(context) {
       return errorResponse("Select at least one agent and one group.", 400);
     }
 
-    const dashboard = await getLiveChatDashboard(context.env);
-    const agentById = new Map(dashboard.agents.map((agent) => [agent.id, agent]));
-
     for (const agentId of agentIds) {
-      const agent = agentById.get(agentId);
-      if (!agent) {
-        throw new Error(`LiveChat agent ${agentId} was not found.`);
-      }
+      const agent = await getLiveChatAgent(context.env, agentId);
 
       const nextGroups = new Map(agent.groups.map((group) => [String(group.id), group.priority]));
       if (mode === "assign") {

@@ -12,6 +12,7 @@ const state = {
   modalType: null,
   modalAgentId: null,
   modalSearch: "",
+  modalAgent: null,
 };
 
 const loginView = document.getElementById("loginView");
@@ -72,6 +73,12 @@ function escapeHtml(value) {
 
 function selectedValues(name) {
   return Array.from(document.querySelectorAll(`input[name="${name}"]:checked`)).map((input) => input.value);
+}
+
+function ensureSelection(values, label) {
+  if (!values.length) {
+    throw new Error(`Select at least one ${label}.`);
+  }
 }
 
 function priorityLabel(priority) {
@@ -419,11 +426,18 @@ function ensureModal() {
     </div>
   `;
   document.body.appendChild(wrapper.firstElementChild);
-  state.modal = new bootstrap.Modal(document.getElementById("agentProfileModal"));
+  const BootstrapModal = window.bootstrap?.Modal;
+  if (!BootstrapModal) {
+    throw new Error("Bootstrap modal is not available.");
+  }
+  state.modal = new BootstrapModal(document.getElementById("agentProfileModal"));
   return state.modal;
 }
 
 function getModalAgent() {
+  if (state.modalAgent) {
+    return state.modalAgent;
+  }
   if (state.modalType === "livechat") {
     return state.livechat.agents.find((agent) => agent.id === state.modalAgentId) || null;
   }
@@ -530,7 +544,22 @@ function openAgentModal(type, agentId) {
   state.modalType = type;
   state.modalAgentId = agentId;
   state.modalSearch = "";
+  state.modalAgent = null;
   ensureModal();
+
+  if (type === "livechat") {
+    api(`/api/livechat/agent?id=${encodeURIComponent(agentId)}`)
+      .then((result) => {
+        state.modalAgent = result.agent;
+        renderModalContent();
+        state.modal.show();
+      })
+      .catch((error) => {
+        setMessage(statusMessage, error.message, "error");
+      });
+    return;
+  }
+
   renderModalContent();
   state.modal.show();
 }
@@ -695,11 +724,15 @@ function bindDynamicActions() {
   document.getElementById("livechatAssignBtn")?.addEventListener("click", async () => {
     await withBusyState(
       async () => {
+        const agentIds = selectedValues("livechat-agent");
+        const groupIds = selectedValues("livechat-group");
+        ensureSelection(agentIds, "agent");
+        ensureSelection(groupIds, "group");
         await api("/api/livechat/memberships", {
           method: "POST",
           body: {
-            agentIds: selectedValues("livechat-agent"),
-            groupIds: selectedValues("livechat-group"),
+            agentIds,
+            groupIds,
             mode: "assign",
             priority: document.getElementById("livechat-bulk-priority").value,
           },
@@ -712,11 +745,15 @@ function bindDynamicActions() {
   document.getElementById("livechatRemoveBtn")?.addEventListener("click", async () => {
     await withBusyState(
       async () => {
+        const agentIds = selectedValues("livechat-agent");
+        const groupIds = selectedValues("livechat-group");
+        ensureSelection(agentIds, "agent");
+        ensureSelection(groupIds, "group");
         await api("/api/livechat/memberships", {
           method: "POST",
           body: {
-            agentIds: selectedValues("livechat-agent"),
-            groupIds: selectedValues("livechat-group"),
+            agentIds,
+            groupIds,
             mode: "remove",
           },
         });
@@ -728,11 +765,15 @@ function bindDynamicActions() {
   document.getElementById("helpdeskAssignBtn")?.addEventListener("click", async () => {
     await withBusyState(
       async () => {
+        const agentIds = selectedValues("helpdesk-agent");
+        const teamIds = selectedValues("helpdesk-team");
+        ensureSelection(agentIds, "agent");
+        ensureSelection(teamIds, "team");
         await api("/api/helpdesk/memberships", {
           method: "POST",
           body: {
-            agentIds: selectedValues("helpdesk-agent"),
-            teamIds: selectedValues("helpdesk-team"),
+            agentIds,
+            teamIds,
             mode: "assign",
           },
         });
@@ -744,11 +785,15 @@ function bindDynamicActions() {
   document.getElementById("helpdeskRemoveBtn")?.addEventListener("click", async () => {
     await withBusyState(
       async () => {
+        const agentIds = selectedValues("helpdesk-agent");
+        const teamIds = selectedValues("helpdesk-team");
+        ensureSelection(agentIds, "agent");
+        ensureSelection(teamIds, "team");
         await api("/api/helpdesk/memberships", {
           method: "POST",
           body: {
-            agentIds: selectedValues("helpdesk-agent"),
-            teamIds: selectedValues("helpdesk-team"),
+            agentIds,
+            teamIds,
             mode: "remove",
           },
         });
@@ -783,6 +828,7 @@ function bindModalActions() {
     const priority = document.getElementById("modalPrioritySelect").value;
     await withBusyState(
       async () => {
+        ensureSelection(groupIds, "group");
         await api("/api/livechat/memberships", {
           method: "POST",
           body: {
