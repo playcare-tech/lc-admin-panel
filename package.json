@@ -1,11 +1,14 @@
 {
-    "name": "livechat-admin",
-    "version": "1.0.0",
-    "scripts": {
-        "dev": "wrangler pages dev .",
-        "deploy": "wrangler pages deploy ."
-    },
-    "devDependencies": {
-        "wrangler": "^3.0.0"
-    }
+  "name": "livechat-admin",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler pages dev .",
+    "deploy": "wrangler pages deploy .",
+    "cf-typegen": "wrangler types"
+  },
+  "devDependencies": {
+    "wrangler": "^4.84.1"
+  }
 }

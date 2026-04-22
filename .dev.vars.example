@@ -1,0 +1,5 @@
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=replace-me
+SESSION_SECRET=replace-with-a-long-random-string
+TEXT_BASIC_AUTH_B64=replace-me
+LIVECHAT_API_VERSION=v3.6
