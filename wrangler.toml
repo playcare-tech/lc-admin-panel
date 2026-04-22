@@ -1,9 +1,9 @@
 "$schema" = "./node_modules/wrangler/config-schema.json"
-name = "text-admin-control-room"
+name = "lc-admin"
 compatibility_date = "2026-04-22"
 pages_build_output_dir = "."
 
 [[d1_databases]]
 binding = "DB"
-database_name = "text-admin-control-room"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_name = "live_chat_admin"
+database_id = "968349fc-7baf-41b1-80f8-be77f0a2b70d"
