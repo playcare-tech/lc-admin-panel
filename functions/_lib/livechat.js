@@ -52,7 +52,15 @@ export async function getLiveChatDashboard(env) {
     livechatRequest(env, "list_groups", {}),
   ]);
 
-  const groups = (groupsPayload.groups || [])
+  const rawGroups = Array.isArray(groupsPayload)
+    ? groupsPayload
+    : groupsPayload.groups || groupsPayload.data || groupsPayload.items || [];
+
+  const rawAgents = Array.isArray(agentsPayload)
+    ? agentsPayload
+    : agentsPayload.agents || agentsPayload.data || agentsPayload.items || [];
+
+  const groups = rawGroups
     .map((group) => ({
       id: String(group.id),
       name: group.name,
@@ -61,7 +69,7 @@ export async function getLiveChatDashboard(env) {
 
   const groupNameById = new Map(groups.map((group) => [group.id, group.name]));
 
-  const agents = (agentsPayload.agents || [])
+  const agents = rawAgents
     .map((agent) => ({
       id: agent.id,
       email: agent.id,
