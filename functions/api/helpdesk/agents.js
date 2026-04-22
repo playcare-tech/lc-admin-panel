@@ -1,6 +1,6 @@
 import { requireAuth } from "../../_lib/auth.js";
-import { errorResponse, json, methodNotAllowed, readJson } from "../../_lib/http.js";
 import { helpdeskRequest } from "../../_lib/helpdesk.js";
+import { errorResponse, json, methodNotAllowed, readJson } from "../../_lib/http.js";
 import { writeLog } from "../../_lib/logs.js";
 
 export async function onRequest(context) {
@@ -17,7 +17,7 @@ export async function onRequest(context) {
     const body = await readJson(context.request);
     const name = `${body.name || ""}`.trim();
     const email = `${body.email || ""}`.trim().toLowerCase();
-    const teamIds = Array.isArray(body.teamIds) ? body.teamIds.filter(Boolean) : [];
+    const teamIds = Array.isArray(body.teamIds) ? body.teamIds.filter(Boolean).map(String) : [];
 
     if (!email) {
       return errorResponse("Email is required.", 400);
@@ -41,9 +41,7 @@ export async function onRequest(context) {
       target: email,
       status: "success",
       details: `Created HelpDesk agent ${email}.`,
-      metadata: {
-        teamIds,
-      },
+      metadata: { teamIds },
     });
 
     return json({ ok: true, agent });

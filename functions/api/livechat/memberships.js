@@ -1,6 +1,6 @@
 import { requireAuth } from "../../_lib/auth.js";
 import { errorResponse, json, methodNotAllowed, readJson } from "../../_lib/http.js";
-import { getLiveChatDashboard, livechatRequest } from "../../_lib/livechat.js";
+import { buildLiveChatGroups, getLiveChatDashboard, livechatRequest } from "../../_lib/livechat.js";
 import { writeLog } from "../../_lib/logs.js";
 
 export async function onRequest(context) {
@@ -15,8 +15,8 @@ export async function onRequest(context) {
 
   try {
     const body = await readJson(context.request);
-    const agentIds = Array.isArray(body.agentIds) ? body.agentIds.filter(Boolean) : [];
-    const groupIds = Array.isArray(body.groupIds) ? body.groupIds.filter(Boolean) : [];
+    const agentIds = Array.isArray(body.agentIds) ? body.agentIds.filter(Boolean).map(String) : [];
+    const groupIds = Array.isArray(body.groupIds) ? body.groupIds.filter(Boolean).map(String) : [];
     const mode = body.mode === "remove" ? "remove" : "assign";
     const priority = body.priority === "first" ? "first" : "normal";
 
@@ -33,23 +33,23 @@ export async function onRequest(context) {
         throw new Error(`LiveChat agent ${agentId} was not found.`);
       }
 
-      const groupMap = new Map(
-        agent.groups.map((group) => [String(group.id), group.priority || "normal"]),
-      );
-
+      const nextGroups = new Map(agent.groups.map((group) => [String(group.id), group.priority]));
       if (mode === "assign") {
         for (const groupId of groupIds) {
-          groupMap.set(String(groupId), priority);
+          nextGroups.set(String(groupId), priority);
         }
       } else {
         for (const groupId of groupIds) {
-          groupMap.delete(String(groupId));
+          nextGroups.delete(String(groupId));
         }
       }
 
-      const groups = Array.from(groupMap.entries()).map(([groupId, groupPriority]) => ({
-        id: Number.isNaN(Number(groupId)) ? groupId : Number(groupId),
-        priority: groupPriority,
+      const groups = buildLiveChatGroups(
+        Array.from(nextGroups.keys()),
+        "normal",
+      ).map((group) => ({
+        ...group,
+        priority: nextGroups.get(String(group.id)) === "first" ? "first" : "normal",
       }));
 
       await livechatRequest(context.env, "update_agent", {
@@ -64,20 +64,11 @@ export async function onRequest(context) {
       action: mode === "assign" ? "assign_groups" : "remove_groups",
       target: agentIds.join(", "),
       status: "success",
-      details: `${mode === "assign" ? "Updated" : "Removed"} LiveChat groups for ${
-        agentIds.length
-      } agent(s).`,
-      metadata: {
-        agentIds,
-        groupIds,
-        priority,
-      },
+      details: `${mode === "assign" ? "Updated" : "Removed"} LiveChat groups for ${agentIds.length} agent(s).`,
+      metadata: { agentIds, groupIds, priority },
     });
 
-    return json({
-      ok: true,
-      updatedAgents: agentIds.length,
-    });
+    return json({ ok: true, updatedAgents: agentIds.length });
   } catch (error) {
     await writeLog(context.env, {
       actor: auth.session.user,

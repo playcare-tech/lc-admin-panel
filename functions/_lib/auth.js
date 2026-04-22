@@ -1,8 +1,7 @@
 import { errorResponse } from "./http.js";
 
-const SESSION_COOKIE = "__livechat_admin_session";
+const SESSION_COOKIE = "__text_admin_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
-
 const encoder = new TextEncoder();
 
 function toBase64Url(value) {
@@ -36,16 +35,16 @@ async function sign(value, secret) {
 
 function getCookie(request, name) {
   const cookieHeader = request.headers.get("Cookie") || "";
-  const cookies = cookieHeader.split(";").map((part) => part.trim());
-  for (const cookie of cookies) {
+  for (const segment of cookieHeader.split(";")) {
+    const cookie = segment.trim();
     if (!cookie) {
       continue;
     }
 
-    const separatorIndex = cookie.indexOf("=");
-    const cookieName = separatorIndex === -1 ? cookie : cookie.slice(0, separatorIndex);
+    const divider = cookie.indexOf("=");
+    const cookieName = divider === -1 ? cookie : cookie.slice(0, divider);
     if (cookieName === name) {
-      return separatorIndex === -1 ? "" : cookie.slice(separatorIndex + 1);
+      return divider === -1 ? "" : cookie.slice(divider + 1);
     }
   }
 
@@ -61,11 +60,9 @@ export async function createSessionCookie(env, username) {
     user: username,
     exp: Date.now() + SESSION_TTL_SECONDS * 1000,
   };
-
-  const payloadString = JSON.stringify(payload);
-  const payloadToken = toBase64Url(payloadString);
-  const signature = await sign(payloadToken, env.SESSION_SECRET);
-  const cookieValue = `${payloadToken}.${signature}`;
+  const token = toBase64Url(JSON.stringify(payload));
+  const signature = await sign(token, env.SESSION_SECRET);
+  const cookieValue = `${token}.${signature}`;
 
   return [
     `${SESSION_COOKIE}=${cookieValue}`,

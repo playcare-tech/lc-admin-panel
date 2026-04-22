@@ -17,6 +17,11 @@ function extractErrorMessage(payload, fallback) {
   return payload.error?.message || payload.message || payload.error || fallback;
 }
 
+function normalizeGroupId(value) {
+  const parsed = Number(value);
+  return Number.isNaN(parsed) ? value : parsed;
+}
+
 export async function livechatRequest(env, action, body = {}) {
   if (!env.TEXT_BASIC_AUTH_B64) {
     throw new Error("Missing TEXT_BASIC_AUTH_B64 environment variable.");
@@ -47,10 +52,12 @@ export async function getLiveChatDashboard(env) {
     livechatRequest(env, "list_groups", {}),
   ]);
 
-  const groups = (groupsPayload.groups || []).map((group) => ({
-    id: String(group.id),
-    name: group.name,
-  }));
+  const groups = (groupsPayload.groups || [])
+    .map((group) => ({
+      id: String(group.id),
+      name: group.name,
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
 
   const groupNameById = new Map(groups.map((group) => [group.id, group.name]));
 
@@ -64,13 +71,17 @@ export async function getLiveChatDashboard(env) {
       groups: (agent.groups || []).map((group) => ({
         id: String(group.id),
         name: groupNameById.get(String(group.id)) || `Group ${group.id}`,
-        priority: group.priority || "normal",
+        priority: group.priority === "first" ? "first" : "normal",
       })),
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
 
-  return {
-    agents,
-    groups: groups.sort((left, right) => left.name.localeCompare(right.name)),
-  };
+  return { agents, groups };
+}
+
+export function buildLiveChatGroups(groupIds, priority) {
+  return groupIds.map((groupId) => ({
+    id: normalizeGroupId(groupId),
+    priority: priority === "first" ? "first" : "normal",
+  }));
 }

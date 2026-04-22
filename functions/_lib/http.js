@@ -28,9 +28,7 @@ export function errorResponse(message, status = 400, extra = {}) {
 }
 
 export function methodNotAllowed(allowed) {
-  return errorResponse(`Method not allowed. Use ${allowed.join(", ")}.`, 405, {
-    allowed,
-  });
+  return errorResponse(`Method not allowed. Use ${allowed.join(", ")}.`, 405, { allowed });
 }
 
 export async function readJson(request) {

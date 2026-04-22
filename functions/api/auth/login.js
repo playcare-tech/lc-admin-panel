@@ -1,16 +1,10 @@
-import { clearSessionCookie, createSessionCookie } from "../../_lib/auth.js";
+import { createSessionCookie } from "../../_lib/auth.js";
 import { errorResponse, json, methodNotAllowed, readJson } from "../../_lib/http.js";
+import { writeLog } from "../../_lib/logs.js";
 
 export async function onRequest(context) {
   if (context.request.method !== "POST") {
     return methodNotAllowed(["POST"]);
-  }
-
-  if (!context.env.ADMIN_USERNAME || !context.env.ADMIN_PASSWORD) {
-    return errorResponse(
-      "Missing ADMIN_USERNAME or ADMIN_PASSWORD environment variable.",
-      500,
-    );
   }
 
   try {
@@ -18,14 +12,30 @@ export async function onRequest(context) {
     const username = `${body.username || ""}`.trim();
     const password = `${body.password || ""}`;
 
-    if (
-      username !== context.env.ADMIN_USERNAME ||
-      password !== context.env.ADMIN_PASSWORD
-    ) {
-      return errorResponse("Invalid credentials.", 401);
+    if (!context.env.ADMIN_USERNAME || !context.env.ADMIN_PASSWORD) {
+      return errorResponse("Admin credentials are not configured.", 500);
     }
 
-    const cookie = await createSessionCookie(context.env, username);
+    if (username !== context.env.ADMIN_USERNAME || password !== context.env.ADMIN_PASSWORD) {
+      await writeLog(context.env, {
+        actor: username || "unknown",
+        area: "auth",
+        action: "login",
+        status: "error",
+        details: "Invalid admin credentials.",
+      });
+      return errorResponse("Invalid username or password.", 401);
+    }
+
+    const sessionCookie = await createSessionCookie(context.env, username);
+    await writeLog(context.env, {
+      actor: username,
+      area: "auth",
+      action: "login",
+      status: "success",
+      details: "Admin signed in.",
+    });
+
     return json(
       {
         ok: true,
@@ -33,22 +43,11 @@ export async function onRequest(context) {
       },
       {
         headers: {
-          "Set-Cookie": cookie,
+          "Set-Cookie": sessionCookie,
         },
       },
     );
   } catch (error) {
-    return json(
-      {
-        ok: false,
-        error: error.message,
-      },
-      {
-        status: 400,
-        headers: {
-          "Set-Cookie": clearSessionCookie(),
-        },
-      },
-    );
+    return errorResponse(error.message, 500);
   }
 }

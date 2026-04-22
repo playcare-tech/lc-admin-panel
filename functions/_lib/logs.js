@@ -42,7 +42,7 @@ export async function writeLog(env, entry) {
     .run();
 }
 
-export async function listLogs(env, limit = 200) {
+export async function listLogs(env, limit = 250) {
   await ensureLogsTable(env.DB);
   const { results } = await env.DB.prepare(
     `

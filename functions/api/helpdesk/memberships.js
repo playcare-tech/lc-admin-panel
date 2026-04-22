@@ -15,8 +15,8 @@ export async function onRequest(context) {
 
   try {
     const body = await readJson(context.request);
-    const agentIds = Array.isArray(body.agentIds) ? body.agentIds.filter(Boolean) : [];
-    const teamIds = Array.isArray(body.teamIds) ? body.teamIds.filter(Boolean) : [];
+    const agentIds = Array.isArray(body.agentIds) ? body.agentIds.filter(Boolean).map(String) : [];
+    const teamIds = Array.isArray(body.teamIds) ? body.teamIds.filter(Boolean).map(String) : [];
     const mode = body.mode === "remove" ? "remove" : "assign";
 
     if (!agentIds.length || !teamIds.length) {
@@ -57,19 +57,11 @@ export async function onRequest(context) {
       action: mode === "assign" ? "assign_teams" : "remove_teams",
       target: agentIds.join(", "),
       status: "success",
-      details: `${mode === "assign" ? "Updated" : "Removed"} HelpDesk teams for ${
-        agentIds.length
-      } agent(s).`,
-      metadata: {
-        agentIds,
-        teamIds,
-      },
+      details: `${mode === "assign" ? "Updated" : "Removed"} HelpDesk teams for ${agentIds.length} agent(s).`,
+      metadata: { agentIds, teamIds },
     });
 
-    return json({
-      ok: true,
-      updatedAgents: agentIds.length,
-    });
+    return json({ ok: true, updatedAgents: agentIds.length });
   } catch (error) {
     await writeLog(context.env, {
       actor: auth.session.user,

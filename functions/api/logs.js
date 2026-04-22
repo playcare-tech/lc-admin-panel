@@ -1,5 +1,5 @@
 import { requireAuth } from "../_lib/auth.js";
-import { json, methodNotAllowed } from "../_lib/http.js";
+import { errorResponse, json, methodNotAllowed } from "../_lib/http.js";
 import { listLogs } from "../_lib/logs.js";
 
 export async function onRequest(context) {
@@ -12,6 +12,11 @@ export async function onRequest(context) {
     return auth.error;
   }
 
-  const logs = await listLogs(context.env);
-  return json({ logs });
+  try {
+    return json({
+      logs: await listLogs(context.env),
+    });
+  } catch (error) {
+    return errorResponse(error.message, 500);
+  }
 }

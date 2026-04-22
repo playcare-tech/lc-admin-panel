@@ -15,14 +15,13 @@ export async function onRequest(context) {
 
   try {
     const body = await readJson(context.request);
-    const agentId = `${body.agentId || ""}`.trim();
+    const agentId = `${body.agentId || ""}`.trim().toLowerCase();
 
     if (!agentId) {
       return errorResponse("agentId is required.", 400);
     }
 
     await livechatRequest(context.env, "suspend_agent", { id: agentId });
-
     await writeLog(context.env, {
       actor: auth.session.user,
       area: "livechat",

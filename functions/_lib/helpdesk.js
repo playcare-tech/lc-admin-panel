@@ -45,26 +45,26 @@ export async function getHelpDeskDashboard(env) {
     helpdeskRequest(env, "/teams"),
   ]);
 
-  const teamNameById = new Map((teams || []).map((team) => [team.ID, team.name]));
+  const teamNameById = new Map((teams || []).map((team) => [String(team.ID), team.name]));
 
   return {
     agents: (agents || [])
       .map((agent) => ({
-        id: agent.ID,
+        id: String(agent.ID),
         email: agent.email,
         name: agent.name || agent.email,
         status: agent.status || "unknown",
         roles: agent.roles || [],
-        teamIDs: agent.teamIDs || [],
+        teamIDs: (agent.teamIDs || []).map(String),
         teams: (agent.teamIDs || []).map((teamId) => ({
-          id: teamId,
-          name: teamNameById.get(teamId) || "Unknown team",
+          id: String(teamId),
+          name: teamNameById.get(String(teamId)) || `Team ${teamId}`,
         })),
       }))
       .sort((left, right) => left.name.localeCompare(right.name)),
     teams: (teams || [])
       .map((team) => ({
-        id: team.ID,
+        id: String(team.ID),
         name: team.name,
       }))
       .sort((left, right) => left.name.localeCompare(right.name)),

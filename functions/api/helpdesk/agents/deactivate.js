@@ -1,6 +1,6 @@
 import { requireAuth } from "../../../_lib/auth.js";
-import { errorResponse, json, methodNotAllowed, readJson } from "../../../_lib/http.js";
 import { helpdeskRequest } from "../../../_lib/helpdesk.js";
+import { errorResponse, json, methodNotAllowed, readJson } from "../../../_lib/http.js";
 import { writeLog } from "../../../_lib/logs.js";
 
 export async function onRequest(context) {
@@ -31,8 +31,7 @@ export async function onRequest(context) {
       action: "delete_agent",
       target: agentId,
       status: "success",
-      details:
-        "Removed HelpDesk agent. The public HelpDesk docs expose delete rather than a separate deactivate endpoint.",
+      details: "Removed HelpDesk agent using the public delete-agent endpoint.",
     });
 
     return json({ ok: true });

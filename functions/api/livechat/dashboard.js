@@ -13,8 +13,7 @@ export async function onRequest(context) {
   }
 
   try {
-    const dashboard = await getLiveChatDashboard(context.env);
-    return json(dashboard);
+    return json(await getLiveChatDashboard(context.env));
   } catch (error) {
     return errorResponse(error.message, 500);
   }

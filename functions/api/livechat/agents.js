@@ -1,6 +1,6 @@
 import { requireAuth } from "../../_lib/auth.js";
+import { buildLiveChatGroups, livechatRequest } from "../../_lib/livechat.js";
 import { errorResponse, json, methodNotAllowed, readJson } from "../../_lib/http.js";
-import { livechatRequest } from "../../_lib/livechat.js";
 import { writeLog } from "../../_lib/logs.js";
 
 export async function onRequest(context) {
@@ -17,7 +17,7 @@ export async function onRequest(context) {
     const body = await readJson(context.request);
     const name = `${body.name || ""}`.trim();
     const email = `${body.email || ""}`.trim().toLowerCase();
-    const groupIds = Array.isArray(body.groupIds) ? body.groupIds : [];
+    const groupIds = Array.isArray(body.groupIds) ? body.groupIds.filter(Boolean).map(String) : [];
     const priority = body.priority === "first" ? "first" : "normal";
 
     if (!email) {
@@ -35,14 +35,10 @@ export async function onRequest(context) {
     }
 
     if (groupIds.length) {
-      payload.groups = groupIds.map((groupId) => ({
-        id: Number.isNaN(Number(groupId)) ? groupId : Number(groupId),
-        priority,
-      }));
+      payload.groups = buildLiveChatGroups(groupIds, priority);
     }
 
-    const result = await livechatRequest(context.env, "create_agent", payload);
-
+    const agent = await livechatRequest(context.env, "create_agent", payload);
     await writeLog(context.env, {
       actor: auth.session.user,
       area: "livechat",
@@ -50,16 +46,10 @@ export async function onRequest(context) {
       target: email,
       status: "success",
       details: `Created LiveChat agent ${email}.`,
-      metadata: {
-        groupIds,
-        priority,
-      },
+      metadata: { groupIds, priority },
     });
 
-    return json({
-      ok: true,
-      agent: result,
-    });
+    return json({ ok: true, agent });
   } catch (error) {
     await writeLog(context.env, {
       actor: auth.session.user,

@@ -7,8 +7,12 @@ export async function onRequest(context) {
   }
 
   const session = await getSession(context.request, context.env);
+  if (!session) {
+    return json({ authenticated: false });
+  }
+
   return json({
-    authenticated: Boolean(session),
-    user: session?.user ?? null,
+    authenticated: true,
+    user: session.user,
   });
 }
