@@ -1,8 +1,8 @@
-name = "livechat-admin"
+name = "livechat-helpdesk-admin"
 compatibility_date = "2026-04-22"
 pages_build_output_dir = "."
 
 [[d1_databases]]
 binding = "DB"
-database_name = "livechat-admin-logs"
+database_name = "livechat-admin"
 database_id = "968349fc-7baf-41b1-80f8-be77f0a2b70d"
