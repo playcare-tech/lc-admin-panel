@@ -10,6 +10,7 @@ const CREATE_TABLE_SQL = `
     details TEXT,
     metadata TEXT
   )
+;
 `;
 
 const CREATE_INDEX_SQL = `
