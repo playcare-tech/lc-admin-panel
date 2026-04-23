@@ -4,6 +4,8 @@ const CREATE_ADMIN_USERS_SQL =
 const CREATE_ADMIN_USERS_INDEX_SQL =
   "CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users (username)";
 
+const PBKDF2_ITERATIONS = 100000;
+
 function bytesToBase64(bytes) {
   let binary = "";
   for (const byte of bytes) {
@@ -26,7 +28,7 @@ async function hashPassword(password, salt) {
     {
       name: "PBKDF2",
       salt: encoder.encode(salt),
-      iterations: 120000,
+      iterations: PBKDF2_ITERATIONS,
       hash: "SHA-256",
     },
     material,
