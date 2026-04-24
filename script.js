@@ -127,6 +127,20 @@ function setVisibleSelection(name, checked) {
   });
 }
 
+function selectLiveChatAgentGroups(agentIds) {
+  state.livechat.agents
+    .filter((agent) => agentIds.includes(String(agent.id)))
+    .flatMap((agent) => agent.groups)
+    .forEach((group) => state.livechatSelectedGroupIds.add(String(group.id)));
+}
+
+function selectHelpDeskAgentTeams(agentIds) {
+  state.helpdesk.agents
+    .filter((agent) => agentIds.includes(String(agent.id)))
+    .flatMap((agent) => agent.teams)
+    .forEach((team) => state.helpdeskSelectedTeamIds.add(String(team.id)));
+}
+
 function ensureSelection(values, label) {
   if (!values.length) {
     throw new Error(`Select at least one ${label}.`);
@@ -1321,7 +1335,9 @@ function bindAppEvents() {
 
   bindClick("livechatSelectAllAgentsBtn", () => {
     state.livechat.agents.forEach((agent) => state.livechatSelectedAgentIds.add(String(agent.id)));
+    selectLiveChatAgentGroups(state.livechat.agents.map((agent) => String(agent.id)));
     setVisibleSelection("livechat-agent", true);
+    renderApp();
   });
   bindClick("livechatClearAgentsBtn", () => {
     state.livechatSelectedAgentIds.clear();
@@ -1329,7 +1345,9 @@ function bindAppEvents() {
   });
   bindClick("helpdeskSelectAllAgentsBtn", () => {
     state.helpdesk.agents.forEach((agent) => state.helpdeskSelectedAgentIds.add(String(agent.id)));
+    selectHelpDeskAgentTeams(state.helpdesk.agents.map((agent) => String(agent.id)));
     setVisibleSelection("helpdesk-agent", true);
+    renderApp();
   });
   bindClick("helpdeskClearAgentsBtn", () => {
     state.helpdeskSelectedAgentIds.clear();
@@ -1349,12 +1367,16 @@ function bindAppEvents() {
   });
   bindClick("livechatSelectVisibleBtn", () => {
     setVisibleSelection("livechat-agent", true);
+    selectLiveChatAgentGroups(selectedValues("livechat-agent"));
+    renderApp();
   });
   bindClick("livechatClearVisibleBtn", () => {
     setVisibleSelection("livechat-agent", false);
   });
   bindClick("helpdeskSelectVisibleBtn", () => {
     setVisibleSelection("helpdesk-agent", true);
+    selectHelpDeskAgentTeams(selectedValues("helpdesk-agent"));
+    renderApp();
   });
   bindClick("helpdeskClearVisibleBtn", () => {
     setVisibleSelection("helpdesk-agent", false);
@@ -1363,12 +1385,20 @@ function bindAppEvents() {
   document.querySelectorAll('input[name="livechat-agent"]').forEach((input) => {
     input.onchange = () => {
       setSelection("livechat-agent", input.value, input.checked);
+      if (input.checked) {
+        selectLiveChatAgentGroups([input.value]);
+        renderApp();
+      }
     };
   });
 
   document.querySelectorAll('input[name="helpdesk-agent"]').forEach((input) => {
     input.onchange = () => {
       setSelection("helpdesk-agent", input.value, input.checked);
+      if (input.checked) {
+        selectHelpDeskAgentTeams([input.value]);
+        renderApp();
+      }
     };
   });
 
