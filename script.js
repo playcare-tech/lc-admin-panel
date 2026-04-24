@@ -12,6 +12,7 @@ const state = {
   helpdeskSearch: "",
   livechatGroupSearch: "",
   livechatGroupQuickFilter: "",
+  livechatGroupPriorityFilter: "",
   helpdeskTeamSearch: "",
   livechatCreateSearch: "",
   helpdeskCreateSearch: "",
@@ -127,6 +128,38 @@ function setVisibleSelection(name, checked) {
   });
 }
 
+function selectedLiveChatAgents() {
+  const selectedAgentIds = selectedValues("livechat-agent");
+  return state.livechat.agents.filter((agent) => selectedAgentIds.includes(String(agent.id)));
+}
+
+function liveChatGroupIdsForSelectedPriority(priority) {
+  if (!priority) {
+    return new Set();
+  }
+
+  return new Set(
+    selectedLiveChatAgents()
+      .flatMap((agent) => agent.groups)
+      .filter((group) => {
+        const groupPriority = group.priority === "last" ? "last" : "normal";
+        return groupPriority === priority;
+      })
+      .map((group) => String(group.id)),
+  );
+}
+
+function selectedLiveChatGroupIdsForAction() {
+  const selectedGroupIds = selectedValues("livechat-group");
+  const priorityGroupIds = liveChatGroupIdsForSelectedPriority(state.livechatGroupPriorityFilter);
+
+  if (!priorityGroupIds.size) {
+    return selectedGroupIds;
+  }
+
+  return selectedGroupIds.filter((groupId) => priorityGroupIds.has(String(groupId)));
+}
+
 function selectLiveChatAgentGroups(agentIds) {
   state.livechat.agents
     .filter((agent) => agentIds.includes(String(agent.id)))
@@ -134,11 +167,21 @@ function selectLiveChatAgentGroups(agentIds) {
     .forEach((group) => state.livechatSelectedGroupIds.add(String(group.id)));
 }
 
+function syncLiveChatGroupsFromSelectedAgents() {
+  state.livechatSelectedGroupIds.clear();
+  selectLiveChatAgentGroups(selectedValues("livechat-agent"));
+}
+
 function selectHelpDeskAgentTeams(agentIds) {
   state.helpdesk.agents
     .filter((agent) => agentIds.includes(String(agent.id)))
     .flatMap((agent) => agent.teams)
     .forEach((team) => state.helpdeskSelectedTeamIds.add(String(team.id)));
+}
+
+function syncHelpDeskTeamsFromSelectedAgents() {
+  state.helpdeskSelectedTeamIds.clear();
+  selectHelpDeskAgentTeams(selectedValues("helpdesk-agent"));
 }
 
 function ensureSelection(values, label) {
@@ -228,12 +271,24 @@ function filterByName(items, search) {
 function filterLiveChatGroups(groups) {
   const searchedGroups = filterByName(groups, state.livechatGroupSearch);
   const quickFilter = state.livechatGroupQuickFilter.trim().toLowerCase();
+  const priorityFilter = state.livechatGroupPriorityFilter;
+  const selectedAgents = selectedLiveChatAgents();
+
+  let filteredGroups = searchedGroups;
 
   if (!quickFilter) {
-    return searchedGroups;
+    filteredGroups = searchedGroups;
+  } else {
+    filteredGroups = filteredGroups.filter((group) => group.name.toLowerCase().includes(quickFilter));
   }
 
-  return searchedGroups.filter((group) => group.name.toLowerCase().includes(quickFilter));
+  if (!priorityFilter || !selectedAgents.length) {
+    return filteredGroups;
+  }
+
+  const matchingGroupIds = liveChatGroupIdsForSelectedPriority(priorityFilter);
+
+  return filteredGroups.filter((group) => matchingGroupIds.has(String(group.id)));
 }
 
 function livechatGroupsWithCounts() {
@@ -316,13 +371,13 @@ function renderBulkEditor({
   quickFilters = [],
   activeQuickFilter = "",
   quickFilterPrefix = "",
+  priorityFilters = [],
+  activePriorityFilter = "",
   selectedItems = [],
 }) {
-  const selectedNames = selectedItems.map((item) => item.name).join(", ");
-
   return `
     <div class="editor-shell">
-      <div class="section-title">${title}${selectedNames ? `: ${escapeHtml(selectedNames)}` : ""}</div>
+      <div class="section-title">${title}</div>
       ${
         quickFilters.length
           ? `<div class="filter-row">
@@ -331,6 +386,19 @@ function renderBulkEditor({
                 .map(
                   (filter) =>
                     `<button class="filter-chip ${activeQuickFilter === filter ? "active" : ""}" type="button" data-${quickFilterPrefix}-filter="${escapeHtml(filter)}">${escapeHtml(filter)}</button>`,
+                )
+                .join("")}
+            </div>`
+          : ""
+      }
+      ${
+        priorityFilters.length
+          ? `<div class="filter-row">
+              <button class="filter-chip ${activePriorityFilter ? "" : "active"}" type="button" data-livechat-priority-filter="">All active</button>
+              ${priorityFilters
+                .map(
+                  (filter) =>
+                    `<button class="filter-chip ${activePriorityFilter === filter.value ? "active" : ""}" type="button" data-livechat-priority-filter="${escapeHtml(filter.value)}">${escapeHtml(filter.label)}</button>`,
                 )
                 .join("")}
             </div>`
@@ -378,9 +446,12 @@ function renderBulkEditor({
 
 function renderLiveChatUsers() {
   const agents = filteredLiveChatAgents();
+  const selectedAgents = selectedLiveChatAgents();
   const groups = filterLiveChatGroups(state.livechat.groups);
+  const priorityGroupIds = liveChatGroupIdsForSelectedPriority(state.livechatGroupPriorityFilter);
   const selectedGroups = state.livechat.groups
     .filter((group) => state.livechatSelectedGroupIds.has(String(group.id)))
+    .filter((group) => !priorityGroupIds.size || priorityGroupIds.has(String(group.id)))
     .sort((left, right) => left.name.localeCompare(right.name));
 
   return `
@@ -419,6 +490,13 @@ function renderLiveChatUsers() {
           quickFilters: ["SS", "VIP", "TL", "S2B"],
           activeQuickFilter: state.livechatGroupQuickFilter,
           quickFilterPrefix: "livechat-group",
+          priorityFilters: selectedAgents.length
+            ? [
+                { label: "Primary groups", value: "normal" },
+                { label: "Last groups", value: "last" },
+              ]
+            : [],
+          activePriorityFilter: state.livechatGroupPriorityFilter,
           selectedItems: selectedGroups,
         })}
       </div>
@@ -1320,6 +1398,13 @@ function bindAppEvents() {
     };
   });
 
+  document.querySelectorAll("[data-livechat-priority-filter]").forEach((button) => {
+    button.onclick = () => {
+      state.livechatGroupPriorityFilter = button.dataset.livechatPriorityFilter || "";
+      renderApp();
+    };
+  });
+
   refreshBtn.onclick = async () => {
     await withBusyState(async () => refreshData(), "Updated.");
   };
@@ -1341,7 +1426,9 @@ function bindAppEvents() {
   });
   bindClick("livechatClearAgentsBtn", () => {
     state.livechatSelectedAgentIds.clear();
-    setVisibleSelection("livechat-agent", false);
+    state.livechatSelectedGroupIds.clear();
+    state.livechatGroupPriorityFilter = "";
+    renderApp();
   });
   bindClick("helpdeskSelectAllAgentsBtn", () => {
     state.helpdesk.agents.forEach((agent) => state.helpdeskSelectedAgentIds.add(String(agent.id)));
@@ -1351,7 +1438,8 @@ function bindAppEvents() {
   });
   bindClick("helpdeskClearAgentsBtn", () => {
     state.helpdeskSelectedAgentIds.clear();
-    setVisibleSelection("helpdesk-agent", false);
+    state.helpdeskSelectedTeamIds.clear();
+    renderApp();
   });
   bindClick("livechatSelectAllGroupsBtn", () => {
     setVisibleSelection("livechat-group", true);
@@ -1372,6 +1460,11 @@ function bindAppEvents() {
   });
   bindClick("livechatClearVisibleBtn", () => {
     setVisibleSelection("livechat-agent", false);
+    syncLiveChatGroupsFromSelectedAgents();
+    if (!state.livechatSelectedAgentIds.size) {
+      state.livechatGroupPriorityFilter = "";
+    }
+    renderApp();
   });
   bindClick("helpdeskSelectVisibleBtn", () => {
     setVisibleSelection("helpdesk-agent", true);
@@ -1380,6 +1473,8 @@ function bindAppEvents() {
   });
   bindClick("helpdeskClearVisibleBtn", () => {
     setVisibleSelection("helpdesk-agent", false);
+    syncHelpDeskTeamsFromSelectedAgents();
+    renderApp();
   });
 
   document.querySelectorAll('input[name="livechat-agent"]').forEach((input) => {
@@ -1387,6 +1482,12 @@ function bindAppEvents() {
       setSelection("livechat-agent", input.value, input.checked);
       if (input.checked) {
         selectLiveChatAgentGroups([input.value]);
+        renderApp();
+      } else {
+        syncLiveChatGroupsFromSelectedAgents();
+        if (!state.livechatSelectedAgentIds.size) {
+          state.livechatGroupPriorityFilter = "";
+        }
         renderApp();
       }
     };
@@ -1397,6 +1498,9 @@ function bindAppEvents() {
       setSelection("helpdesk-agent", input.value, input.checked);
       if (input.checked) {
         selectHelpDeskAgentTeams([input.value]);
+        renderApp();
+      } else {
+        syncHelpDeskTeamsFromSelectedAgents();
         renderApp();
       }
     };
@@ -1413,7 +1517,7 @@ function bindAppEvents() {
   bindClick("livechatAssignBtn", async () => {
     await withBusyState(async () => {
       const agentIds = selectedValues("livechat-agent");
-      const groupIds = selectedValues("livechat-group");
+      const groupIds = selectedLiveChatGroupIdsForAction();
       ensureSelection(agentIds, "agent");
       ensureSelection(groupIds, "group");
       await api("/api/livechat/memberships", {
@@ -1431,7 +1535,7 @@ function bindAppEvents() {
   bindClick("livechatChangePriorityBtn", async () => {
     await withBusyState(async () => {
       const agentIds = selectedValues("livechat-agent");
-      const groupIds = selectedValues("livechat-group");
+      const groupIds = selectedLiveChatGroupIdsForAction();
       ensureSelection(agentIds, "agent");
       ensureSelection(groupIds, "group");
       await api("/api/livechat/memberships", {
@@ -1449,7 +1553,7 @@ function bindAppEvents() {
   bindClick("livechatRemoveBtn", async () => {
     await withBusyState(async () => {
       const agentIds = selectedValues("livechat-agent");
-      const groupIds = selectedValues("livechat-group");
+      const groupIds = selectedLiveChatGroupIdsForAction();
       ensureSelection(agentIds, "agent");
       ensureSelection(groupIds, "group");
       await api("/api/livechat/memberships", {
