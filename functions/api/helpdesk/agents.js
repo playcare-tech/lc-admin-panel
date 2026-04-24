@@ -30,7 +30,6 @@ export async function onRequest(context) {
       email,
       roles: ["normal"],
       teamIDs: teamIds,
-      status: "invited",
     };
 
     if (name) {

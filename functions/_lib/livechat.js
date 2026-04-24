@@ -95,7 +95,7 @@ export async function getLiveChatAgent(env, agentId) {
   const [agentPayload, groupsPayload] = await Promise.all([
     livechatRequest(env, "get_agent", {
       id: agentId,
-      fields: ["groups", "suspended"],
+      fields: ["avatar", "chat_limit", "groups", "job_title", "role", "suspended"],
     }),
     livechatRequest(env, "list_groups", {}),
   ]);
@@ -110,7 +110,10 @@ export async function getLiveChatAgent(env, agentId) {
     id: rawAgent.id,
     email: rawAgent.id,
     name: rawAgent.name || rawAgent.id,
-    role: rawAgent.role || "agent",
+    role: rawAgent.role || "normal",
+    jobTitle: rawAgent.job_title || rawAgent.jobTitle || "",
+    chatLimit: rawAgent.chat_limit ?? rawAgent.chatLimit ?? "",
+    avatar: rawAgent.avatar || rawAgent.avatar_url || rawAgent.avatarUrl || "",
     suspended: Boolean(rawAgent.suspended),
     groups: (rawAgent.groups || []).map((group) => ({
       id: String(group.id),

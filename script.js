@@ -865,6 +865,76 @@ function renderNamedList(items, emptyLabel = "None") {
     .join("");
 }
 
+function formatProfileValue(value, fallback = "Not set") {
+  if (value === null || value === undefined || value === "") {
+    return fallback;
+  }
+  return `${value}`;
+}
+
+function roleLabel(role) {
+  if (role === "administrator") {
+    return "Administrator";
+  }
+  if (role === "viceowner") {
+    return "Vice owner";
+  }
+  if (role === "owner") {
+    return "Owner";
+  }
+  if (role === "viewer") {
+    return "Viewer";
+  }
+  return "Normal";
+}
+
+function initials(value) {
+  return `${value || ""}`
+    .split(/[\s@._-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
+}
+
+function renderLiveChatProfileCard(agent, currentMembershipMarkup) {
+  const avatar = agent.avatar
+    ? `<img src="${escapeHtml(agent.avatar)}" alt="" />`
+    : `<span>${escapeHtml(initials(agent.name || agent.email) || "LC")}</span>`;
+
+  return `
+    <div class="card-shell">
+      <div class="section-title">Profile</div>
+      <div class="profile-card">
+        <div class="profile-photo">${avatar}</div>
+        <div class="profile-name">${escapeHtml(formatProfileValue(agent.name, agent.email))}</div>
+        <div class="subtle">${escapeHtml(agent.email)}</div>
+        <div class="profile-grid">
+          <div>
+            <div class="profile-label">Role</div>
+            <div>${escapeHtml(roleLabel(agent.role))}</div>
+          </div>
+          <div>
+            <div class="profile-label">Status</div>
+            <div>${agent.suspended ? "Suspended" : "Active"}</div>
+          </div>
+          <div>
+            <div class="profile-label">Job title</div>
+            <div>${escapeHtml(formatProfileValue(agent.jobTitle))}</div>
+          </div>
+          <div>
+            <div class="profile-label">Chat limit</div>
+            <div>${escapeHtml(formatProfileValue(agent.chatLimit))}</div>
+          </div>
+        </div>
+        <button id="suspendModalLiveChatBtn" class="btn btn-outline-danger w-100" type="button" ${agent.suspended ? "disabled" : ""}>Suspend user</button>
+      </div>
+      <div class="section-title mt-3">Current memberships</div>
+      ${currentMembershipMarkup}
+    </div>
+  `;
+}
+
 function renderLogMetadata(entry) {
   const metadata = entry.metadata || {};
   const rows = [];
@@ -1184,10 +1254,14 @@ function renderModal() {
                     <button id="saveModalBtn" class="btn btn-primary" type="button">Save</button>
                   </div>
                 </div>
-                <div class="card-shell">
-                  <div class="section-title">Current memberships</div>
-                  ${currentMembershipMarkup}
-                </div>
+                ${
+                  isLiveChatUser
+                    ? renderLiveChatProfileCard(state.modalAgent, currentMembershipMarkup)
+                    : `<div class="card-shell">
+                        <div class="section-title">Current memberships</div>
+                        ${currentMembershipMarkup}
+                      </div>`
+                }
               `
           }
         </div>
@@ -1641,6 +1715,23 @@ function bindAppEvents() {
         });
       }, `LiveChat user ${button.dataset.livechatSuspend} deactivated.`);
     };
+  });
+  bindClick("suspendModalLiveChatBtn", async () => {
+    const agentId = state.modalAgent?.id;
+    if (!agentId) {
+      return;
+    }
+
+    await withBusyState(async () => {
+      await api("/api/livechat/agents/suspend", {
+        method: "POST",
+        body: { agentId },
+      });
+    }, `LiveChat user ${agentId} suspended.`);
+
+    state.modalOpen = false;
+    state.modalAgent = null;
+    renderModal();
   });
   document.querySelectorAll("[data-helpdesk-deactivate]").forEach((button) => {
     button.onclick = async () => {
