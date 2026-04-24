@@ -283,6 +283,13 @@ body {
   margin-bottom: 10px;
 }
 
+.selected-summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .checkbox-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));

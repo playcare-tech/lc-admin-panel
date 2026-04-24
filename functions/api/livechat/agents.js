@@ -19,6 +19,8 @@ export async function onRequest(context) {
     const email = `${body.email || ""}`.trim().toLowerCase();
     const groupIds = Array.isArray(body.groupIds) ? body.groupIds.filter(Boolean).map(String) : [];
     const priority = body.priority === "last" ? "last" : body.priority === "first" ? "first" : "normal";
+    const allowedRoles = new Set(["normal", "administrator", "viceowner"]);
+    const role = allowedRoles.has(body.role) ? body.role : "normal";
 
     if (!email) {
       return errorResponse("Email is required.", 400);
@@ -26,7 +28,7 @@ export async function onRequest(context) {
 
     const payload = {
       id: email,
-      role: "agent",
+      role,
     };
 
     if (name) {
@@ -52,6 +54,7 @@ export async function onRequest(context) {
       details: `Created LiveChat agent ${email}.`,
       metadata: {
         agentId: email,
+        role,
         createdGroups: groupIds.map((groupId) => ({
           id: groupId,
           name: groupNameById.get(String(groupId)) || `Group ${groupId}`,

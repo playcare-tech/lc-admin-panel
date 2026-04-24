@@ -13,6 +13,7 @@ const state = {
   livechatGroupSearch: "",
   livechatGroupQuickFilter: "",
   livechatGroupPriorityFilter: "",
+  livechatSelectedGroupsCollapsed: false,
   helpdeskTeamSearch: "",
   livechatCreateSearch: "",
   helpdeskCreateSearch: "",
@@ -374,6 +375,8 @@ function renderBulkEditor({
   priorityFilters = [],
   activePriorityFilter = "",
   selectedItems = [],
+  selectedSummaryToggleId = "",
+  selectedSummaryCollapsed = false,
 }) {
   return `
     <div class="editor-shell">
@@ -407,10 +410,21 @@ function renderBulkEditor({
       ${
         selectedItems.length
           ? `<div class="selected-summary">
-              <span class="subtle">${selectedItems.length} selected</span>
-              <div class="chip-list">${selectedItems
-                .map((item) => `<span class="chip">${escapeHtml(item.name)}</span>`)
-                .join("")}</div>
+              <div class="selected-summary-header">
+                <span class="subtle">${selectedItems.length} selected</span>
+                ${
+                  selectedSummaryToggleId
+                    ? `<button id="${selectedSummaryToggleId}" class="btn btn-sm btn-outline-secondary" type="button">${selectedSummaryCollapsed ? "Show" : "Hide"}</button>`
+                    : ""
+                }
+              </div>
+              ${
+                selectedSummaryCollapsed
+                  ? ""
+                  : `<div class="chip-list">${selectedItems
+                      .map((item) => `<span class="chip">${escapeHtml(item.name)}</span>`)
+                      .join("")}</div>`
+              }
             </div>`
           : ""
       }
@@ -498,6 +512,8 @@ function renderLiveChatUsers() {
             : [],
           activePriorityFilter: state.livechatGroupPriorityFilter,
           selectedItems: selectedGroups,
+          selectedSummaryToggleId: "livechatToggleSelectedGroupsBtn",
+          selectedSummaryCollapsed: state.livechatSelectedGroupsCollapsed,
         })}
       </div>
       <div class="table-shell">
@@ -733,6 +749,13 @@ function renderCreateUserForm(type) {
           ${
             isLiveChat
               ? `<div class="col-12">
+                  <select id="createLiveChatRole" class="form-select">
+                    <option value="normal" selected>Normal</option>
+                    <option value="administrator">Administrator</option>
+                    <option value="viceowner">Vice owner</option>
+                  </select>
+                </div>
+                <div class="col-12">
                   <select id="createLiveChatPriority" class="form-select">
                     <option value="normal" selected>Primary</option>
                     <option value="last">Last</option>
@@ -1405,6 +1428,11 @@ function bindAppEvents() {
     };
   });
 
+  bindClick("livechatToggleSelectedGroupsBtn", () => {
+    state.livechatSelectedGroupsCollapsed = !state.livechatSelectedGroupsCollapsed;
+    renderApp();
+  });
+
   refreshBtn.onclick = async () => {
     await withBusyState(async () => refreshData(), "Updated.");
   };
@@ -1631,6 +1659,7 @@ function bindAppEvents() {
         body: {
           name: document.getElementById("createLiveChatName").value.trim(),
           email: document.getElementById("createLiveChatEmail").value.trim(),
+          role: document.getElementById("createLiveChatRole").value,
           groupIds,
           priority: document.getElementById("createLiveChatPriority").value,
         },
