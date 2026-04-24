@@ -368,6 +368,7 @@ function renderBulkEditor({
   primaryLabel,
   secondaryActionId,
   secondaryLabel,
+  secondaryTone = "secondary",
   extraControl = "",
   quickFilters = [],
   activeQuickFilter = "",
@@ -435,7 +436,7 @@ function renderBulkEditor({
       </div>
       <div class="action-row">
         <button id="${primaryActionId}" class="btn btn-primary" type="button">${primaryLabel}</button>
-        <button id="${secondaryActionId}" class="btn btn-outline-secondary" type="button">${secondaryLabel}</button>
+        <button id="${secondaryActionId}" class="btn ${secondaryTone === "danger" ? "btn-outline-danger" : "btn-outline-secondary"}" type="button">${secondaryLabel}</button>
         ${extraControl}
       </div>
       <div class="checkbox-grid">
@@ -500,6 +501,7 @@ function renderLiveChatUsers() {
           primaryLabel: "Add groups",
           secondaryActionId: "livechatRemoveBtn",
           secondaryLabel: "Remove groups",
+          secondaryTone: "danger",
           extraControl: '<button id="livechatChangePriorityBtn" class="btn btn-outline-secondary" type="button">Change priority</button>',
           quickFilters: ["SS", "VIP", "TL", "S2B"],
           activeQuickFilter: state.livechatGroupQuickFilter,
@@ -600,6 +602,7 @@ function renderHelpDeskUsers() {
           primaryLabel: "Add groups",
           secondaryActionId: "helpdeskRemoveBtn",
           secondaryLabel: "Remove groups",
+          secondaryTone: "danger",
         })}
       </div>
       <div class="table-shell">

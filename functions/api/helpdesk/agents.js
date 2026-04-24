@@ -23,15 +23,19 @@ export async function onRequest(context) {
       return errorResponse("Email is required.", 400);
     }
 
+    const payload = {
+      email,
+      roles: ["normal"],
+      teamIDs: teamIds,
+    };
+
+    if (name) {
+      payload.name = name;
+    }
+
     const agent = await helpdeskRequest(context.env, "/agents", {
       method: "POST",
-      body: {
-        email,
-        name,
-        roles: ["normal"],
-        status: "invited",
-        teamIDs: teamIds,
-      },
+      body: payload,
     });
 
     const dashboard = await getHelpDeskDashboard(context.env);
