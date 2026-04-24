@@ -11,9 +11,14 @@ const state = {
   livechatSearch: "",
   helpdeskSearch: "",
   livechatGroupSearch: "",
+  livechatGroupQuickFilter: "",
   helpdeskTeamSearch: "",
   livechatCreateSearch: "",
   helpdeskCreateSearch: "",
+  livechatSelectedAgentIds: new Set(),
+  livechatSelectedGroupIds: new Set(),
+  helpdeskSelectedAgentIds: new Set(),
+  helpdeskSelectedTeamIds: new Set(),
   modalOpen: false,
   modalType: null,
   modalAgent: null,
@@ -77,7 +82,49 @@ function escapeHtml(value) {
 }
 
 function selectedValues(name) {
+  const bulkSelections = {
+    "livechat-agent": state.livechatSelectedAgentIds,
+    "livechat-group": state.livechatSelectedGroupIds,
+    "helpdesk-agent": state.helpdeskSelectedAgentIds,
+    "helpdesk-team": state.helpdeskSelectedTeamIds,
+  };
+
+  if (bulkSelections[name]) {
+    return Array.from(bulkSelections[name]);
+  }
+
   return Array.from(document.querySelectorAll(`input[name="${name}"]:checked`)).map((input) => input.value);
+}
+
+function isSelected(name, value) {
+  return selectedValues(name).includes(String(value));
+}
+
+function setSelection(name, value, checked) {
+  const bulkSelections = {
+    "livechat-agent": state.livechatSelectedAgentIds,
+    "livechat-group": state.livechatSelectedGroupIds,
+    "helpdesk-agent": state.helpdeskSelectedAgentIds,
+    "helpdesk-team": state.helpdeskSelectedTeamIds,
+  };
+  const selection = bulkSelections[name];
+
+  if (!selection) {
+    return;
+  }
+
+  if (checked) {
+    selection.add(String(value));
+  } else {
+    selection.delete(String(value));
+  }
+}
+
+function setVisibleSelection(name, checked) {
+  document.querySelectorAll(`input[name="${name}"]`).forEach((input) => {
+    input.checked = checked;
+    setSelection(name, input.value, checked);
+  });
 }
 
 function ensureSelection(values, label) {
@@ -164,6 +211,17 @@ function filterByName(items, search) {
   return items.filter((item) => item.name.toLowerCase().includes(normalized));
 }
 
+function filterLiveChatGroups(groups) {
+  const searchedGroups = filterByName(groups, state.livechatGroupSearch);
+  const quickFilter = state.livechatGroupQuickFilter.trim().toLowerCase();
+
+  if (!quickFilter) {
+    return searchedGroups;
+  }
+
+  return searchedGroups.filter((group) => group.name.toLowerCase().includes(quickFilter));
+}
+
 function livechatGroupsWithCounts() {
   const counts = new Map();
   state.livechat.agents.forEach((agent) => {
@@ -227,10 +285,53 @@ function renderStats(cards) {
   `;
 }
 
-function renderBulkEditor({ title, searchId, searchValue, searchPlaceholder, items, checkboxName, selectAllId, clearId, primaryActionId, primaryLabel, secondaryActionId, secondaryLabel, extraControl = "" }) {
+function renderBulkEditor({
+  title,
+  searchId,
+  searchValue,
+  searchPlaceholder,
+  items,
+  checkboxName,
+  selectAllId,
+  clearId,
+  primaryActionId,
+  primaryLabel,
+  secondaryActionId,
+  secondaryLabel,
+  extraControl = "",
+  quickFilters = [],
+  activeQuickFilter = "",
+  quickFilterPrefix = "",
+  selectedItems = [],
+}) {
+  const selectedNames = selectedItems.map((item) => item.name).join(", ");
+
   return `
     <div class="editor-shell">
-      <div class="section-title">${title}</div>
+      <div class="section-title">${title}${selectedNames ? `: ${escapeHtml(selectedNames)}` : ""}</div>
+      ${
+        quickFilters.length
+          ? `<div class="filter-row">
+              <button class="filter-chip ${activeQuickFilter ? "" : "active"}" type="button" data-${quickFilterPrefix}-filter="">All</button>
+              ${quickFilters
+                .map(
+                  (filter) =>
+                    `<button class="filter-chip ${activeQuickFilter === filter ? "active" : ""}" type="button" data-${quickFilterPrefix}-filter="${escapeHtml(filter)}">${escapeHtml(filter)}</button>`,
+                )
+                .join("")}
+            </div>`
+          : ""
+      }
+      ${
+        selectedItems.length
+          ? `<div class="selected-summary">
+              <span class="subtle">${selectedItems.length} selected</span>
+              <div class="chip-list">${selectedItems
+                .map((item) => `<span class="chip">${escapeHtml(item.name)}</span>`)
+                .join("")}</div>
+            </div>`
+          : ""
+      }
       <div class="toolbar-row">
         <input id="${searchId}" class="form-control" type="search" placeholder="${searchPlaceholder}" value="${escapeHtml(searchValue)}" />
         <button id="${selectAllId}" class="btn btn-outline-secondary" type="button">Select all shown</button>
@@ -248,7 +349,7 @@ function renderBulkEditor({ title, searchId, searchValue, searchPlaceholder, ite
                 .map(
                   (item) => `
                     <label class="check-pill">
-                      <input type="checkbox" name="${checkboxName}" value="${item.id}" />
+                      <input type="checkbox" name="${checkboxName}" value="${item.id}" ${isSelected(checkboxName, item.id) ? "checked" : ""} />
                       <span>${escapeHtml(item.name)}</span>
                     </label>
                   `,
@@ -263,7 +364,10 @@ function renderBulkEditor({ title, searchId, searchValue, searchPlaceholder, ite
 
 function renderLiveChatUsers() {
   const agents = filteredLiveChatAgents();
-  const groups = filterByName(state.livechat.groups, state.livechatGroupSearch);
+  const groups = filterLiveChatGroups(state.livechat.groups);
+  const selectedGroups = state.livechat.groups
+    .filter((group) => state.livechatSelectedGroupIds.has(String(group.id)))
+    .sort((left, right) => left.name.localeCompare(right.name));
 
   return `
     ${renderStats([
@@ -298,6 +402,10 @@ function renderLiveChatUsers() {
           secondaryActionId: "livechatRemoveBtn",
           secondaryLabel: "Remove groups",
           extraControl: '<button id="livechatChangePriorityBtn" class="btn btn-outline-secondary" type="button">Change priority</button>',
+          quickFilters: ["SS", "VIP", "TL", "S2B"],
+          activeQuickFilter: state.livechatGroupQuickFilter,
+          quickFilterPrefix: "livechat-group",
+          selectedItems: selectedGroups,
         })}
       </div>
       <div class="table-shell">
@@ -326,7 +434,7 @@ function renderLiveChatUsers() {
                       .map(
                         (agent) => `
                           <tr>
-                            <td><input type="checkbox" class="form-check-input" name="livechat-agent" value="${agent.id}" /></td>
+                            <td><input type="checkbox" class="form-check-input" name="livechat-agent" value="${agent.id}" ${isSelected("livechat-agent", agent.id) ? "checked" : ""} /></td>
                             <td>${escapeHtml(agent.email)}</td>
                             <td>${agent.groups.length}</td>
                             <td>${agent.suspended ? '<span class="chip last">Suspended</span>' : '<span class="chip primary">Active</span>'}</td>
@@ -412,7 +520,7 @@ function renderHelpDeskUsers() {
                       .map(
                         (agent) => `
                           <tr>
-                            <td><input type="checkbox" class="form-check-input" name="helpdesk-agent" value="${agent.id}" /></td>
+                            <td><input type="checkbox" class="form-check-input" name="helpdesk-agent" value="${agent.id}" ${isSelected("helpdesk-agent", agent.id) ? "checked" : ""} /></td>
                             <td>${escapeHtml(agent.email)}</td>
                             <td>${agent.teams.length}</td>
                             <td><span class="chip">${escapeHtml(agent.status)}</span></td>
@@ -1168,32 +1276,6 @@ function rerenderPreservingInput(inputId) {
   window.scrollTo(0, scrollY);
 }
 
-function syncSelectionsFromLiveChatAgents() {
-  const selectedAgentIds = selectedValues("livechat-agent");
-  const selectedGroupIds = new Set(
-    state.livechat.agents
-      .filter((agent) => selectedAgentIds.includes(agent.id))
-      .flatMap((agent) => agent.groups.map((group) => String(group.id))),
-  );
-
-  document.querySelectorAll('input[name="livechat-group"]').forEach((input) => {
-    input.checked = selectedGroupIds.has(String(input.value));
-  });
-}
-
-function syncSelectionsFromHelpDeskAgents() {
-  const selectedAgentIds = selectedValues("helpdesk-agent");
-  const selectedTeamIds = new Set(
-    state.helpdesk.agents
-      .filter((agent) => selectedAgentIds.includes(agent.id))
-      .flatMap((agent) => agent.teams.map((team) => String(team.id))),
-  );
-
-  document.querySelectorAll('input[name="helpdesk-team"]').forEach((input) => {
-    input.checked = selectedTeamIds.has(String(input.value));
-  });
-}
-
 function bindAppEvents() {
   document.querySelectorAll(".sidebar-link").forEach((button) => {
     button.onclick = () => {
@@ -1217,6 +1299,13 @@ function bindAppEvents() {
   bindSearch("helpdeskCreateSearchInput", "helpdeskCreateSearch");
   bindSearch("modalSearchInput", "modalSearch");
 
+  document.querySelectorAll("[data-livechat-group-filter]").forEach((button) => {
+    button.onclick = () => {
+      state.livechatGroupQuickFilter = button.dataset.livechatGroupFilter || "";
+      renderApp();
+    };
+  });
+
   refreshBtn.onclick = async () => {
     await withBusyState(async () => refreshData(), "Updated.");
   };
@@ -1231,84 +1320,64 @@ function bindAppEvents() {
   };
 
   bindClick("livechatSelectAllAgentsBtn", () => {
-    document.querySelectorAll('input[name="livechat-agent"]').forEach((input) => {
-      input.checked = true;
-    });
-    syncSelectionsFromLiveChatAgents();
+    state.livechat.agents.forEach((agent) => state.livechatSelectedAgentIds.add(String(agent.id)));
+    setVisibleSelection("livechat-agent", true);
   });
   bindClick("livechatClearAgentsBtn", () => {
-    document.querySelectorAll('input[name="livechat-agent"]').forEach((input) => {
-      input.checked = false;
-    });
-    syncSelectionsFromLiveChatAgents();
+    state.livechatSelectedAgentIds.clear();
+    setVisibleSelection("livechat-agent", false);
   });
   bindClick("helpdeskSelectAllAgentsBtn", () => {
-    document.querySelectorAll('input[name="helpdesk-agent"]').forEach((input) => {
-      input.checked = true;
-    });
-    syncSelectionsFromHelpDeskAgents();
+    state.helpdesk.agents.forEach((agent) => state.helpdeskSelectedAgentIds.add(String(agent.id)));
+    setVisibleSelection("helpdesk-agent", true);
   });
   bindClick("helpdeskClearAgentsBtn", () => {
-    document.querySelectorAll('input[name="helpdesk-agent"]').forEach((input) => {
-      input.checked = false;
-    });
-    syncSelectionsFromHelpDeskAgents();
+    state.helpdeskSelectedAgentIds.clear();
+    setVisibleSelection("helpdesk-agent", false);
   });
   bindClick("livechatSelectAllGroupsBtn", () => {
-    document.querySelectorAll('input[name="livechat-group"]').forEach((input) => {
-      input.checked = true;
-    });
+    setVisibleSelection("livechat-group", true);
   });
   bindClick("livechatClearGroupsBtn", () => {
-    document.querySelectorAll('input[name="livechat-group"]').forEach((input) => {
-      input.checked = false;
-    });
+    setVisibleSelection("livechat-group", false);
   });
   bindClick("helpdeskSelectAllTeamsBtn", () => {
-    document.querySelectorAll('input[name="helpdesk-team"]').forEach((input) => {
-      input.checked = true;
-    });
+    setVisibleSelection("helpdesk-team", true);
   });
   bindClick("helpdeskClearTeamsBtn", () => {
-    document.querySelectorAll('input[name="helpdesk-team"]').forEach((input) => {
-      input.checked = false;
-    });
+    setVisibleSelection("helpdesk-team", false);
   });
   bindClick("livechatSelectVisibleBtn", () => {
-    document.querySelectorAll('input[name="livechat-agent"]').forEach((input) => {
-      input.checked = true;
-    });
-    syncSelectionsFromLiveChatAgents();
+    setVisibleSelection("livechat-agent", true);
   });
   bindClick("livechatClearVisibleBtn", () => {
-    document.querySelectorAll('input[name="livechat-agent"]').forEach((input) => {
-      input.checked = false;
-    });
-    syncSelectionsFromLiveChatAgents();
+    setVisibleSelection("livechat-agent", false);
   });
   bindClick("helpdeskSelectVisibleBtn", () => {
-    document.querySelectorAll('input[name="helpdesk-agent"]').forEach((input) => {
-      input.checked = true;
-    });
-    syncSelectionsFromHelpDeskAgents();
+    setVisibleSelection("helpdesk-agent", true);
   });
   bindClick("helpdeskClearVisibleBtn", () => {
-    document.querySelectorAll('input[name="helpdesk-agent"]').forEach((input) => {
-      input.checked = false;
-    });
-    syncSelectionsFromHelpDeskAgents();
+    setVisibleSelection("helpdesk-agent", false);
   });
 
   document.querySelectorAll('input[name="livechat-agent"]').forEach((input) => {
     input.onchange = () => {
-      syncSelectionsFromLiveChatAgents();
+      setSelection("livechat-agent", input.value, input.checked);
     };
   });
 
   document.querySelectorAll('input[name="helpdesk-agent"]').forEach((input) => {
     input.onchange = () => {
-      syncSelectionsFromHelpDeskAgents();
+      setSelection("helpdesk-agent", input.value, input.checked);
     };
+  });
+
+  ["livechat-group", "helpdesk-team"].forEach((name) => {
+    document.querySelectorAll(`input[name="${name}"]`).forEach((input) => {
+      input.onchange = () => {
+        setSelection(name, input.value, input.checked);
+      };
+    });
   });
 
   bindClick("livechatAssignBtn", async () => {
