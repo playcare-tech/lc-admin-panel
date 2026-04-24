@@ -26,7 +26,6 @@ export async function onRequest(context) {
 
     const payload = {
       id: email,
-      email,
       role: "agent",
     };
 
