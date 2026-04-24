@@ -17,23 +17,31 @@ export async function onRequest(context) {
     const body = await readJson(context.request);
     const name = `${body.name || ""}`.trim();
     const email = `${body.email || ""}`.trim().toLowerCase();
+    const jobTitle = `${body.jobTitle || ""}`.trim();
+    const avatar = `${body.avatar || ""}`.trim();
     const teamIds = Array.isArray(body.teamIds) ? body.teamIds.filter(Boolean).map(String) : [];
+    const role = ["owner", "normal", "viewer"].includes(body.role) ? body.role : "normal";
 
     if (!email) {
       return errorResponse("Email is required.", 400);
     }
-    if (!teamIds.length) {
-      return errorResponse("Select at least one HelpDesk group.", 400);
-    }
 
     const payload = {
       email,
-      roles: ["normal"],
-      teamIDs: teamIds,
+      roles: [role],
     };
 
+    if (teamIds.length) {
+      payload.teamIDs = teamIds;
+    }
     if (name) {
       payload.name = name;
+    }
+    if (jobTitle) {
+      payload.jobTitle = jobTitle;
+    }
+    if (avatar) {
+      payload.avatar = avatar;
     }
 
     const agent = await helpdeskRequest(context.env, "/agents", {
@@ -53,6 +61,7 @@ export async function onRequest(context) {
       details: `Created HelpDesk agent ${email}.`,
       metadata: {
         agentId: email,
+        role,
         createdTeams: teamIds.map((teamId) => ({
           id: teamId,
           name: teamNameById.get(String(teamId)) || `Team ${teamId}`,

@@ -22,6 +22,21 @@ function normalizeGroupId(value) {
   return Number.isNaN(parsed) ? value : parsed;
 }
 
+function normalizeAvatarPath(value) {
+  if (!value) {
+    return "";
+  }
+
+  const path = `${value}`;
+  if (path.startsWith("http://") || path.startsWith("https://")) {
+    return path;
+  }
+  if (path.startsWith("//")) {
+    return `https:${path}`;
+  }
+  return path;
+}
+
 export async function livechatRequest(env, action, body = {}) {
   if (!env.TEXT_BASIC_AUTH_B64) {
     throw new Error("Missing TEXT_BASIC_AUTH_B64 environment variable.");
@@ -74,9 +89,12 @@ export async function getLiveChatDashboard(env) {
   const agents = rawAgents
     .map((agent) => ({
       id: agent.id,
-      email: agent.id,
+      email: agent.login || agent.email || agent.id,
       name: agent.name || agent.id,
-      role: agent.role || "agent",
+      role: agent.permission || agent.role || "normal",
+      jobTitle: agent.job_title || agent.jobTitle || "",
+      chatLimit: agent.max_chats_count ?? agent.chat_limit ?? agent.chatLimit ?? "",
+      avatar: normalizeAvatarPath(agent.avatar_path || agent.avatar || agent.avatar_url || agent.avatarUrl),
       suspended: Boolean(agent.suspended),
       groups: (agent.groups || agent.group_ids || []).map((group) => ({
         id: String(group.id),
@@ -95,7 +113,7 @@ export async function getLiveChatAgent(env, agentId) {
   const [agentPayload, groupsPayload] = await Promise.all([
     livechatRequest(env, "get_agent", {
       id: agentId,
-      fields: ["avatar", "chat_limit", "groups", "job_title", "role", "suspended"],
+      fields: ["avatar", "avatar_path", "groups", "job_title", "max_chats_count", "permission", "role", "suspended"],
     }),
     livechatRequest(env, "list_groups", {}),
   ]);
@@ -108,12 +126,12 @@ export async function getLiveChatAgent(env, agentId) {
 
   return {
     id: rawAgent.id,
-    email: rawAgent.id,
+    email: rawAgent.login || rawAgent.email || rawAgent.id,
     name: rawAgent.name || rawAgent.id,
-    role: rawAgent.role || "normal",
+    role: rawAgent.permission || rawAgent.role || "normal",
     jobTitle: rawAgent.job_title || rawAgent.jobTitle || "",
-    chatLimit: rawAgent.chat_limit ?? rawAgent.chatLimit ?? "",
-    avatar: rawAgent.avatar || rawAgent.avatar_url || rawAgent.avatarUrl || "",
+    chatLimit: rawAgent.max_chats_count ?? rawAgent.chat_limit ?? rawAgent.chatLimit ?? "",
+    avatar: normalizeAvatarPath(rawAgent.avatar_path || rawAgent.avatar || rawAgent.avatar_url || rawAgent.avatarUrl),
     suspended: Boolean(rawAgent.suspended),
     groups: (rawAgent.groups || []).map((group) => ({
       id: String(group.id),

@@ -428,13 +428,21 @@ body {
   gap: 14px;
 }
 
-.profile-card {
+.profile-card,
+.profile-form {
   display: grid;
-  gap: 10px;
+  gap: 12px;
+}
+
+.profile-hero {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
 }
 
 .profile-photo {
-  width: 84px;
+  width: 88px;
   aspect-ratio: 1;
   border-radius: 50%;
   overflow: hidden;
@@ -456,19 +464,17 @@ body {
 .profile-name {
   font-size: 18px;
   font-weight: 700;
+  margin-top: 6px;
 }
 
-.profile-grid {
+.profile-form .form-control:disabled {
+  background: #f8fafc;
+  color: var(--muted);
+}
+
+.profile-actions {
   display: grid;
   gap: 8px;
-  margin: 4px 0;
-}
-
-.profile-grid > div {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 8px 10px;
-  background: rgba(255, 255, 255, 0.72);
 }
 
 .profile-label {

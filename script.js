@@ -764,7 +764,19 @@ function renderCreateUserForm(type) {
                     <option value="last">Last</option>
                   </select>
                 </div>`
-              : ""
+              : `<div class="col-12">
+                  <select id="createHelpDeskRole" class="form-select">
+                    <option value="normal" selected>Normal</option>
+                    <option value="viewer">Viewer</option>
+                    <option value="owner">Owner</option>
+                  </select>
+                </div>
+                <div class="col-12">
+                  <input id="createHelpDeskJobTitle" class="form-control" type="text" placeholder="Job title" />
+                </div>
+                <div class="col-12">
+                  <input id="createHelpDeskAvatar" class="form-control" type="url" placeholder="Avatar URL" />
+                </div>`
           }
           <div class="col-12 d-grid">
             <button type="submit" class="btn btn-primary">${isLiveChat ? "Create LiveChat user" : "Create HelpDesk user"}</button>
@@ -888,6 +900,16 @@ function roleLabel(role) {
   return "Normal";
 }
 
+function roleBadgeLabel(role) {
+  if (role === "administrator") {
+    return "Admin";
+  }
+  if (role === "viceowner") {
+    return "Vice owner";
+  }
+  return "Agent";
+}
+
 function initials(value) {
   return `${value || ""}`
     .split(/[\s@._-]+/)
@@ -906,28 +928,48 @@ function renderLiveChatProfileCard(agent, currentMembershipMarkup) {
     <div class="card-shell">
       <div class="section-title">Profile</div>
       <div class="profile-card">
-        <div class="profile-photo">${avatar}</div>
-        <div class="profile-name">${escapeHtml(formatProfileValue(agent.name, agent.email))}</div>
-        <div class="subtle">${escapeHtml(agent.email)}</div>
-        <div class="profile-grid">
+        <div class="profile-hero">
+          <div class="profile-photo">${avatar}</div>
           <div>
-            <div class="profile-label">Role</div>
-            <div>${escapeHtml(roleLabel(agent.role))}</div>
-          </div>
-          <div>
-            <div class="profile-label">Status</div>
-            <div>${agent.suspended ? "Suspended" : "Active"}</div>
-          </div>
-          <div>
-            <div class="profile-label">Job title</div>
-            <div>${escapeHtml(formatProfileValue(agent.jobTitle))}</div>
-          </div>
-          <div>
-            <div class="profile-label">Chat limit</div>
-            <div>${escapeHtml(formatProfileValue(agent.chatLimit))}</div>
+            <span class="chip">${escapeHtml(roleBadgeLabel(agent.role))}</span>
+            <div class="profile-name">${escapeHtml(formatProfileValue(agent.name, agent.email))}</div>
+            <div class="subtle">${escapeHtml(formatProfileValue(agent.jobTitle, ""))}</div>
           </div>
         </div>
-        <button id="suspendModalLiveChatBtn" class="btn btn-outline-danger w-100" type="button" ${agent.suspended ? "disabled" : ""}>Suspend user</button>
+        <form id="livechatProfileForm" class="profile-form">
+          <div>
+            <label class="profile-label" for="livechatProfileName">Full name</label>
+            <input id="livechatProfileName" class="form-control" type="text" value="${escapeHtml(formatProfileValue(agent.name, ""))}" required />
+          </div>
+          <div>
+            <label class="profile-label" for="livechatProfileEmail">Email</label>
+            <input id="livechatProfileEmail" class="form-control" type="email" value="${escapeHtml(agent.email)}" disabled />
+          </div>
+          <div>
+            <label class="profile-label" for="livechatProfileRole">Role</label>
+            <select id="livechatProfileRole" class="form-select">
+              <option value="normal" ${agent.role === "normal" ? "selected" : ""}>Agent</option>
+              <option value="administrator" ${agent.role === "administrator" ? "selected" : ""}>Administrator</option>
+              <option value="viceowner" ${agent.role === "viceowner" ? "selected" : ""}>Vice owner</option>
+            </select>
+          </div>
+          <div>
+            <label class="profile-label" for="livechatProfileJobTitle">Job title</label>
+            <input id="livechatProfileJobTitle" class="form-control" type="text" value="${escapeHtml(formatProfileValue(agent.jobTitle, ""))}" />
+          </div>
+          <div>
+            <label class="profile-label" for="livechatProfileChatLimit">Chat limit</label>
+            <input id="livechatProfileChatLimit" class="form-control" type="number" min="0" max="20" step="1" value="${escapeHtml(formatProfileValue(agent.chatLimit, "0"))}" />
+          </div>
+          <div>
+            <label class="profile-label" for="livechatProfileAvatar">Photo URL</label>
+            <input id="livechatProfileAvatar" class="form-control" type="url" value="${escapeHtml(formatProfileValue(agent.avatar, ""))}" placeholder="https://..." />
+          </div>
+          <div class="profile-actions">
+            <button class="btn btn-primary" type="submit">Save profile</button>
+            <button id="suspendModalLiveChatBtn" class="btn btn-outline-danger" type="button" ${agent.suspended ? "disabled" : ""}>Suspend user</button>
+          </div>
+        </form>
       </div>
       <div class="section-title mt-3">Current memberships</div>
       ${currentMembershipMarkup}
@@ -1733,6 +1775,29 @@ function bindAppEvents() {
     state.modalAgent = null;
     renderModal();
   });
+  document.getElementById("livechatProfileForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const agentId = state.modalAgent?.id;
+    if (!agentId) {
+      return;
+    }
+
+    await withBusyState(async () => {
+      await api("/api/livechat/agent-profile", {
+        method: "POST",
+        body: {
+          agentId,
+          name: document.getElementById("livechatProfileName").value.trim(),
+          role: document.getElementById("livechatProfileRole").value,
+          jobTitle: document.getElementById("livechatProfileJobTitle").value.trim(),
+          chatLimit: document.getElementById("livechatProfileChatLimit").value,
+          avatarPath: document.getElementById("livechatProfileAvatar").value.trim(),
+        },
+      });
+    }, "LiveChat profile updated.");
+
+    await openLiveChatModal(agentId);
+  });
   document.querySelectorAll("[data-helpdesk-deactivate]").forEach((button) => {
     button.onclick = async () => {
       await withBusyState(async () => {
@@ -1770,6 +1835,9 @@ function bindAppEvents() {
         body: {
           name: document.getElementById("createHelpDeskName").value.trim(),
           email: document.getElementById("createHelpDeskEmail").value.trim(),
+          role: document.getElementById("createHelpDeskRole").value,
+          jobTitle: document.getElementById("createHelpDeskJobTitle").value.trim(),
+          avatar: document.getElementById("createHelpDeskAvatar").value.trim(),
           teamIds,
         },
       });
