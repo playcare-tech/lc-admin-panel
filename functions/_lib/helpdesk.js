@@ -15,7 +15,29 @@ function extractErrorMessage(payload, fallback) {
     return payload;
   }
 
-  return payload.error?.message || payload.message || payload.error || fallback;
+  const detailCandidates = [
+    payload.details,
+    payload.detail,
+    payload.errors,
+    payload.validation,
+    payload.error?.details,
+    payload.error?.errors,
+  ].filter(Boolean);
+  const details = detailCandidates
+    .flatMap((value) => (Array.isArray(value) ? value : [value]))
+    .map((value) => {
+      if (typeof value === "string") {
+        return value;
+      }
+      const path = value.path || value.field || value.param || value.property;
+      const message = value.message || value.error || value.reason || JSON.stringify(value);
+      return path ? `${path}: ${message}` : message;
+    })
+    .filter(Boolean)
+    .join(" | ");
+  const message = payload.error?.message || payload.message || payload.error || fallback;
+
+  return details ? `${message}: ${details}` : message;
 }
 
 export async function helpdeskRequest(env, path, options = {}) {

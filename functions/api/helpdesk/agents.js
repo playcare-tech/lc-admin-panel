@@ -22,11 +22,15 @@ export async function onRequest(context) {
     if (!email) {
       return errorResponse("Email is required.", 400);
     }
+    if (!teamIds.length) {
+      return errorResponse("Select at least one HelpDesk group.", 400);
+    }
 
     const payload = {
       email,
       roles: ["normal"],
       teamIDs: teamIds,
+      status: "invited",
     };
 
     if (name) {
