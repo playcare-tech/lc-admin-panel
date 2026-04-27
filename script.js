@@ -35,8 +35,10 @@ const state = {
       preset: "last_7_days",
       from: "",
       to: "",
-      timezone: localStorage.getItem("analyticsTimezone") || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
       agents: [],
+      excludeAgents: [],
+      includeSearch: "",
+      excludeSearch: "",
       compare: true,
     },
   },
@@ -107,8 +109,20 @@ function localDateValue(date) {
   return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`;
 }
 
-function dateInputToIso(value, endOfDay = false) {
-  return new Date(`${value}T${endOfDay ? "23:59:59" : "00:00:00"}`).toISOString();
+function offsetForDate(date) {
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absolute = Math.abs(offsetMinutes);
+  return `${sign}${padDatePart(Math.floor(absolute / 60))}:${padDatePart(absolute % 60)}`;
+}
+
+function dateWithOffset(date, offset = offsetForDate(date)) {
+  return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}T${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}:${padDatePart(date.getSeconds())}${offset}`;
+}
+
+function dateInputToReportDate(value, endOfDay = false, offset = "") {
+  const date = new Date(`${value}T${endOfDay ? "23:59:59" : "00:00:00"}`);
+  return dateWithOffset(date, offset || offsetForDate(date));
 }
 
 function isoToDateInput(value) {
@@ -170,8 +184,9 @@ function ensureAnalyticsRange() {
   const filters = state.analytics.filters;
   if (filters.preset !== "custom" || !filters.from || !filters.to) {
     const range = analyticsPresetRange(filters.preset);
-    filters.from = range.from.toISOString();
-    filters.to = range.to.toISOString();
+    const offset = offsetForDate(range.from);
+    filters.from = dateWithOffset(range.from, offset);
+    filters.to = dateWithOffset(range.to, offset);
   }
 }
 
@@ -191,8 +206,9 @@ function shiftAnalyticsPeriod(direction) {
     to.setDate(to.getDate() + direction * stepDays);
   }
 
-  filters.from = from.toISOString();
-  filters.to = to.toISOString();
+  const offset = offsetForDate(from);
+  filters.from = dateWithOffset(from, offset);
+  filters.to = dateWithOffset(to, offset);
   filters.preset = "custom";
 }
 
@@ -1265,30 +1281,28 @@ function analyticsPresetLabel(value) {
   return labels[value] || "Last 7 days";
 }
 
-function analyticsTimezoneOptions() {
-  const zones = [
-    state.analytics.filters.timezone,
-    "UTC",
-    "Europe/Rome",
-    "Europe/Warsaw",
-    "Europe/London",
-    "America/New_York",
-    "America/Chicago",
-    "America/Denver",
-    "America/Los_Angeles",
-    "Asia/Dubai",
-    "Asia/Kolkata",
-    "Asia/Singapore",
-    "Asia/Tokyo",
-    "Australia/Sydney",
-  ];
-  return Array.from(new Set(zones.filter(Boolean)));
-}
-
 function renderAnalyticsFilterBar() {
   const filters = state.analytics.filters;
   const presets = ["today", "yesterday", "last_7_days", "last_30_days", "this_week", "last_week", "this_month", "last_month", "custom"];
-  const agentEmails = Array.from(new Set((state.livechat.agents || []).map((agent) => agent.email).filter(Boolean))).sort();
+  const agentOptions = (state.livechat.agents || [])
+    .map((agent) => ({
+      id: String(agent.id),
+      email: agent.email || agent.id,
+      name: agent.name || agent.email || agent.id,
+      search: `${agent.email || ""} ${agent.name || ""} ${agent.id || ""}`.toLowerCase(),
+    }))
+    .sort((left, right) => left.email.localeCompare(right.email));
+  const includeSearch = filters.includeSearch.trim().toLowerCase();
+  const excludeSearch = filters.excludeSearch.trim().toLowerCase();
+  const includeOptions = agentOptions.filter((agent) => !includeSearch || agent.search.includes(includeSearch));
+  const excludeOptions = agentOptions.filter((agent) => !excludeSearch || agent.search.includes(excludeSearch));
+  const optionMarkup = (agents, selected) =>
+    agents
+      .map(
+        (agent) =>
+          `<option value="${escapeHtml(agent.id)}" ${selected.includes(agent.id) ? "selected" : ""}>${escapeHtml(agent.email)}</option>`,
+      )
+      .join("");
 
   return `
     <div class="card-shell analytics-filter-bar">
@@ -1308,19 +1322,23 @@ function renderAnalyticsFilterBar() {
           <input id="analyticsTo" class="form-control" type="date" value="${escapeHtml(isoToDateInput(filters.to))}" />
         </label>
         <label>
-          <span>Timezone</span>
-          <select id="analyticsTimezone" class="form-select">
-            ${analyticsTimezoneOptions()
-              .map((zone) => `<option value="${escapeHtml(zone)}" ${filters.timezone === zone ? "selected" : ""}>${escapeHtml(zone)}</option>`)
-              .join("")}
+          <span>Search agents to include</span>
+          <input id="analyticsIncludeSearch" class="form-control" type="search" placeholder="Search email or name" value="${escapeHtml(filters.includeSearch)}" />
+        </label>
+        <label>
+          <span>Include agents</span>
+          <select id="analyticsAgents" class="form-select" multiple>
+            ${optionMarkup(includeOptions, filters.agents)}
           </select>
         </label>
         <label>
-          <span>Agents</span>
-          <select id="analyticsAgents" class="form-select" multiple>
-            ${agentEmails
-              .map((email) => `<option value="${escapeHtml(email)}" ${filters.agents.includes(email) ? "selected" : ""}>${escapeHtml(email)}</option>`)
-              .join("")}
+          <span>Search agents to exclude</span>
+          <input id="analyticsExcludeSearch" class="form-control" type="search" placeholder="Search email or name" value="${escapeHtml(filters.excludeSearch)}" />
+        </label>
+        <label>
+          <span>Exclude agents</span>
+          <select id="analyticsExcludeAgents" class="form-select" multiple>
+            ${optionMarkup(excludeOptions, filters.excludeAgents)}
           </select>
         </label>
       </div>
@@ -1524,7 +1542,6 @@ function renderAnalyticsLeaderboard() {
       `,
     )
     .join("");
-  const unavailableCells = groups.map(() => '<td colspan="3" class="analytics-unavailable">Unavailable</td>').join("");
 
   return `
     <div class="table-shell analytics-table-shell">
@@ -1566,7 +1583,7 @@ function renderAnalyticsLeaderboard() {
                           <td>${agent.total_tickets}</td>
                           <td>${formatDuration(agent.avg_ftr_ms)}</td>
                           <td>${formatCsat(agent.avg_csat)}</td>
-                          ${unavailableCells}
+                          <td colspan="${groups.length * 3}" class="analytics-unavailable">Daily per-agent values unavailable</td>
                         </tr>
                       `,
                     )
@@ -1614,10 +1631,12 @@ async function fetchAnalytics() {
   const params = new URLSearchParams({
     from: filters.from,
     to: filters.to,
-    timezone: filters.timezone,
   });
   if (filters.agents.length) {
     params.set("agents", filters.agents.join(","));
+  }
+  if (filters.excludeAgents.length) {
+    params.set("exclude_agents", filters.excludeAgents.join(","));
   }
 
   try {
@@ -2063,7 +2082,11 @@ function bindAppEvents() {
     if (!event.target.value) {
       return;
     }
-    state.analytics.filters.from = dateInputToIso(event.target.value);
+    const offset = offsetForDate(new Date(`${event.target.value}T00:00:00`));
+    state.analytics.filters.from = dateInputToReportDate(event.target.value, false, offset);
+    if (state.analytics.filters.to) {
+      state.analytics.filters.to = dateInputToReportDate(isoToDateInput(state.analytics.filters.to), true, offset);
+    }
     state.analytics.filters.preset = "custom";
     state.analytics.data = null;
     fetchAnalytics();
@@ -2072,19 +2095,28 @@ function bindAppEvents() {
     if (!event.target.value) {
       return;
     }
-    state.analytics.filters.to = dateInputToIso(event.target.value, true);
+    const fromValue = isoToDateInput(state.analytics.filters.from) || event.target.value;
+    const offset = offsetForDate(new Date(`${fromValue}T00:00:00`));
+    state.analytics.filters.to = dateInputToReportDate(event.target.value, true, offset);
     state.analytics.filters.preset = "custom";
     state.analytics.data = null;
     fetchAnalytics();
   });
-  document.getElementById("analyticsTimezone")?.addEventListener("change", (event) => {
-    state.analytics.filters.timezone = event.target.value;
-    localStorage.setItem("analyticsTimezone", event.target.value);
-    state.analytics.data = null;
-    fetchAnalytics();
+  document.getElementById("analyticsIncludeSearch")?.addEventListener("input", (event) => {
+    state.analytics.filters.includeSearch = event.target.value;
+    rerenderPreservingInput("analyticsIncludeSearch");
   });
   document.getElementById("analyticsAgents")?.addEventListener("change", (event) => {
     state.analytics.filters.agents = Array.from(event.target.selectedOptions).map((option) => option.value);
+    state.analytics.data = null;
+    fetchAnalytics();
+  });
+  document.getElementById("analyticsExcludeSearch")?.addEventListener("input", (event) => {
+    state.analytics.filters.excludeSearch = event.target.value;
+    rerenderPreservingInput("analyticsExcludeSearch");
+  });
+  document.getElementById("analyticsExcludeAgents")?.addEventListener("change", (event) => {
+    state.analytics.filters.excludeAgents = Array.from(event.target.selectedOptions).map((option) => option.value);
     state.analytics.data = null;
     fetchAnalytics();
   });
