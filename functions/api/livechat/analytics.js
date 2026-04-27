@@ -67,9 +67,13 @@ async function fetchPeriodData(env, from, to, timezone, agentEmails) {
   for (const [date, dayData] of Object.entries(ratingsDist)) {
     const dayAgents = dayData.agents || {};
     for (const [email, data] of Object.entries(dayAgents)) {
-      if (agentMap[email]?.days[date]) {
-        agentMap[email].days[date].avg_csat = ratingsToCSAT(data.ratings);
+      if (!agentMap[email]) {
+        agentMap[email] = { email, total_tickets: 0, avg_ftr_ms: 0, avg_csat: null, days: {} };
       }
+      if (!agentMap[email].days[date]) {
+        agentMap[email].days[date] = { date, tickets: 0, avg_ftr_ms: 0, avg_csat: null };
+      }
+      agentMap[email].days[date].avg_csat = ratingsToCSAT(data.ratings);
     }
   }
 
@@ -87,7 +91,7 @@ async function fetchPeriodData(env, from, to, timezone, agentEmails) {
   const ftrAgents = agents.filter((a) => a.avg_ftr_ms > 0);
   const avgFtrMs = ftrAgents.length
     ? Math.round(ftrAgents.reduce((s, a) => s + a.avg_ftr_ms, 0) / ftrAgents.length)
-    : 0;
+    : null;
 
   return {
     summary: { total_tickets: totalTickets, avg_ftr_ms: avgFtrMs, avg_csat: avgCsat, active_agents: activeAgents },
@@ -110,11 +114,15 @@ export async function onRequest(context) {
 
   if (!from || !to) return errorResponse("Missing required params: from, to", 400);
 
+  if (isNaN(new Date(from).getTime()) || isNaN(new Date(to).getTime())) {
+    return errorResponse("Invalid date format for from or to", 400);
+  }
+
   const fromMs = new Date(from).getTime();
   const toMs = new Date(to).getTime();
   const durationMs = toMs - fromMs;
-  const prevTo = new Date(fromMs - 1).toISOString();
-  const prevFrom = new Date(fromMs - durationMs - 1).toISOString();
+  const prevTo = new Date(fromMs).toISOString();
+  const prevFrom = new Date(fromMs - durationMs).toISOString();
 
   try {
     const [current, prev] = await Promise.all([
