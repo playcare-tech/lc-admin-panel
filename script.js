@@ -230,7 +230,11 @@ function formatDuration(ms) {
 }
 
 function formatCsat(value) {
-  return value === null || value === undefined ? "—" : `${Number(value).toFixed(1)} ★`;
+  return value === null || value === undefined ? "—" : `${Math.round(Number(value) * 20)}%`;
+}
+
+function formatCsatDelta(value) {
+  return `${Math.round(Number(value) * 20)} pp`;
 }
 
 function analyticsAgentLabel(agent) {
@@ -1426,7 +1430,7 @@ function renderAnalyticsCards() {
         "Avg CSAT",
         formatCsat(summary.avg_csat),
         formatCsat(previous.avg_csat),
-        analyticsDelta(summary.avg_csat, previous.avg_csat, { formatter: (value) => Number(value).toFixed(1) }),
+        analyticsDelta(summary.avg_csat, previous.avg_csat, { formatter: formatCsatDelta }),
       )}
       ${renderAnalyticsCard(
         "Active agents",
