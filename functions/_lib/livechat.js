@@ -149,3 +149,34 @@ export function buildLiveChatGroups(groupIds, priority) {
     priority: priority === "last" ? "last" : priority === "first" ? "first" : "normal",
   }));
 }
+
+function getReportsBaseUrl(env) {
+  const version = env.LIVECHAT_API_VERSION || DEFAULT_LIVECHAT_API_VERSION;
+  return `https://api.livechatinc.com/${version}/reports`;
+}
+
+export async function livechatReportsRequest(env, path, body = {}) {
+  if (!env.TEXT_BASIC_AUTH_B64) {
+    throw new Error("Missing TEXT_BASIC_AUTH_B64 environment variable.");
+  }
+
+  const response = await fetch(`${getReportsBaseUrl(env)}${path}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${env.TEXT_BASIC_AUTH_B64}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  const text = await response.text();
+  const payload = text ? JSON.parse(text) : {};
+
+  if (!response.ok) {
+    throw new Error(
+      extractErrorMessage(payload, `LiveChat reports${path} failed.`)
+    );
+  }
+
+  return payload;
+}
