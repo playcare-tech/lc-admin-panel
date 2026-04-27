@@ -113,7 +113,7 @@ export async function getLiveChatAgent(env, agentId) {
   const [agentPayload, groupsPayload] = await Promise.all([
     livechatRequest(env, "get_agent", {
       id: agentId,
-      fields: ["avatar", "avatar_path", "groups", "job_title", "max_chats_count", "permission", "role", "suspended"],
+      fields: ["avatar_path", "groups", "job_title", "max_chats_count", "permission", "role", "suspended"],
     }),
     livechatRequest(env, "list_groups", {}),
   ]);
