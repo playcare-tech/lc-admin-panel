@@ -1457,7 +1457,14 @@ function renderAnalyticsTop5() {
                 (agent, index) => `
                   <div class="top5-row">
                     <span class="top5-rank">${medals[index]}</span>
-                    <span class="top5-email">${escapeHtml(agent.email)}</span>
+                    <span class="top5-agent">
+                      <span class="top5-name">${escapeHtml(analyticsAgentLabel(agent))}</span>
+                      ${
+                        analyticsAgentSubLabel(agent)
+                          ? `<span class="top5-sub">${escapeHtml(analyticsAgentSubLabel(agent))}</span>`
+                          : ""
+                      }
+                    </span>
                     <span class="top5-value">${value(agent)}</span>
                   </div>
                 `,
@@ -1495,7 +1502,7 @@ function analyticsTimelineGroups() {
     return timeline.map((item) => ({
       key: item.date,
       label: new Date(`${item.date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-      tickets: item.tickets,
+      chats: item.tickets,
       avg_ftr_ms: item.avg_ftr_ms,
       avg_csat: item.avg_csat,
     }));
@@ -1520,10 +1527,50 @@ function analyticsTimelineGroups() {
   return Array.from(grouped.values()).map((item) => ({
     key: item.key,
     label: item.label,
-    tickets: item.tickets,
+    chats: item.tickets,
     avg_ftr_ms: item.ftrCount ? Math.round(item.ftrSum / item.ftrCount) : null,
     avg_csat: item.csatCount ? Math.round((item.csatSum / item.csatCount) * 10) / 10 : null,
   }));
+}
+
+function analyticsAgentGroupCells(agent, groups) {
+  const dayMap = new Map((agent.days || []).map((day) => [day.date, day]));
+  const weekly = new Map();
+
+  (agent.days || []).forEach((day) => {
+    const key = isoWeekKey(new Date(`${day.date}T12:00:00`));
+    const current = weekly.get(key) || { chats: 0, ftrSum: 0, ftrCount: 0, csatSum: 0, csatCount: 0 };
+    current.chats += day.chats || 0;
+    if (day.avg_ftr_ms !== null && day.avg_ftr_ms !== undefined && day.chats) {
+      current.ftrSum += day.avg_ftr_ms * day.chats;
+      current.ftrCount += day.chats;
+    }
+    if (day.avg_csat !== null && day.avg_csat !== undefined) {
+      current.csatSum += day.avg_csat;
+      current.csatCount += 1;
+    }
+    weekly.set(key, current);
+  });
+
+  return groups
+    .map((group) => {
+      let day = dayMap.get(group.key);
+      if (!day && weekly.has(group.key)) {
+        const item = weekly.get(group.key);
+        day = {
+          chats: item.chats,
+          avg_ftr_ms: item.ftrCount ? Math.round(item.ftrSum / item.ftrCount) : null,
+          avg_csat: item.csatCount ? Math.round((item.csatSum / item.csatCount) * 10) / 10 : null,
+        };
+      }
+
+      return `
+        <td>${day?.chats || "—"}</td>
+        <td>${formatDuration(day?.avg_ftr_ms)}</td>
+        <td>${formatCsat(day?.avg_csat)}</td>
+      `;
+    })
+    .join("");
 }
 
 function sortedAnalyticsAgents() {
@@ -1547,7 +1594,7 @@ function renderAnalyticsLeaderboard() {
   const accountCells = groups
     .map(
       (group) => `
-        <td>${group.tickets || "—"}</td>
+        <td>${group.chats || "—"}</td>
         <td>${formatDuration(group.avg_ftr_ms)}</td>
         <td>${formatCsat(group.avg_csat)}</td>
       `,
@@ -1557,7 +1604,7 @@ function renderAnalyticsLeaderboard() {
   return `
     <div class="table-shell analytics-table-shell">
       <div class="analytics-table-note">
-        Daily columns are account-level because the documented Reports API returns per-agent performance for the selected period, not per-agent daily breakdowns.
+        Daily agent columns are loaded from per-date agents/performance reports and cached in D1; the account timeline row uses account-level report totals.
       </div>
       <div class="table-responsive analytics-leaderboard-wrap">
         <table class="table admin-table analytics-table">
@@ -1591,18 +1638,22 @@ function renderAnalyticsLeaderboard() {
                         <tr>
                           <td>${index + 1}</td>
                           <td>
-                            <div class="analytics-agent-main">${escapeHtml(analyticsAgentLabel(agent))}</div>
-                            ${
-                              analyticsAgentSubLabel(agent)
-                                ? `<div class="analytics-agent-sub">${escapeHtml(analyticsAgentSubLabel(agent))}</div>`
-                                : ""
-                            }
-                            <button class="btn btn-sm btn-outline-danger mt-1" type="button" data-analytics-exclude-agent="${escapeHtml(agent.id || agent.email || agent.record_key)}">Exclude</button>
+                            <div class="analytics-agent-cell">
+                              <div class="analytics-agent-copy">
+                                <div class="analytics-agent-main">${escapeHtml(analyticsAgentLabel(agent))}</div>
+                                ${
+                                  analyticsAgentSubLabel(agent)
+                                    ? `<div class="analytics-agent-sub">${escapeHtml(analyticsAgentSubLabel(agent))}</div>`
+                                    : ""
+                                }
+                              </div>
+                              <button class="btn btn-outline-danger analytics-exclude-btn" type="button" data-analytics-exclude-agent="${escapeHtml(agent.id || agent.email || agent.record_key)}">Exclude</button>
+                            </div>
                           </td>
                           <td>${agent.total_tickets}</td>
                           <td>${formatDuration(agent.avg_ftr_ms)}</td>
                           <td>${formatCsat(agent.avg_csat)}</td>
-                          <td colspan="${groups.length * 3}" class="analytics-unavailable">—</td>
+                          ${analyticsAgentGroupCells(agent, groups)}
                         </tr>
                       `,
                     )

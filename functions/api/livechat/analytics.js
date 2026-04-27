@@ -59,6 +59,71 @@ function buildFilters(from, to, agentIds) {
   };
 }
 
+function reportDatePart(value) {
+  return `${value}`.slice(0, 10);
+}
+
+function datesBetween(from, to) {
+  const dates = [];
+  const current = new Date(`${reportDatePart(from)}T12:00:00Z`);
+  const end = new Date(`${reportDatePart(to)}T12:00:00Z`);
+
+  while (current <= end) {
+    dates.push(current.toISOString().slice(0, 10));
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+
+  return dates;
+}
+
+function dayBounds(date, offset) {
+  return {
+    from: `${date}T00:00:00${offset}`,
+    to: `${date}T23:59:59${offset}`,
+  };
+}
+
+function agentScope(agentIds) {
+  return agentIds.length ? Array.from(new Set(agentIds)).sort().join(",") : "__all__";
+}
+
+function todayForOffset(offset) {
+  return formatWithOffset(new Date(), offset).slice(0, 10);
+}
+
+async function ensureAnalyticsCache(db) {
+  if (!db) {
+    throw new Error("Missing DB binding.");
+  }
+
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS analytics_agent_daily (
+      date TEXT NOT NULL,
+      agent_scope TEXT NOT NULL,
+      agent_key TEXT NOT NULL,
+      agent_id TEXT,
+      agent_email TEXT,
+      agent_name TEXT,
+      chats_count INTEGER NOT NULL DEFAULT 0,
+      avg_ftr_ms INTEGER,
+      avg_csat REAL,
+      rated_good INTEGER NOT NULL DEFAULT 0,
+      rated_bad INTEGER NOT NULL DEFAULT 0,
+      fetched_at TEXT NOT NULL,
+      PRIMARY KEY (date, agent_scope, agent_key)
+    )`,
+  ).run();
+
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS analytics_agent_daily_fetches (
+      date TEXT NOT NULL,
+      agent_scope TEXT NOT NULL,
+      fetched_at TEXT NOT NULL,
+      PRIMARY KEY (date, agent_scope)
+    )`,
+  ).run();
+}
+
 function buildAgentDirectory(livechatDashboard) {
   const byId = new Map();
   const byEmail = new Map();
@@ -124,15 +189,30 @@ function normalizeAgentRecords(performanceData, directory, excludedAgentIds) {
     .sort((left, right) => right.total_tickets - left.total_tickets || left.email.localeCompare(right.email));
 }
 
+function normalizeCachedAgentRows(rows) {
+  return rows.map((row) => ({
+    id: row.agent_id || row.agent_key,
+    record_key: row.agent_key,
+    email: row.agent_email || row.agent_key,
+    name: row.agent_name || row.agent_email || row.agent_key,
+    total_tickets: Number(row.chats_count || 0),
+    avg_ftr_ms: row.avg_ftr_ms === null || row.avg_ftr_ms === undefined ? null : Number(row.avg_ftr_ms),
+    avg_csat: row.avg_csat === null || row.avg_csat === undefined ? null : Number(row.avg_csat),
+    rated_good: Number(row.rated_good || 0),
+    rated_bad: Number(row.rated_bad || 0),
+  }));
+}
+
 function normalizeSummary(agents) {
   const ftrAgents = agents.filter((agent) => agent.avg_ftr_ms !== null && agent.total_tickets > 0);
+  const ftrChats = ftrAgents.reduce((sum, agent) => sum + agent.total_tickets, 0);
   const ratedGood = agents.reduce((sum, agent) => sum + agent.rated_good, 0);
   const ratedBad = agents.reduce((sum, agent) => sum + agent.rated_bad, 0);
   const totalTickets = agents.reduce((sum, agent) => sum + agent.total_tickets, 0);
   return {
     total_tickets: totalTickets,
-    avg_ftr_ms: ftrAgents.length
-      ? Math.round(ftrAgents.reduce((sum, agent) => sum + agent.avg_ftr_ms * agent.total_tickets, 0) / totalTickets)
+    avg_ftr_ms: ftrChats
+      ? Math.round(ftrAgents.reduce((sum, agent) => sum + agent.avg_ftr_ms * agent.total_tickets, 0) / ftrChats)
       : null,
     avg_csat: csatFromCounts(ratedGood, ratedBad),
     active_agents: agents.filter((agent) => agent.total_tickets > 0).length,
@@ -165,7 +245,137 @@ function normalizeTimeline(totalChatsData, ftrData, ratingsData) {
   });
 }
 
-async function fetchPeriodData(env, from, to, agentIds, excludedAgentIds, directory) {
+async function readCachedAgentDay(env, date, scope) {
+  const fetchRecord = await env.DB.prepare(
+    "SELECT fetched_at FROM analytics_agent_daily_fetches WHERE date = ? AND agent_scope = ?",
+  )
+    .bind(date, scope)
+    .first();
+
+  if (!fetchRecord) {
+    return null;
+  }
+
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM analytics_agent_daily WHERE date = ? AND agent_scope = ? ORDER BY chats_count DESC, agent_email ASC",
+  )
+    .bind(date, scope)
+    .all();
+
+  return normalizeCachedAgentRows(results || []);
+}
+
+async function writeCachedAgentDay(env, date, scope, agents) {
+  const fetchedAt = new Date().toISOString();
+  const statements = [
+    env.DB.prepare("DELETE FROM analytics_agent_daily WHERE date = ? AND agent_scope = ?").bind(date, scope),
+    ...agents.map((agent) =>
+      env.DB.prepare(
+      `INSERT OR REPLACE INTO analytics_agent_daily
+        (date, agent_scope, agent_key, agent_id, agent_email, agent_name, chats_count, avg_ftr_ms, avg_csat, rated_good, rated_bad, fetched_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        date,
+        scope,
+        agent.record_key || agent.id || agent.email,
+        agent.id || null,
+        agent.email || null,
+        agent.name || null,
+        agent.total_tickets || 0,
+        agent.avg_ftr_ms,
+        agent.avg_csat,
+        agent.rated_good || 0,
+        agent.rated_bad || 0,
+        fetchedAt,
+      ),
+    ),
+  ];
+
+  statements.push(
+    env.DB.prepare(
+      "INSERT OR REPLACE INTO analytics_agent_daily_fetches (date, agent_scope, fetched_at) VALUES (?, ?, ?)",
+    ).bind(date, scope, fetchedAt),
+  );
+
+  if (statements.length) {
+    await env.DB.batch(statements);
+  }
+}
+
+async function fetchAgentDay(env, date, offset, agentIds, excludedAgentIds, directory) {
+  const bounds = dayBounds(date, offset);
+  const performanceData = await livechatReportsRequest(env, "/agents/performance", {
+    filters: buildFilters(bounds.from, bounds.to, agentIds),
+  });
+  return normalizeAgentRecords(performanceData, directory, excludedAgentIds);
+}
+
+async function getAgentDay(env, date, offset, agentIds, excludedAgentIds, directory) {
+  const scope = agentScope(agentIds);
+  const shouldRefresh = date === todayForOffset(offset);
+  if (!shouldRefresh) {
+    const cached = await readCachedAgentDay(env, date, scope);
+    if (cached) {
+      return cached;
+    }
+  }
+
+  const agents = await fetchAgentDay(env, date, offset, agentIds, excludedAgentIds, directory);
+  await writeCachedAgentDay(env, date, scope, agents);
+  return agents;
+}
+
+async function fetchAgentDailyMetrics(env, from, to, agentIds, excludedAgentIds, directory) {
+  const offset = extractOffset(from);
+  const dates = datesBetween(from, to);
+  if (dates.length > 31) {
+    return [];
+  }
+
+  const entries = await Promise.all(
+    dates.map(async (date) => ({
+      date,
+      agents: await getAgentDay(env, date, offset, agentIds, excludedAgentIds, directory),
+    })),
+  );
+
+  return entries;
+}
+
+function mergeAgentDailyMetrics(agents, dailyEntries) {
+  const byAgentKey = new Map(
+    agents.map((agent) => [agent.id || agent.email || agent.record_key, { ...agent, days: [] }]),
+  );
+
+  dailyEntries.forEach(({ date, agents: dayAgents }) => {
+    dayAgents.forEach((dayAgent) => {
+      const key = dayAgent.id || dayAgent.email || dayAgent.record_key;
+      const current =
+        byAgentKey.get(key) ||
+        {
+          ...dayAgent,
+          total_tickets: 0,
+          avg_ftr_ms: null,
+          avg_csat: null,
+          days: [],
+        };
+
+      current.days.push({
+        date,
+        chats: dayAgent.total_tickets,
+        avg_ftr_ms: dayAgent.avg_ftr_ms,
+        avg_csat: dayAgent.avg_csat,
+      });
+      byAgentKey.set(key, current);
+    });
+  });
+
+  return Array.from(byAgentKey.values()).sort(
+    (left, right) => right.total_tickets - left.total_tickets || left.email.localeCompare(right.email),
+  );
+}
+
+async function fetchPeriodData(env, from, to, agentIds, excludedAgentIds, directory, includeDaily = false) {
   const filters = buildFilters(from, to, agentIds);
 
   const [performanceData, totalChatsData, ftrData, ratingsData] = await Promise.all([
@@ -186,10 +396,13 @@ async function fetchPeriodData(env, from, to, agentIds, excludedAgentIds, direct
     }),
   ]);
   const agents = normalizeAgentRecords(performanceData, directory, excludedAgentIds);
+  const dailyEntries = includeDaily
+    ? await fetchAgentDailyMetrics(env, from, to, agentIds, excludedAgentIds, directory)
+    : [];
 
   return {
     summary: normalizeSummary(agents),
-    agents,
+    agents: includeDaily ? mergeAgentDailyMetrics(agents, dailyEntries) : agents,
     timeline: normalizeTimeline(totalChatsData, ftrData, ratingsData),
   };
 }
@@ -231,10 +444,11 @@ export async function onRequest(context) {
   const prev = previousPeriod(from, to);
 
   try {
+    await ensureAnalyticsCache(context.env.DB);
     const directory = buildAgentDirectory(await getLiveChatDashboard(context.env));
     const reportAgentIds = effectiveAgentIds(agentIds, excludedAgentIds, directory);
     const [current, previous] = await Promise.all([
-      fetchPeriodData(context.env, from, to, reportAgentIds, excludedAgentIds, directory),
+      fetchPeriodData(context.env, from, to, reportAgentIds, excludedAgentIds, directory, true),
       fetchPeriodData(context.env, prev.from, prev.to, reportAgentIds, excludedAgentIds, directory),
     ]);
 
@@ -246,8 +460,9 @@ export async function onRequest(context) {
       timeline: current.timeline,
       capabilities: {
         per_agent_period_metrics: true,
-        per_agent_daily_metrics: false,
+        per_agent_daily_metrics: true,
         account_daily_timeline: true,
+        per_agent_daily_source: "agents/performance day-range cache",
         timeline_tickets_source: "chats/total_chats",
         timeline_ftr_source: "chats/first_response_time",
         timeline_csat_source: "chats/ratings",

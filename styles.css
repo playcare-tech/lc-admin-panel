@@ -658,16 +658,42 @@ body {
   font-weight: 700;
 }
 
-.top5-email {
+.top5-agent {
+  display: grid;
+  gap: 1px;
   min-width: 0;
+}
+
+.top5-name,
+.top5-sub {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.top5-name {
   font-weight: 600;
+}
+
+.top5-sub {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .analytics-agent-main {
   font-weight: 700;
+}
+
+.analytics-agent-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 260px;
+}
+
+.analytics-agent-copy {
+  min-width: 0;
 }
 
 .analytics-agent-sub {
@@ -677,6 +703,14 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.analytics-exclude-btn {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .top5-value {
@@ -717,12 +751,6 @@ body {
 .analytics-account-row td {
   background: rgba(109, 40, 217, 0.08);
   font-weight: 700;
-}
-
-.analytics-unavailable {
-  color: var(--muted);
-  text-align: center;
-  background: rgba(100, 116, 139, 0.06);
 }
 
 .analytics-error {
