@@ -82,6 +82,10 @@ function agentFromRecordKey(key, directory) {
   return directory.byId.get(String(key)) || directory.byEmail.get(String(key)) || { id: String(key), email: String(key), name: String(key) };
 }
 
+function displayNameFromRecord(record, fallback) {
+  return record.full_name || record.name || record.display_name || record.agent_name || fallback;
+}
+
 function resolveAgentId(value, directory) {
   return directory.byId.get(String(value))?.id || directory.byEmail.get(String(value))?.id || String(value);
 }
@@ -108,7 +112,7 @@ function normalizeAgentRecords(performanceData, directory, excludedAgentIds) {
         id: agent.id,
         record_key: String(recordKey),
         email: agent.email,
-        name: agent.name,
+        name: displayNameFromRecord(record, agent.name),
         total_tickets: Number(record.chats_count || 0),
         avg_ftr_ms: secondsToMs(record.first_response_time),
         avg_csat: csatFromCounts(good, bad),

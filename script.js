@@ -233,6 +233,17 @@ function formatCsat(value) {
   return value === null || value === undefined ? "—" : `${Number(value).toFixed(1)} ★`;
 }
 
+function analyticsAgentLabel(agent) {
+  const name = agent.name && agent.name !== agent.email && agent.name !== agent.id ? agent.name : "";
+  return name || agent.email || agent.id || agent.record_key || "";
+}
+
+function analyticsAgentSubLabel(agent) {
+  const main = analyticsAgentLabel(agent);
+  const secondary = agent.email && agent.email !== main ? agent.email : agent.id && agent.id !== main ? agent.id : agent.record_key;
+  return secondary && secondary !== main ? secondary : "";
+}
+
 function selectedValues(name) {
   const bulkSelections = {
     "livechat-agent": state.livechatSelectedAgentIds,
@@ -1300,7 +1311,7 @@ function renderAnalyticsFilterBar() {
     agents
       .map(
         (agent) =>
-          `<option value="${escapeHtml(agent.id)}" ${selected.includes(agent.id) ? "selected" : ""}>${escapeHtml(agent.email)}</option>`,
+          `<option value="${escapeHtml(agent.id)}" ${selected.includes(agent.id) ? "selected" : ""}>${escapeHtml(agent.name)} · ${escapeHtml(agent.email)}</option>`,
       )
       .join("");
 
@@ -1323,7 +1334,7 @@ function renderAnalyticsFilterBar() {
         </label>
         <label>
           <span>Search agents to include</span>
-          <input id="analyticsIncludeSearch" class="form-control" type="search" placeholder="Search email or name" value="${escapeHtml(filters.includeSearch)}" />
+          <input id="analyticsIncludeSearch" class="form-control" type="search" placeholder="Search full name or email" value="${escapeHtml(filters.includeSearch)}" />
         </label>
         <label>
           <span>Include agents</span>
@@ -1333,7 +1344,7 @@ function renderAnalyticsFilterBar() {
         </label>
         <label>
           <span>Search agents to exclude</span>
-          <input id="analyticsExcludeSearch" class="form-control" type="search" placeholder="Search email or name" value="${escapeHtml(filters.excludeSearch)}" />
+          <input id="analyticsExcludeSearch" class="form-control" type="search" placeholder="Search full name or email" value="${escapeHtml(filters.excludeSearch)}" />
         </label>
         <label>
           <span>Exclude agents</span>
@@ -1400,7 +1411,7 @@ function renderAnalyticsCards() {
   return `
     <div class="analytics-card-grid">
       ${renderAnalyticsCard(
-        "Total tickets",
+        "Total chats",
         summary.total_tickets,
         previous.total_tickets ?? "—",
         analyticsDelta(summary.total_tickets, previous.total_tickets),
@@ -1430,7 +1441,7 @@ function renderAnalyticsCards() {
 function renderAnalyticsTop5() {
   const agents = state.analytics.data?.agents || [];
   const medals = ["1", "2", "3", "4", "5"];
-  const byTickets = [...agents].sort((left, right) => right.total_tickets - left.total_tickets).slice(0, 5);
+  const byChats = [...agents].sort((left, right) => right.total_tickets - left.total_tickets).slice(0, 5);
   const byFtr = [...agents]
     .filter((agent) => agent.avg_ftr_ms !== null && agent.avg_ftr_ms !== undefined)
     .sort((left, right) => left.avg_ftr_ms - right.avg_ftr_ms)
@@ -1459,7 +1470,7 @@ function renderAnalyticsTop5() {
 
   return `
     <div class="analytics-top-grid">
-      ${panel("Top 5 by tickets", byTickets, (agent) => `${agent.total_tickets} tickets`)}
+      ${panel("Top 5 by chats", byChats, (agent) => `${agent.total_tickets} chats`)}
       ${panel("Top 5 by fastest Avg FTR", byFtr, (agent) => formatDuration(agent.avg_ftr_ms))}
     </div>
   `;
@@ -1546,7 +1557,7 @@ function renderAnalyticsLeaderboard() {
   return `
     <div class="table-shell analytics-table-shell">
       <div class="analytics-table-note">
-        Daily per-agent FTR and CSAT are not exposed by the documented Reports API. The timeline row shows account-level daily data; agent rows show verified period totals.
+        Daily columns are account-level because the documented Reports API returns per-agent performance for the selected period, not per-agent daily breakdowns.
       </div>
       <div class="table-responsive analytics-leaderboard-wrap">
         <table class="table admin-table analytics-table">
@@ -1554,13 +1565,13 @@ function renderAnalyticsLeaderboard() {
             <tr>
               <th rowspan="2">#</th>
               <th rowspan="2">Agent</th>
-              <th rowspan="2"><button type="button" data-analytics-sort="tickets">Total tickets</button></th>
+              <th rowspan="2"><button type="button" data-analytics-sort="tickets">Total chats</button></th>
               <th rowspan="2"><button type="button" data-analytics-sort="ftr">Avg FTR</button></th>
               <th rowspan="2"><button type="button" data-analytics-sort="csat">Avg CSAT</button></th>
               ${groups.map((group) => `<th colspan="3">${escapeHtml(group.label)}</th>`).join("")}
             </tr>
             <tr>
-              ${groups.map(() => "<th>Tickets</th><th>FTR</th><th>CSAT</th>").join("")}
+              ${groups.map(() => "<th>Chats</th><th>FTR</th><th>CSAT</th>").join("")}
             </tr>
           </thead>
           <tbody>
@@ -1579,11 +1590,19 @@ function renderAnalyticsLeaderboard() {
                       (agent, index) => `
                         <tr>
                           <td>${index + 1}</td>
-                          <td>${escapeHtml(agent.email)}</td>
+                          <td>
+                            <div class="analytics-agent-main">${escapeHtml(analyticsAgentLabel(agent))}</div>
+                            ${
+                              analyticsAgentSubLabel(agent)
+                                ? `<div class="analytics-agent-sub">${escapeHtml(analyticsAgentSubLabel(agent))}</div>`
+                                : ""
+                            }
+                            <button class="btn btn-sm btn-outline-danger mt-1" type="button" data-analytics-exclude-agent="${escapeHtml(agent.id || agent.email || agent.record_key)}">Exclude</button>
+                          </td>
                           <td>${agent.total_tickets}</td>
                           <td>${formatDuration(agent.avg_ftr_ms)}</td>
                           <td>${formatCsat(agent.avg_csat)}</td>
-                          <td colspan="${groups.length * 3}" class="analytics-unavailable">Daily per-agent values unavailable</td>
+                          <td colspan="${groups.length * 3}" class="analytics-unavailable">—</td>
                         </tr>
                       `,
                     )
@@ -2142,6 +2161,16 @@ function bindAppEvents() {
     button.onclick = () => {
       state.analytics.sort = button.dataset.analyticsSort;
       renderApp();
+    };
+  });
+  document.querySelectorAll("[data-analytics-exclude-agent]").forEach((button) => {
+    button.onclick = () => {
+      const agentId = button.dataset.analyticsExcludeAgent;
+      if (agentId && !state.analytics.filters.excludeAgents.includes(agentId)) {
+        state.analytics.filters.excludeAgents.push(agentId);
+      }
+      state.analytics.data = null;
+      fetchAnalytics();
     };
   });
 

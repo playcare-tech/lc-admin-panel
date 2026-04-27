@@ -666,6 +666,19 @@ body {
   font-weight: 600;
 }
 
+.analytics-agent-main {
+  font-weight: 700;
+}
+
+.analytics-agent-sub {
+  color: var(--muted);
+  font-size: 12px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .top5-value {
   color: var(--muted);
   white-space: nowrap;
