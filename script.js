@@ -26,6 +26,20 @@ const state = {
   modalAgent: null,
   modalSearch: "",
   generatedAdminPassword: "",
+  analytics: {
+    loading: false,
+    error: null,
+    data: null,
+    sort: "tickets",
+    filters: {
+      preset: "last_7_days",
+      from: "",
+      to: "",
+      timezone: localStorage.getItem("analyticsTimezone") || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+      agents: [],
+      compare: true,
+    },
+  },
 };
 
 const loginView = document.getElementById("loginView");
@@ -77,10 +91,130 @@ function showLogin() {
 }
 
 function escapeHtml(value) {
-  return `${value || ""}`
+  return `${value ?? ""}`
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function padDatePart(value) {
+  return String(value).padStart(2, "0");
+}
+
+function localDateValue(date) {
+  return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`;
+}
+
+function dateInputToIso(value, endOfDay = false) {
+  return new Date(`${value}T${endOfDay ? "23:59:59" : "00:00:00"}`).toISOString();
+}
+
+function isoToDateInput(value) {
+  if (!value) {
+    return "";
+  }
+  return localDateValue(new Date(value));
+}
+
+function analyticsPresetRange(preset) {
+  const now = new Date();
+  const startOfDay = (date) => new Date(`${localDateValue(date)}T00:00:00`);
+  const endOfDay = (date) => new Date(`${localDateValue(date)}T23:59:59`);
+  const startOfWeek = (date) => {
+    const copy = new Date(date);
+    const diff = copy.getDay() === 0 ? -6 : 1 - copy.getDay();
+    copy.setDate(copy.getDate() + diff);
+    return startOfDay(copy);
+  };
+
+  if (preset === "today") {
+    return { from: startOfDay(now), to: endOfDay(now) };
+  }
+  if (preset === "yesterday") {
+    const date = new Date(now);
+    date.setDate(date.getDate() - 1);
+    return { from: startOfDay(date), to: endOfDay(date) };
+  }
+  if (preset === "last_30_days") {
+    const from = new Date(now);
+    from.setDate(from.getDate() - 29);
+    return { from: startOfDay(from), to: endOfDay(now) };
+  }
+  if (preset === "this_week") {
+    return { from: startOfWeek(now), to: endOfDay(now) };
+  }
+  if (preset === "last_week") {
+    const from = startOfWeek(now);
+    from.setDate(from.getDate() - 7);
+    const to = new Date(from);
+    to.setDate(to.getDate() + 6);
+    return { from, to: endOfDay(to) };
+  }
+  if (preset === "this_month") {
+    return { from: new Date(now.getFullYear(), now.getMonth(), 1), to: endOfDay(now) };
+  }
+  if (preset === "last_month") {
+    const from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const to = new Date(now.getFullYear(), now.getMonth(), 0);
+    return { from, to: endOfDay(to) };
+  }
+
+  const from = new Date(now);
+  from.setDate(from.getDate() - 6);
+  return { from: startOfDay(from), to: endOfDay(now) };
+}
+
+function ensureAnalyticsRange() {
+  const filters = state.analytics.filters;
+  if (filters.preset !== "custom" || !filters.from || !filters.to) {
+    const range = analyticsPresetRange(filters.preset);
+    filters.from = range.from.toISOString();
+    filters.to = range.to.toISOString();
+  }
+}
+
+function shiftAnalyticsPeriod(direction) {
+  ensureAnalyticsRange();
+  const filters = state.analytics.filters;
+  const from = new Date(filters.from);
+  const to = new Date(filters.to);
+  const isMonth = ["this_month", "last_month"].includes(filters.preset);
+
+  if (isMonth) {
+    from.setMonth(from.getMonth() + direction);
+    to.setMonth(to.getMonth() + direction);
+  } else {
+    const stepDays = ["today", "yesterday"].includes(filters.preset) ? 1 : 7;
+    from.setDate(from.getDate() + direction * stepDays);
+    to.setDate(to.getDate() + direction * stepDays);
+  }
+
+  filters.from = from.toISOString();
+  filters.to = to.toISOString();
+  filters.preset = "custom";
+}
+
+function formatDuration(ms) {
+  if (ms === null || ms === undefined || Number.isNaN(Number(ms))) {
+    return "—";
+  }
+  const totalSeconds = Math.round(Number(ms) / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
+function formatCsat(value) {
+  return value === null || value === undefined ? "—" : `${Number(value).toFixed(1)} ★`;
 }
 
 function selectedValues(name) {
@@ -1116,11 +1250,392 @@ function renderLogs() {
   `;
 }
 
+function analyticsPresetLabel(value) {
+  const labels = {
+    today: "Today",
+    yesterday: "Yesterday",
+    last_7_days: "Last 7 days",
+    last_30_days: "Last 30 days",
+    this_week: "This week",
+    last_week: "Last week",
+    this_month: "This month",
+    last_month: "Last month",
+    custom: "Custom range",
+  };
+  return labels[value] || "Last 7 days";
+}
+
+function analyticsTimezoneOptions() {
+  const zones = [
+    state.analytics.filters.timezone,
+    "UTC",
+    "Europe/Rome",
+    "Europe/Warsaw",
+    "Europe/London",
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles",
+    "Asia/Dubai",
+    "Asia/Kolkata",
+    "Asia/Singapore",
+    "Asia/Tokyo",
+    "Australia/Sydney",
+  ];
+  return Array.from(new Set(zones.filter(Boolean)));
+}
+
+function renderAnalyticsFilterBar() {
+  const filters = state.analytics.filters;
+  const presets = ["today", "yesterday", "last_7_days", "last_30_days", "this_week", "last_week", "this_month", "last_month", "custom"];
+  const agentEmails = Array.from(new Set((state.livechat.agents || []).map((agent) => agent.email).filter(Boolean))).sort();
+
+  return `
+    <div class="card-shell analytics-filter-bar">
+      <div class="analytics-filter-grid">
+        <label>
+          <span>Preset</span>
+          <select id="analyticsPreset" class="form-select">
+            ${presets.map((preset) => `<option value="${preset}" ${filters.preset === preset ? "selected" : ""}>${analyticsPresetLabel(preset)}</option>`).join("")}
+          </select>
+        </label>
+        <label>
+          <span>From</span>
+          <input id="analyticsFrom" class="form-control" type="date" value="${escapeHtml(isoToDateInput(filters.from))}" />
+        </label>
+        <label>
+          <span>To</span>
+          <input id="analyticsTo" class="form-control" type="date" value="${escapeHtml(isoToDateInput(filters.to))}" />
+        </label>
+        <label>
+          <span>Timezone</span>
+          <select id="analyticsTimezone" class="form-select">
+            ${analyticsTimezoneOptions()
+              .map((zone) => `<option value="${escapeHtml(zone)}" ${filters.timezone === zone ? "selected" : ""}>${escapeHtml(zone)}</option>`)
+              .join("")}
+          </select>
+        </label>
+        <label>
+          <span>Agents</span>
+          <select id="analyticsAgents" class="form-select" multiple>
+            ${agentEmails
+              .map((email) => `<option value="${escapeHtml(email)}" ${filters.agents.includes(email) ? "selected" : ""}>${escapeHtml(email)}</option>`)
+              .join("")}
+          </select>
+        </label>
+      </div>
+      <div class="analytics-actions">
+        <button id="analyticsPrevBtn" class="btn btn-outline-secondary" type="button">Previous period</button>
+        <button id="analyticsNextBtn" class="btn btn-outline-secondary" type="button">Next period</button>
+        <button id="analyticsReloadBtn" class="btn btn-primary" type="button">Reload analytics</button>
+        <label class="analytics-switch">
+          <input id="analyticsCompare" class="form-check-input" type="checkbox" ${filters.compare ? "checked" : ""} />
+          <span>Compare</span>
+        </label>
+      </div>
+    </div>
+  `;
+}
+
+function analyticsDelta(current, previous, { lowerIsBetter = false, formatter = (value) => value } = {}) {
+  if (current === null || current === undefined || previous === null || previous === undefined) {
+    return { label: "—", tone: "neutral" };
+  }
+  const diff = Number(current) - Number(previous);
+  if (!diff) {
+    return { label: "±0", tone: "neutral" };
+  }
+  const better = lowerIsBetter ? diff < 0 : diff > 0;
+  const prefix = diff > 0 ? "+" : "−";
+  return {
+    label: `${prefix}${formatter(Math.abs(diff))}`,
+    tone: better ? "good" : "bad",
+  };
+}
+
+function renderAnalyticsCard(label, value, previousLabel, delta) {
+  const compare = state.analytics.filters.compare;
+  return `
+    <div class="analytics-card">
+      <div class="stats-label">${escapeHtml(label)}</div>
+      <div class="stats-value">${value}</div>
+      ${
+        compare
+          ? `<div class="analytics-card-prev">
+              <span>prev: ${previousLabel}</span>
+              <span class="analytics-delta ${delta.tone}">${escapeHtml(delta.label)}</span>
+            </div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+function renderAnalyticsCards() {
+  const data = state.analytics.data;
+  if (!data) {
+    return "";
+  }
+  const summary = data.summary;
+  const previous = summary.prev_period || {};
+
+  return `
+    <div class="analytics-card-grid">
+      ${renderAnalyticsCard(
+        "Total tickets",
+        summary.total_tickets,
+        previous.total_tickets ?? "—",
+        analyticsDelta(summary.total_tickets, previous.total_tickets),
+      )}
+      ${renderAnalyticsCard(
+        "Avg FTR",
+        formatDuration(summary.avg_ftr_ms),
+        formatDuration(previous.avg_ftr_ms),
+        analyticsDelta(summary.avg_ftr_ms, previous.avg_ftr_ms, { lowerIsBetter: true, formatter: formatDuration }),
+      )}
+      ${renderAnalyticsCard(
+        "Avg CSAT",
+        formatCsat(summary.avg_csat),
+        formatCsat(previous.avg_csat),
+        analyticsDelta(summary.avg_csat, previous.avg_csat, { formatter: (value) => Number(value).toFixed(1) }),
+      )}
+      ${renderAnalyticsCard(
+        "Active agents",
+        summary.active_agents,
+        previous.active_agents ?? "—",
+        analyticsDelta(summary.active_agents, previous.active_agents),
+      )}
+    </div>
+  `;
+}
+
+function renderAnalyticsTop5() {
+  const agents = state.analytics.data?.agents || [];
+  const medals = ["1", "2", "3", "4", "5"];
+  const byTickets = [...agents].sort((left, right) => right.total_tickets - left.total_tickets).slice(0, 5);
+  const byFtr = [...agents]
+    .filter((agent) => agent.avg_ftr_ms !== null && agent.avg_ftr_ms !== undefined)
+    .sort((left, right) => left.avg_ftr_ms - right.avg_ftr_ms)
+    .slice(0, 5);
+
+  const panel = (title, rows, value) => `
+    <div class="top5-panel">
+      <div class="section-title">${escapeHtml(title)}</div>
+      ${
+        rows.length
+          ? rows
+              .map(
+                (agent, index) => `
+                  <div class="top5-row">
+                    <span class="top5-rank">${medals[index]}</span>
+                    <span class="top5-email">${escapeHtml(agent.email)}</span>
+                    <span class="top5-value">${value(agent)}</span>
+                  </div>
+                `,
+              )
+              .join("")
+          : '<div class="empty-state">No analytics data for this period.</div>'
+      }
+    </div>
+  `;
+
+  return `
+    <div class="analytics-top-grid">
+      ${panel("Top 5 by tickets", byTickets, (agent) => `${agent.total_tickets} tickets`)}
+      ${panel("Top 5 by fastest Avg FTR", byFtr, (agent) => formatDuration(agent.avg_ftr_ms))}
+    </div>
+  `;
+}
+
+function isoWeekKey(date) {
+  const copy = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = copy.getUTCDay() || 7;
+  copy.setUTCDate(copy.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(copy.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil(((copy - yearStart) / 86400000 + 1) / 7);
+  return `${copy.getUTCFullYear()} W${padDatePart(weekNo)}`;
+}
+
+function analyticsTimelineGroups() {
+  const timeline = state.analytics.data?.timeline || [];
+  const from = new Date(state.analytics.data?.period?.from || state.analytics.filters.from);
+  const to = new Date(state.analytics.data?.period?.to || state.analytics.filters.to);
+  const dayCount = Math.round((to.getTime() - from.getTime()) / 86400000) + 1;
+
+  if (dayCount <= 31) {
+    return timeline.map((item) => ({
+      key: item.date,
+      label: new Date(`${item.date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      tickets: item.tickets,
+      avg_ftr_ms: item.avg_ftr_ms,
+      avg_csat: item.avg_csat,
+    }));
+  }
+
+  const grouped = new Map();
+  timeline.forEach((item) => {
+    const key = isoWeekKey(new Date(`${item.date}T12:00:00`));
+    const current = grouped.get(key) || { key, label: key, tickets: 0, ftrSum: 0, ftrCount: 0, csatSum: 0, csatCount: 0 };
+    current.tickets += item.tickets || 0;
+    if (item.avg_ftr_ms !== null && item.first_response_chats) {
+      current.ftrSum += item.avg_ftr_ms * item.first_response_chats;
+      current.ftrCount += item.first_response_chats;
+    }
+    if (item.avg_csat !== null && item.rated_chats) {
+      current.csatSum += item.avg_csat * item.rated_chats;
+      current.csatCount += item.rated_chats;
+    }
+    grouped.set(key, current);
+  });
+
+  return Array.from(grouped.values()).map((item) => ({
+    key: item.key,
+    label: item.label,
+    tickets: item.tickets,
+    avg_ftr_ms: item.ftrCount ? Math.round(item.ftrSum / item.ftrCount) : null,
+    avg_csat: item.csatCount ? Math.round((item.csatSum / item.csatCount) * 10) / 10 : null,
+  }));
+}
+
+function sortedAnalyticsAgents() {
+  const agents = [...(state.analytics.data?.agents || [])];
+  if (state.analytics.sort === "ftr") {
+    return agents.sort((left, right) => (left.avg_ftr_ms ?? Number.MAX_SAFE_INTEGER) - (right.avg_ftr_ms ?? Number.MAX_SAFE_INTEGER));
+  }
+  if (state.analytics.sort === "csat") {
+    return agents.sort((left, right) => (right.avg_csat ?? -1) - (left.avg_csat ?? -1));
+  }
+  return agents.sort((left, right) => right.total_tickets - left.total_tickets || left.email.localeCompare(right.email));
+}
+
+function renderAnalyticsLeaderboard() {
+  const data = state.analytics.data;
+  if (!data) {
+    return "";
+  }
+  const groups = analyticsTimelineGroups();
+  const agents = sortedAnalyticsAgents();
+  const accountCells = groups
+    .map(
+      (group) => `
+        <td>${group.tickets || "—"}</td>
+        <td>${formatDuration(group.avg_ftr_ms)}</td>
+        <td>${formatCsat(group.avg_csat)}</td>
+      `,
+    )
+    .join("");
+  const unavailableCells = groups.map(() => '<td colspan="3" class="analytics-unavailable">Unavailable</td>').join("");
+
+  return `
+    <div class="table-shell analytics-table-shell">
+      <div class="analytics-table-note">
+        Daily per-agent FTR and CSAT are not exposed by the documented Reports API. The timeline row shows account-level daily data; agent rows show verified period totals.
+      </div>
+      <div class="table-responsive analytics-leaderboard-wrap">
+        <table class="table admin-table analytics-table">
+          <thead>
+            <tr>
+              <th rowspan="2">#</th>
+              <th rowspan="2">Agent</th>
+              <th rowspan="2"><button type="button" data-analytics-sort="tickets">Total tickets</button></th>
+              <th rowspan="2"><button type="button" data-analytics-sort="ftr">Avg FTR</button></th>
+              <th rowspan="2"><button type="button" data-analytics-sort="csat">Avg CSAT</button></th>
+              ${groups.map((group) => `<th colspan="3">${escapeHtml(group.label)}</th>`).join("")}
+            </tr>
+            <tr>
+              ${groups.map(() => "<th>Tickets</th><th>FTR</th><th>CSAT</th>").join("")}
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="analytics-account-row">
+              <td>—</td>
+              <td>Account timeline</td>
+              <td>${data.summary.total_tickets}</td>
+              <td>${formatDuration(data.summary.avg_ftr_ms)}</td>
+              <td>${formatCsat(data.summary.avg_csat)}</td>
+              ${accountCells}
+            </tr>
+            ${
+              agents.length
+                ? agents
+                    .map(
+                      (agent, index) => `
+                        <tr>
+                          <td>${index + 1}</td>
+                          <td>${escapeHtml(agent.email)}</td>
+                          <td>${agent.total_tickets}</td>
+                          <td>${formatDuration(agent.avg_ftr_ms)}</td>
+                          <td>${formatCsat(agent.avg_csat)}</td>
+                          ${unavailableCells}
+                        </tr>
+                      `,
+                    )
+                    .join("")
+                : `<tr><td colspan="${5 + groups.length * 3}"><div class="empty-state">No agent analytics for this period.</div></td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function renderAnalytics() {
+  ensureAnalyticsRange();
+  const data = state.analytics.data;
+  return `
+    ${renderAnalyticsFilterBar()}
+    ${
+      state.analytics.error
+        ? `<div class="empty-state analytics-error">${escapeHtml(state.analytics.error)}</div>`
+        : ""
+    }
+    ${
+      state.analytics.loading
+        ? `<div class="empty-state">Loading analytics...</div>`
+        : data
+          ? `
+              ${renderAnalyticsCards()}
+              ${renderAnalyticsTop5()}
+              ${renderAnalyticsLeaderboard()}
+            `
+          : `<div class="empty-state">Analytics will load automatically.</div>`
+    }
+  `;
+}
+
+async function fetchAnalytics() {
+  ensureAnalyticsRange();
+  state.analytics.loading = true;
+  state.analytics.error = null;
+  renderApp();
+
+  const filters = state.analytics.filters;
+  const params = new URLSearchParams({
+    from: filters.from,
+    to: filters.to,
+    timezone: filters.timezone,
+  });
+  if (filters.agents.length) {
+    params.set("agents", filters.agents.join(","));
+  }
+
+  try {
+    state.analytics.data = await api(`/api/livechat/analytics?${params}`);
+  } catch (error) {
+    state.analytics.error = error.message;
+  } finally {
+    state.analytics.loading = false;
+    renderApp();
+  }
+}
+
 function currentSectionTitle() {
   const titles = {
     "livechat-users": "LiveChat Users",
     "livechat-groups": "LiveChat Groups",
     "create-livechat-user": "Create LiveChat User",
+    "livechat-analytics": "LiveChat Analytics",
     "helpdesk-users": "HelpDesk Users",
     "helpdesk-groups": "HelpDesk Groups",
     "create-helpdesk-user": "Create HelpDesk User",
@@ -1324,6 +1839,8 @@ function renderApp() {
     appContent.innerHTML = renderLiveChatGroups();
   } else if (state.section === "create-livechat-user") {
     appContent.innerHTML = renderCreateUserForm("livechat");
+  } else if (state.section === "livechat-analytics") {
+    appContent.innerHTML = renderAnalytics();
   } else if (state.section === "helpdesk-users") {
     appContent.innerHTML = renderHelpDeskUsers();
   } else if (state.section === "helpdesk-groups") {
@@ -1338,6 +1855,10 @@ function renderApp() {
 
   renderModal();
   bindAppEvents();
+
+  if (state.section === "livechat-analytics" && !state.analytics.loading && !state.analytics.data && !state.analytics.error) {
+    fetchAnalytics();
+  }
 }
 
 async function refreshData() {
@@ -1532,6 +2053,65 @@ function bindAppEvents() {
   bindSearch("livechatCreateSearchInput", "livechatCreateSearch");
   bindSearch("helpdeskCreateSearchInput", "helpdeskCreateSearch");
   bindSearch("modalSearchInput", "modalSearch");
+
+  document.getElementById("analyticsPreset")?.addEventListener("change", (event) => {
+    state.analytics.filters.preset = event.target.value;
+    state.analytics.data = null;
+    fetchAnalytics();
+  });
+  document.getElementById("analyticsFrom")?.addEventListener("change", (event) => {
+    if (!event.target.value) {
+      return;
+    }
+    state.analytics.filters.from = dateInputToIso(event.target.value);
+    state.analytics.filters.preset = "custom";
+    state.analytics.data = null;
+    fetchAnalytics();
+  });
+  document.getElementById("analyticsTo")?.addEventListener("change", (event) => {
+    if (!event.target.value) {
+      return;
+    }
+    state.analytics.filters.to = dateInputToIso(event.target.value, true);
+    state.analytics.filters.preset = "custom";
+    state.analytics.data = null;
+    fetchAnalytics();
+  });
+  document.getElementById("analyticsTimezone")?.addEventListener("change", (event) => {
+    state.analytics.filters.timezone = event.target.value;
+    localStorage.setItem("analyticsTimezone", event.target.value);
+    state.analytics.data = null;
+    fetchAnalytics();
+  });
+  document.getElementById("analyticsAgents")?.addEventListener("change", (event) => {
+    state.analytics.filters.agents = Array.from(event.target.selectedOptions).map((option) => option.value);
+    state.analytics.data = null;
+    fetchAnalytics();
+  });
+  document.getElementById("analyticsCompare")?.addEventListener("change", (event) => {
+    state.analytics.filters.compare = event.target.checked;
+    renderApp();
+  });
+  bindClick("analyticsPrevBtn", () => {
+    shiftAnalyticsPeriod(-1);
+    state.analytics.data = null;
+    fetchAnalytics();
+  });
+  bindClick("analyticsNextBtn", () => {
+    shiftAnalyticsPeriod(1);
+    state.analytics.data = null;
+    fetchAnalytics();
+  });
+  bindClick("analyticsReloadBtn", () => {
+    state.analytics.data = null;
+    fetchAnalytics();
+  });
+  document.querySelectorAll("[data-analytics-sort]").forEach((button) => {
+    button.onclick = () => {
+      state.analytics.sort = button.dataset.analyticsSort;
+      renderApp();
+    };
+  });
 
   document.querySelectorAll("[data-livechat-group-filter]").forEach((button) => {
     button.onclick = () => {
