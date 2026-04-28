@@ -42,6 +42,19 @@ const state = {
       compare: true,
     },
   },
+  helpdesk_analytics: {
+    loading: false,
+    error: null,
+    filters: {
+      preset: "last_7_days",
+      from: null,
+      to: null,
+      agents: [],
+      groups: [],
+      compare: true,
+    },
+    data: null,
+  },
 };
 
 const loginView = document.getElementById("loginView");
