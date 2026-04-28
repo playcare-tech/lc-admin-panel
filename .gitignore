@@ -7,3 +7,4 @@
 docs/superpowers/
 node_modules
 npm-debug.log*
+.worktrees/
