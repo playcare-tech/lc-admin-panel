@@ -45,3 +45,17 @@ CREATE TABLE IF NOT EXISTS analytics_agent_daily_fetches (
   fetched_at TEXT NOT NULL,
   PRIMARY KEY (date, agent_scope)
 );
+
+CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  handled_tickets INTEGER NOT NULL DEFAULT 0,
+  avg_ftr_ms REAL NOT NULL DEFAULT 0,
+  avg_resolution_time_ms REAL NOT NULL DEFAULT 0,
+  cached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(date, agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_date ON helpdesk_analytics_daily(date);
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_agent ON helpdesk_analytics_daily(agent_id);
