@@ -55,7 +55,6 @@ const state = {
       agentSearch: "",
       excludeAgentSearch: "",
       groupSearch: "",
-      compare: true,
     },
     appliedFilters: null,
     data: null,
@@ -1819,7 +1818,6 @@ function cloneHelpdeskAnalyticsFilters(filters = state.helpdesk_analytics.filter
     agentSearch: filters.agentSearch,
     excludeAgentSearch: filters.excludeAgentSearch,
     groupSearch: filters.groupSearch,
-    compare: filters.compare,
   };
 }
 
@@ -1839,7 +1837,6 @@ function resetHelpdeskAnalyticsFilters() {
     agentSearch: "",
     excludeAgentSearch: "",
     groupSearch: "",
-    compare: true,
   };
   state.helpdesk_analytics.appliedFilters = cloneHelpdeskAnalyticsFilters();
   fetchHelpdeskAnalytics();
@@ -1922,7 +1919,6 @@ async function fetchHelpdeskAnalyticsDayResponses(ranges, filters) {
       if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
       if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
       if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
-      params.append("compare", "0");
       params.append("tz_offset", String(new Date().getTimezoneOffset()));
       responses[index] = await api(`/api/helpdesk/analytics?${params.toString()}`);
     }
@@ -2233,18 +2229,15 @@ function renderFiltersConditional() {
 
   document.getElementById("helpdeskAnalyticsAgentSearch")?.addEventListener("input", (event) => {
     state.helpdesk_analytics.filters.agentSearch = event.target.value;
-    renderHelpdeskAnalytics();
-    document.getElementById("helpdeskAnalyticsAgentSearch")?.focus();
+    rerenderPreservingInput("helpdeskAnalyticsAgentSearch");
   });
   document.getElementById("helpdeskAnalyticsExcludeAgentSearch")?.addEventListener("input", (event) => {
     state.helpdesk_analytics.filters.excludeAgentSearch = event.target.value;
-    renderHelpdeskAnalytics();
-    document.getElementById("helpdeskAnalyticsExcludeAgentSearch")?.focus();
+    rerenderPreservingInput("helpdeskAnalyticsExcludeAgentSearch");
   });
   document.getElementById("helpdeskAnalyticsGroupSearch")?.addEventListener("input", (event) => {
     state.helpdesk_analytics.filters.groupSearch = event.target.value;
-    renderHelpdeskAnalytics();
-    document.getElementById("helpdeskAnalyticsGroupSearch")?.focus();
+    rerenderPreservingInput("helpdeskAnalyticsGroupSearch");
   });
 
   document.querySelectorAll("#agents-checkboxes input[type='checkbox']").forEach((checkbox) => {
