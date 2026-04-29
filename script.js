@@ -45,6 +45,7 @@ const state = {
   helpdesk_analytics: {
     loading: false,
     error: null,
+    loadStatus: "",
     filters: {
       preset: "last_7_days",
       from: null,
@@ -1853,11 +1854,16 @@ function helpdeskAnalyticsDayRanges(from, to) {
     ranges.push({
       from: new Date(Math.max(dayStart.getTime(), from.getTime())),
       to: new Date(Math.min(dayEnd.getTime(), to.getTime())),
+      cacheFullDay: from <= dayStart && to >= dayEnd,
     });
     cursor.setDate(cursor.getDate() + 1);
   }
 
   return ranges;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function mergeHelpdeskAnalyticsResponses(responses, filters) {
@@ -1903,28 +1909,43 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
   };
 }
 
+async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0) {
+  const params = new URLSearchParams();
+  params.append("from", range.from.toISOString());
+  params.append("to", range.to.toISOString());
+  if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
+  if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
+  if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
+  if (range.cacheFullDay) params.append("cache_full_day", "1");
+  params.append("tz_offset", String(new Date().getTimezoneOffset()));
+
+  try {
+    return [await api(`/api/helpdesk/analytics?${params.toString()}`)];
+  } catch (error) {
+    const duration = range.to.getTime() - range.from.getTime();
+    if (!/too many/i.test(error.message || "") || duration <= 30 * 60 * 1000 || depth >= 8) {
+      throw error;
+    }
+
+    const middle = new Date(range.from.getTime() + Math.floor(duration / 2));
+    state.helpdesk_analytics.loadStatus = "HelpDesk rate limit hit. Loading smaller portions...";
+    renderHelpdeskAnalytics();
+    await sleep(500);
+    const first = await fetchHelpdeskAnalyticsRange({ from: range.from, to: middle, cacheFullDay: false }, filters, depth + 1);
+    await sleep(500);
+    const second = await fetchHelpdeskAnalyticsRange({ from: new Date(middle.getTime() + 1), to: range.to, cacheFullDay: false }, filters, depth + 1);
+    return [...first, ...second];
+  }
+}
+
 async function fetchHelpdeskAnalyticsDayResponses(ranges, filters) {
   const responses = [];
-  const concurrency = 4;
-  let nextIndex = 0;
-
-  async function worker() {
-    while (nextIndex < ranges.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      const range = ranges[index];
-      const params = new URLSearchParams();
-      params.append("from", range.from.toISOString());
-      params.append("to", range.to.toISOString());
-      if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
-      if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
-      if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
-      params.append("tz_offset", String(new Date().getTimezoneOffset()));
-      responses[index] = await api(`/api/helpdesk/analytics?${params.toString()}`);
-    }
+  for (let index = 0; index < ranges.length; index += 1) {
+    state.helpdesk_analytics.loadStatus = `Loading HelpDesk data ${index + 1}/${ranges.length} day${ranges.length === 1 ? "" : "s"}...`;
+    renderHelpdeskAnalytics();
+    responses.push(...(await fetchHelpdeskAnalyticsRange(ranges[index], filters)));
+    await sleep(250);
   }
-
-  await Promise.all(Array.from({ length: Math.min(concurrency, ranges.length) }, worker));
   return responses;
 }
 
@@ -1934,6 +1955,7 @@ async function fetchHelpdeskAnalytics() {
   state.helpdesk_analytics.appliedFilters = filters;
   state.helpdesk_analytics.loading = true;
   state.helpdesk_analytics.error = null;
+  state.helpdesk_analytics.loadStatus = "";
   renderHelpdeskAnalytics();
 
   try {
@@ -1943,9 +1965,11 @@ async function fetchHelpdeskAnalytics() {
   } catch (error) {
     console.error("Fetch analytics error:", error);
     state.helpdesk_analytics.error = error.message;
+    state.helpdesk_analytics.loadStatus = "";
     renderHelpdeskAnalytics();
   } finally {
     state.helpdesk_analytics.loading = false;
+    state.helpdesk_analytics.loadStatus = "";
     renderHelpdeskAnalytics();
   }
 }
@@ -2131,7 +2155,7 @@ function renderHelpdeskAnalytics() {
   } else if (loading) {
     const loadingDiv = document.createElement("div");
     loadingDiv.className = "alert alert-info";
-    loadingDiv.textContent = "Loading...";
+    loadingDiv.textContent = state.helpdesk_analytics.loadStatus || "Loading HelpDesk data...";
     container.appendChild(loadingDiv);
   } else if (error) {
     const errorDiv = document.createElement("div");

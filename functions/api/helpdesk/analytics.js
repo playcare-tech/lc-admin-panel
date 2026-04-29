@@ -266,6 +266,7 @@ export async function onRequest(context) {
     const timezoneOffsetMinutes = Number(url.searchParams.get("tz_offset") || 0);
     const localDate = dateKey(from, timezoneOffsetMinutes);
     const today = dateKey(new Date(), timezoneOffsetMinutes);
+    const fullDayCache = url.searchParams.get("cache_full_day") === "1";
     const filters = {
       agentIds: splitParam(url.searchParams.get("agents")),
       excludeAgentIds: splitParam(url.searchParams.get("exclude_agents")),
@@ -274,7 +275,7 @@ export async function onRequest(context) {
 
     const dashboard = await getHelpDeskDashboard(context.env);
     const agentDirectory = buildAgentDirectory(dashboard);
-    const cacheable = localDate < today && !filters.groupIds.length;
+    const cacheable = fullDayCache && localDate < today && !filters.groupIds.length;
     const cachedRows = cacheable ? await readCachedDay(context.env, localDate) : null;
     let rows = cachedRows ? filterCachedRows(cachedRows, filters) : [];
 
