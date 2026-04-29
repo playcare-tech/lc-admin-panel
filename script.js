@@ -2313,7 +2313,12 @@ function renderLeaderboard() {
 
   table.appendChild(tbody);
   wrapper.appendChild(table);
-  const leaderboardSection = container.querySelector(".leaderboard-section");
+  let leaderboardSection = container.querySelector(".leaderboard-section");
+  if (!leaderboardSection) {
+    leaderboardSection = document.createElement("div");
+    leaderboardSection.className = "leaderboard-section";
+    container.appendChild(leaderboardSection);
+  }
   leaderboardSection.appendChild(wrapper);
 }
 
