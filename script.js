@@ -51,6 +51,8 @@ const state = {
       to: null,
       agents: [],
       groups: [],
+      agentSearch: "",
+      groupSearch: "",
       compare: true,
     },
     data: null,
@@ -1781,11 +1783,34 @@ function formatDelta(current, previous) {
   return `${delta > 0 ? "+" : ""}${Math.round(delta)}%`;
 }
 
+function helpdeskAgentLabel(agent) {
+  const id = String(agent.agent_id || agent.id || "");
+  const dashboardAgent = state.helpdesk.agents.find((item) => String(item.id) === id);
+  return agent.name || dashboardAgent?.name || agent.email || dashboardAgent?.email || id;
+}
+
+function helpdeskAgentSubLabel(agent) {
+  const id = String(agent.agent_id || agent.id || "");
+  const dashboardAgent = state.helpdesk.agents.find((item) => String(item.id) === id);
+  const email = agent.email || dashboardAgent?.email || "";
+  const main = helpdeskAgentLabel(agent);
+  return email && email !== main ? email : id && id !== main ? id : "";
+}
+
+function helpdeskFilterText(item) {
+  return `${item.name || ""} ${item.email || ""} ${item.id || ""}`.toLowerCase();
+}
+
+function helpdeskAnalyticsAgentDayMap(agent) {
+  return new Map((agent.days || []).map((day) => [day.date, day]));
+}
+
 // Task 8: Create fetchAnalytics Function for HelpDesk
 async function fetchHelpdeskAnalytics() {
   const { filters } = state.helpdesk_analytics;
   state.helpdesk_analytics.loading = true;
   state.helpdesk_analytics.error = null;
+  renderHelpdeskAnalytics();
 
   try {
     const params = new URLSearchParams();
@@ -1796,13 +1821,7 @@ async function fetchHelpdeskAnalytics() {
     if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
     if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
 
-    const response = await fetch(`/api/helpdesk/analytics?${params.toString()}`);
-    if (!response.ok) {
-      throw new Error(`API error: ${response.statusText}`);
-    }
-
-    const data = await response.json();
-    state.helpdesk_analytics.data = data;
+    state.helpdesk_analytics.data = await api(`/api/helpdesk/analytics?${params.toString()}`);
     renderHelpdeskAnalytics();
   } catch (error) {
     console.error("Fetch analytics error:", error);
@@ -1810,6 +1829,7 @@ async function fetchHelpdeskAnalytics() {
     renderHelpdeskAnalytics();
   } finally {
     state.helpdesk_analytics.loading = false;
+    renderHelpdeskAnalytics();
   }
 }
 
@@ -1830,7 +1850,7 @@ function renderHelpdeskAnalytics() {
   filterBarContainer.classList.remove("d-none");
 
   const filterBar = document.createElement("div");
-  filterBar.className = "d-flex gap-3 align-items-center flex-wrap w-100";
+  filterBar.className = "helpdesk-analytics-filters";
 
   // Preset dropdown
   const presetGroup = document.createElement("div");
@@ -1842,16 +1862,20 @@ function renderHelpdeskAnalytics() {
   const presetSelect = document.createElement("select");
   presetSelect.id = "preset-select";
   presetSelect.className = "form-select";
-  const optionsHtml = `<option value="today">Today</option>
-    <option value="yesterday">Yesterday</option>
-    <option value="last_7_days" selected>Last 7 days</option>
-    <option value="last_30_days">Last 30 days</option>
-    <option value="this_week">This week</option>
-    <option value="last_week">Last week</option>
-    <option value="this_month">This month</option>
-    <option value="last_month">Last month</option>
-    <option value="custom">Custom range</option>`;
-  presetSelect.innerHTML = optionsHtml;
+  const presets = [
+    ["today", "Today"],
+    ["yesterday", "Yesterday"],
+    ["last_7_days", "Last 7 days"],
+    ["last_30_days", "Last 30 days"],
+    ["this_week", "This week"],
+    ["last_week", "Last week"],
+    ["this_month", "This month"],
+    ["last_month", "Last month"],
+    ["custom", "Custom range"],
+  ];
+  presetSelect.innerHTML = presets
+    .map(([value, label]) => `<option value="${value}" ${filters.preset === value ? "selected" : ""}>${label}</option>`)
+    .join("");
   presetGroup.appendChild(presetLabel);
   presetGroup.appendChild(presetSelect);
   filterBar.appendChild(presetGroup);
@@ -1868,6 +1892,7 @@ function renderHelpdeskAnalytics() {
   fromInput.type = "date";
   fromInput.id = "from-date";
   fromInput.className = "form-control";
+  fromInput.value = filters.from ? localDateValue(filters.from) : "";
   customDatesDiv.appendChild(fromLabel);
   customDatesDiv.appendChild(fromInput);
   filterBar.appendChild(customDatesDiv);
@@ -1883,6 +1908,7 @@ function renderHelpdeskAnalytics() {
   toInput.type = "date";
   toInput.id = "to-date";
   toInput.className = "form-control";
+  toInput.value = filters.to ? localDateValue(filters.to) : "";
   customDatesToDiv.appendChild(toLabel);
   customDatesToDiv.appendChild(toInput);
   filterBar.appendChild(customDatesToDiv);
@@ -1924,7 +1950,7 @@ function renderHelpdeskAnalytics() {
   compareInput.type = "checkbox";
   compareInput.id = "compare-toggle";
   compareInput.className = "form-check-input";
-  compareInput.checked = true;
+  compareInput.checked = filters.compare;
   compareLabel.appendChild(compareInput);
   compareLabel.appendChild(document.createTextNode("Compare periods"));
   compareGroup.appendChild(compareLabel);
@@ -1936,10 +1962,13 @@ function renderHelpdeskAnalytics() {
   presetSelect.addEventListener("change", (e) => {
     filters.preset = e.target.value;
     const customDates = document.getElementById("custom-dates");
+    const customDatesTo = document.getElementById("custom-dates-to");
     if (e.target.value === "custom") {
       customDates.classList.remove("d-none");
+      customDatesTo.classList.remove("d-none");
     } else {
       customDates.classList.add("d-none");
+      customDatesTo.classList.add("d-none");
       const range = getDateRange(e.target.value);
       filters.from = range.from;
       filters.to = range.to;
@@ -1948,14 +1977,19 @@ function renderHelpdeskAnalytics() {
   });
 
   document.getElementById("from-date")?.addEventListener("change", (e) => {
-    filters.from = e.target.value ? new Date(e.target.value) : null;
+    filters.from = e.target.value ? new Date(`${e.target.value}T00:00:00`) : null;
     if (filters.from && filters.to) fetchHelpdeskAnalytics();
   });
 
   document.getElementById("to-date")?.addEventListener("change", (e) => {
-    filters.to = e.target.value ? new Date(e.target.value) : null;
+    filters.to = e.target.value ? new Date(`${e.target.value}T23:59:59`) : null;
     if (filters.from && filters.to) fetchHelpdeskAnalytics();
   });
+
+  if (filters.preset === "custom") {
+    customDatesDiv.classList.remove("d-none");
+    customDatesToDiv.classList.remove("d-none");
+  }
 
   document.getElementById("compare-toggle")?.addEventListener("change", (e) => {
     filters.compare = e.target.checked;
@@ -1984,49 +2018,99 @@ function renderHelpdeskAnalytics() {
 function renderFiltersConditional() {
   const agentsFilter = document.getElementById("agents-filter");
   const groupsFilter = document.getElementById("groups-filter");
-  const { agents: selectedAgents, groups: selectedGroups } = state.helpdesk_analytics.filters;
+  const {
+    agents: selectedAgents,
+    groups: selectedGroups,
+    agentSearch,
+    groupSearch,
+  } = state.helpdesk_analytics.filters;
 
   agentsFilter.classList.remove("d-none");
   groupsFilter.classList.remove("d-none");
 
-  const agentsCheckboxes = document.getElementById("agents-checkboxes");
-  agentsCheckboxes.innerHTML = "";
-  const agentSelect = document.createElement("select");
-  agentSelect.multiple = true;
-  agentSelect.className = "form-select filter-multiselect";
-  (state.helpdesk.agents || []).forEach((agent) => {
-    const option = document.createElement("option");
-    option.value = agent.id;
-    option.textContent = agent.email;
-    option.selected = selectedAgents.includes(agent.id);
-    agentSelect.appendChild(option);
-  });
-  agentsCheckboxes.appendChild(agentSelect);
+  const renderChecklist = ({ rootId, searchId, items, selected, emptyText, nameFor, subFor }) => {
+    const root = document.getElementById(rootId);
+    root.innerHTML = `
+      <input id="${searchId}" class="form-control form-control-sm analytics-filter-search" type="search" placeholder="Search" value="${escapeHtml(rootId === "agents-checkboxes" ? agentSearch : groupSearch)}" />
+      <div class="analytics-checklist">
+        ${
+          items.length
+            ? items
+                .map((item) => `
+                  <label class="analytics-check-option">
+                    <input class="form-check-input" type="checkbox" value="${escapeHtml(item.id)}" ${selected.includes(String(item.id)) ? "checked" : ""} />
+                    <span>
+                      <strong>${escapeHtml(nameFor(item))}</strong>
+                      ${subFor(item) ? `<small>${escapeHtml(subFor(item))}</small>` : ""}
+                    </span>
+                  </label>
+                `)
+                .join("")
+            : `<div class="empty-state analytics-filter-empty">${escapeHtml(emptyText)}</div>`
+        }
+      </div>
+    `;
+  };
 
-  const groupsCheckboxes = document.getElementById("groups-checkboxes");
-  groupsCheckboxes.innerHTML = "";
-  const groupSelect = document.createElement("select");
-  groupSelect.multiple = true;
-  groupSelect.className = "form-select filter-multiselect";
-  (state.helpdesk.teams || []).forEach((group) => {
-    const option = document.createElement("option");
-    option.value = group.id;
-    option.textContent = group.name;
-    option.selected = selectedGroups.includes(group.id);
-    groupSelect.appendChild(option);
-  });
-  groupsCheckboxes.appendChild(groupSelect);
-
-  agentSelect.addEventListener("change", () => {
-    const { filters } = state.helpdesk_analytics;
-    filters.agents = Array.from(agentSelect.selectedOptions).map((o) => o.value);
-    fetchHelpdeskAnalytics();
+  const normalizedAgentSearch = agentSearch.trim().toLowerCase();
+  const visibleAgents = (state.helpdesk.agents || []).filter((agent) =>
+    !normalizedAgentSearch || helpdeskFilterText(agent).includes(normalizedAgentSearch),
+  );
+  renderChecklist({
+    rootId: "agents-checkboxes",
+    searchId: "helpdeskAnalyticsAgentSearch",
+    items: visibleAgents,
+    selected: selectedAgents,
+    emptyText: "No agents match this search.",
+    nameFor: (agent) => agent.name || agent.email || agent.id,
+    subFor: (agent) => agent.email && agent.email !== agent.name ? agent.email : "",
   });
 
-  groupSelect.addEventListener("change", () => {
-    const { filters } = state.helpdesk_analytics;
-    filters.groups = Array.from(groupSelect.selectedOptions).map((o) => o.value);
-    fetchHelpdeskAnalytics();
+  const normalizedGroupSearch = groupSearch.trim().toLowerCase();
+  const visibleGroups = (state.helpdesk.teams || []).filter((group) =>
+    !normalizedGroupSearch || helpdeskFilterText(group).includes(normalizedGroupSearch),
+  );
+  renderChecklist({
+    rootId: "groups-checkboxes",
+    searchId: "helpdeskAnalyticsGroupSearch",
+    items: visibleGroups,
+    selected: selectedGroups,
+    emptyText: "No groups match this search.",
+    nameFor: (group) => group.name || group.id,
+    subFor: () => "",
+  });
+
+  document.getElementById("helpdeskAnalyticsAgentSearch")?.addEventListener("input", (event) => {
+    state.helpdesk_analytics.filters.agentSearch = event.target.value;
+    renderHelpdeskAnalytics();
+    document.getElementById("helpdeskAnalyticsAgentSearch")?.focus();
+  });
+  document.getElementById("helpdeskAnalyticsGroupSearch")?.addEventListener("input", (event) => {
+    state.helpdesk_analytics.filters.groupSearch = event.target.value;
+    renderHelpdeskAnalytics();
+    document.getElementById("helpdeskAnalyticsGroupSearch")?.focus();
+  });
+
+  document.querySelectorAll("#agents-checkboxes input[type='checkbox']").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const visibleSelected = Array.from(document.querySelectorAll("#agents-checkboxes input[type='checkbox']:checked")).map(
+        (input) => input.value,
+      );
+      const hiddenSelected = selectedAgents.filter((id) => !visibleAgents.some((agent) => String(agent.id) === String(id)));
+      state.helpdesk_analytics.filters.agents = [...new Set([...hiddenSelected, ...visibleSelected])];
+      fetchHelpdeskAnalytics();
+    });
+  });
+
+  document.querySelectorAll("#groups-checkboxes input[type='checkbox']").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const visibleSelected = Array.from(document.querySelectorAll("#groups-checkboxes input[type='checkbox']:checked")).map(
+        (input) => input.value,
+      );
+      const hiddenSelected = selectedGroups.filter((id) => !visibleGroups.some((group) => String(group.id) === String(id)));
+      state.helpdesk_analytics.filters.groups = [...new Set([...hiddenSelected, ...visibleSelected])];
+      fetchHelpdeskAnalytics();
+    });
   });
 }
 
@@ -2092,7 +2176,7 @@ function renderMetricsAndPanels() {
   }
 
   metricsRow.appendChild(createMetricCard(
-    "Total Tickets",
+    "Processed Tickets",
     currentSummary.total_tickets,
     prevSummary.total_tickets,
     currentSummary.total_tickets
@@ -2129,7 +2213,7 @@ function renderMetricsAndPanels() {
   const top5TicketsPanel = document.createElement("div");
   top5TicketsPanel.className = "top5-panel";
   const top5TicketsTitle = document.createElement("h6");
-  top5TicketsTitle.textContent = "Top 5 by Tickets";
+  top5TicketsTitle.textContent = "Top 5 by Processed Tickets";
   top5TicketsPanel.appendChild(top5TicketsTitle);
 
   const top5TicketsList = document.createElement("ul");
@@ -2139,7 +2223,7 @@ function renderMetricsAndPanels() {
     .slice(0, 5)
     .forEach((agent) => {
       const li = document.createElement("li");
-      li.textContent = `${agent.agent_id} — ${agent.total_tickets} tickets`;
+      li.textContent = `${helpdeskAgentLabel(agent)} — ${agent.total_tickets} tickets`;
       top5TicketsList.appendChild(li);
     });
   top5TicketsPanel.appendChild(top5TicketsList);
@@ -2159,7 +2243,7 @@ function renderMetricsAndPanels() {
     .slice(0, 5)
     .forEach((agent) => {
       const li = document.createElement("li");
-      li.textContent = `${agent.agent_id} — ${formatDurationHelpdesk(agent.avg_ftr_ms)}`;
+      li.textContent = `${helpdeskAgentLabel(agent)} — ${formatDurationHelpdesk(agent.avg_ftr_ms)}`;
       top5FtrList.appendChild(li);
     });
   top5FtrPanel.appendChild(top5FtrList);
@@ -2202,6 +2286,18 @@ function renderLeaderboard() {
   }
 
   const sortedAgents = [...analytics.agents].sort((a, b) => b.total_tickets - a.total_tickets);
+  const summarizeDays = (days) => {
+    const tickets = days.reduce((sum, day) => sum + (day.tickets || 0), 0);
+    const ftr = days.map((day) => day.avg_ftr_ms).filter((value) => value > 0);
+    const resolution = days.map((day) => day.avg_resolution_time_ms).filter((value) => value > 0);
+    return {
+      tickets,
+      avg_ftr_ms: ftr.length ? Math.round(ftr.reduce((sum, value) => sum + value, 0) / ftr.length) : 0,
+      avg_resolution_time_ms: resolution.length
+        ? Math.round(resolution.reduce((sum, value) => sum + value, 0) / resolution.length)
+        : 0,
+    };
+  };
 
   const wrapper = document.createElement("div");
   wrapper.className = "leaderboard-wrapper";
@@ -2220,7 +2316,7 @@ function renderLeaderboard() {
   th2.textContent = "Agent";
   const th3 = document.createElement("th");
   th3.className = "col-tickets sticky-left";
-  th3.textContent = "Total Tickets";
+  th3.textContent = "Processed Tickets";
   const th4 = document.createElement("th");
   th4.className = "col-ftr sticky-left";
   th4.textContent = "Avg FTR";
@@ -2257,7 +2353,7 @@ function renderLeaderboard() {
   columnHeaders.forEach((col) => {
     const td = document.createElement("td");
     td.className = "col-period";
-    const dayData = col.days[0];
+    const dayData = summarizeDays(col.days);
     td.innerHTML = `<div class="period-metrics"><div>${dayData.tickets}</div><div class="metric-small">${formatDurationHelpdesk(dayData.avg_ftr_ms)}</div><div class="metric-small">${formatDurationHelpdesk(dayData.avg_resolution_time_ms)}</div></div>`;
     summaryRow.appendChild(td);
   });
@@ -2276,7 +2372,12 @@ function renderLeaderboard() {
 
     const agentCell = document.createElement("td");
     agentCell.className = "col-agent sticky-left";
-    agentCell.textContent = agent.agent_id;
+    agentCell.innerHTML = `
+      <div class="analytics-agent-copy">
+        <div class="analytics-agent-main">${escapeHtml(helpdeskAgentLabel(agent))}</div>
+        ${helpdeskAgentSubLabel(agent) ? `<div class="analytics-agent-sub">${escapeHtml(helpdeskAgentSubLabel(agent))}</div>` : ""}
+      </div>
+    `;
     row.appendChild(agentCell);
 
     const ticketsCell = document.createElement("td");
@@ -2296,10 +2397,15 @@ function renderLeaderboard() {
     resolutionCell.textContent = formatDurationHelpdesk(agent.avg_resolution_time_ms);
     row.appendChild(resolutionCell);
 
-    columnHeaders.forEach(() => {
+    const dayMap = helpdeskAnalyticsAgentDayMap(agent);
+    columnHeaders.forEach((col) => {
       const td = document.createElement("td");
       td.className = "col-period";
-      td.innerHTML = `<div class="period-metrics"><div>—</div><div class="metric-small">—</div><div class="metric-small">—</div></div>`;
+      const agentDays = col.days.map((day) => dayMap.get(day.date)).filter(Boolean);
+      const dayData = summarizeDays(agentDays);
+      td.innerHTML = dayData.tickets
+        ? `<div class="period-metrics"><div>${dayData.tickets}</div><div class="metric-small">${formatDurationHelpdesk(dayData.avg_ftr_ms)}</div><div class="metric-small">${formatDurationHelpdesk(dayData.avg_resolution_time_ms)}</div></div>`
+        : `<div class="period-metrics"><div>—</div><div class="metric-small">—</div><div class="metric-small">—</div></div>`;
       row.appendChild(td);
     });
 
@@ -2354,6 +2460,7 @@ function currentSectionTitle() {
     "helpdesk-users": "HelpDesk Users",
     "helpdesk-groups": "HelpDesk Groups",
     "create-helpdesk-user": "Create HelpDesk User",
+    "helpdesk-analytics": "HelpDesk Analytics",
     "admin-users": "Admin Users",
     logs: "Logs",
   };

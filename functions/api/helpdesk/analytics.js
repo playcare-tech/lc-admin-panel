@@ -1,284 +1,326 @@
 import { requireAuth } from "../../_lib/auth.js";
-import { helpdeskRequest } from "../../_lib/helpdesk.js";
+import { errorResponse, json, methodNotAllowed } from "../../_lib/http.js";
+import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
 
-async function getOrComputeDateRange(env, preset, fromOverride, toOverride) {
-  const now = new Date();
-  let from, to;
+const STATUSES = ["open", "pending", "onhold", "solved", "closed"];
+const SILOS = ["tickets", "archive"];
+const PAGE_SIZE = 100;
+const MAX_PAGES_PER_QUERY = 100;
 
-  if (fromOverride && toOverride) {
-    from = new Date(fromOverride);
-    to = new Date(toOverride);
-  } else {
-    switch (preset) {
-      case "today":
-        from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        to = new Date(from.getTime() + 24 * 60 * 60 * 1000 - 1);
-        break;
-      case "yesterday":
-        to = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-        from = new Date(to.getTime() - 24 * 60 * 60 * 1000 + 1);
-        break;
-      case "last_7_days":
-        to = new Date(now.getTime() - 1000);
-        from = new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
-        break;
-      case "last_30_days":
-        to = new Date(now.getTime() - 1000);
-        from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
-        break;
-      case "this_week":
-        const startOfWeek = new Date(now);
-        startOfWeek.setDate(now.getDate() - now.getDay());
-        from = new Date(startOfWeek.getFullYear(), startOfWeek.getMonth(), startOfWeek.getDate());
-        to = new Date(from.getTime() + 7 * 24 * 60 * 60 * 1000 - 1);
-        break;
-      case "last_week":
-        const endOfLastWeek = new Date(now);
-        endOfLastWeek.setDate(now.getDate() - now.getDay() - 1);
-        to = new Date(endOfLastWeek.getFullYear(), endOfLastWeek.getMonth(), endOfLastWeek.getDate() + 1, 23, 59, 59);
-        from = new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
-        break;
-      case "this_month":
-        from = new Date(now.getFullYear(), now.getMonth(), 1);
-        to = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-        break;
-      case "last_month":
-        from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-        to = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
-        break;
-      default:
-        to = new Date(now.getTime() - 1000);
-        from = new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
-    }
+function isValidDate(value) {
+  return value instanceof Date && !Number.isNaN(value.getTime());
+}
+
+function parseDateParam(value, name) {
+  if (!value) {
+    throw new Error(`Missing required param: ${name}`);
   }
-
-  return { from, to };
+  const date = new Date(value);
+  if (!isValidDate(date)) {
+    throw new Error(`Invalid date format for ${name}`);
+  }
+  return date;
 }
 
 function getPreviousPeriod(from, to) {
   const duration = to.getTime() - from.getTime();
-  const prevTo = new Date(from.getTime() - 1);
-  const prevFrom = new Date(prevTo.getTime() - duration);
-  return { from: prevFrom, to: prevTo };
+  return {
+    from: new Date(from.getTime() - duration),
+    to: new Date(from.getTime()),
+  };
 }
 
-function formatDate(date) {
-  return date.toISOString().split("T")[0];
+function dateKey(date) {
+  return date.toISOString().slice(0, 10);
 }
 
-async function getValidatedDailyMetrics(env, from, to, agentIds, groupIds) {
-  const dailyMetrics = new Map();
-  let page = 1;
-  let hasMore = true;
+function average(values) {
+  const usable = values.filter((value) => Number.isFinite(value) && value > 0);
+  return usable.length ? Math.round(usable.reduce((sum, value) => sum + value, 0) / usable.length) : 0;
+}
 
-  while (hasMore) {
-    let ticketsResp;
-    try {
-      ticketsResp = await helpdeskRequest(env, `/tickets?page=${page}`, { method: "GET" });
-    } catch (err) {
-      console.error(`HelpDesk /tickets API error on page ${page}:`, err.message);
-      throw err;
+function splitParam(value) {
+  return (value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function agentMatchesFilters(agentId, teamIds, selectedAgentIds, selectedGroupIds) {
+  if (selectedAgentIds.length && !selectedAgentIds.includes(String(agentId))) {
+    return false;
+  }
+  if (selectedGroupIds.length && !teamIds.some((teamId) => selectedGroupIds.includes(String(teamId)))) {
+    return false;
+  }
+  return true;
+}
+
+function eventAuthorId(event) {
+  return event.author?.ID || event.author?.id || event.authorID || event.authorId || event.createdBy;
+}
+
+function isAgentMessage(event) {
+  return event?.type === "message" && event.author?.type === "agent" && !event.isPrivate;
+}
+
+function firstClientMessageDate(ticket) {
+  const clientEvents = (ticket.events || [])
+    .filter((event) => event.type === "message" && event.author?.type === "client")
+    .map((event) => new Date(event.date || event.createdAt))
+    .filter(isValidDate)
+    .sort((left, right) => left - right);
+
+  if (clientEvents.length) {
+    return clientEvents[0];
+  }
+
+  const createdAt = new Date(ticket.createdAt || ticket.created_at);
+  return isValidDate(createdAt) ? createdAt : null;
+}
+
+function normalizeTicketList(payload) {
+  return Array.isArray(payload) ? payload : payload?.tickets || payload?.data || payload?.items || [];
+}
+
+async function listTicketsForWindow(env, from, to) {
+  const ticketsById = new Map();
+  const baseParams = {
+    pageSize: String(PAGE_SIZE),
+    order: "desc",
+    sortBy: "updatedAt",
+    updatedDateFrom: from.toISOString(),
+    updatedDateTo: to.toISOString(),
+  };
+
+  for (const silo of SILOS) {
+    for (const status of STATUSES) {
+      let nextCursor = null;
+      let page = 0;
+
+      do {
+        const params = new URLSearchParams({ ...baseParams, silo, status });
+        if (nextCursor) {
+          params.set("next.value", nextCursor.value);
+          params.set("next.ID", nextCursor.id);
+        }
+
+        const payload = await helpdeskRequest(env, `/tickets?${params.toString()}`, { method: "GET" });
+        const tickets = normalizeTicketList(payload);
+
+        for (const ticket of tickets) {
+          const id = ticket.ID || ticket.id;
+          if (id) {
+            ticketsById.set(String(id), ticket);
+          }
+        }
+
+        const lastTicket = tickets[tickets.length - 1];
+        const lastId = lastTicket?.ID || lastTicket?.id;
+        const lastValue = lastTicket?.updatedAt || lastTicket?.updated_at;
+        nextCursor = tickets.length === PAGE_SIZE && lastId && lastValue ? { id: String(lastId), value: lastValue } : null;
+        page += 1;
+      } while (nextCursor && page < MAX_PAGES_PER_QUERY);
     }
+  }
 
-    const tickets = Array.isArray(ticketsResp) ? ticketsResp : ticketsResp.tickets || [];
+  return Array.from(ticketsById.values());
+}
 
-    if (!tickets || tickets.length === 0) {
-      hasMore = false;
-      break;
-    }
+function buildAgentDirectory(dashboard) {
+  return new Map(
+    (dashboard.agents || []).map((agent) => [
+      String(agent.id),
+      {
+        id: String(agent.id),
+        email: agent.email || "",
+        name: agent.name || agent.email || String(agent.id),
+        teams: agent.teams || [],
+        teamIDs: (agent.teamIDs || agent.teams?.map((team) => team.id) || []).map(String),
+      },
+    ]),
+  );
+}
 
-    for (const ticket of tickets) {
-      const createdAt = new Date(ticket.created_at || ticket.createdAt);
-      const resolvedAt = ticket.resolved_at || ticket.resolvedAt ? new Date(ticket.resolved_at || ticket.resolvedAt) : null;
+async function computePeriod(env, from, to, filters, agentDirectory) {
+  const tickets = await listTicketsForWindow(env, from, to);
+  const dailyByAgent = new Map();
 
-      if (createdAt < from || createdAt > to) continue;
+  for (const ticket of tickets) {
+    const teamIds = (ticket.teamIDs || ticket.teamIds || []).map(String);
+    const firstClientAt = firstClientMessageDate(ticket);
 
-      if (groupIds && groupIds.length > 0) {
-        if (!groupIds.includes(String(ticket.group_id || ticket.groupId))) continue;
+    const agentReplyEvents = (ticket.events || [])
+      .filter(isAgentMessage)
+      .map((event) => ({ event, date: new Date(event.date || event.createdAt) }))
+      .filter(({ date }) => isValidDate(date) && date >= from && date < to)
+      .sort((left, right) => left.date - right.date);
+
+    const countedAgents = new Set();
+    for (const { event, date } of agentReplyEvents) {
+      const agentId = eventAuthorId(event);
+      if (!agentId || countedAgents.has(String(agentId))) {
+        continue;
+      }
+      if (!agentMatchesFilters(agentId, teamIds, filters.agentIds, filters.groupIds)) {
+        continue;
       }
 
-      const agentId = ticket.owner_id || ticket.ownerId;
-      if (!agentId) continue;
-
-      if (agentIds && agentIds.length > 0) {
-        if (!agentIds.includes(String(agentId))) continue;
-      }
-
-      const ticketDate = formatDate(createdAt);
-      const key = `${ticketDate}|${agentId}`;
-
-      // first_response_time is in seconds if provided by the API
-      const ftrMs = ticket.first_response_time
-        ? ticket.first_response_time * 1000
-        : (resolvedAt ? Math.max(0, resolvedAt - createdAt) / 2 : 0);
-
-      const resolutionMs = resolvedAt
-        ? Math.max(0, resolvedAt - createdAt)
-        : null;
-
-      if (!dailyMetrics.has(key)) {
-        dailyMetrics.set(key, {
+      countedAgents.add(String(agentId));
+      const key = `${dateKey(date)}|${agentId}`;
+      if (!dailyByAgent.has(key)) {
+        dailyByAgent.set(key, {
+          date: dateKey(date),
+          agent_id: String(agentId),
           handled_tickets: 0,
           ftr_values: [],
           resolution_values: [],
         });
       }
 
-      const current = dailyMetrics.get(key);
-      current.handled_tickets += 1;
-      current.ftr_values.push(ftrMs);
-      if (resolutionMs !== null) current.resolution_values.push(resolutionMs);
+      const row = dailyByAgent.get(key);
+      row.handled_tickets += 1;
+
+      if (firstClientAt && date > firstClientAt) {
+        row.ftr_values.push(date.getTime() - firstClientAt.getTime());
+      }
+
+      const solvedAt = ticket.solvedAt || ticket.resolvedAt || ticket.closedAt;
+      const solvedDate = solvedAt ? new Date(solvedAt) : null;
+      if (firstClientAt && isValidDate(solvedDate) && solvedDate > firstClientAt) {
+        row.resolution_values.push(solvedDate.getTime() - firstClientAt.getTime());
+      }
+    }
+  }
+
+  const agentsById = new Map();
+  const timelineByDate = new Map();
+  const summaryFtr = [];
+  const summaryResolution = [];
+  let totalTickets = 0;
+
+  for (const row of dailyByAgent.values()) {
+    const avgFtr = average(row.ftr_values);
+    const avgResolution = average(row.resolution_values);
+    totalTickets += row.handled_tickets;
+    if (avgFtr) summaryFtr.push(avgFtr);
+    if (avgResolution) summaryResolution.push(avgResolution);
+
+    if (!agentsById.has(row.agent_id)) {
+      const profile = agentDirectory.get(row.agent_id) || {};
+      agentsById.set(row.agent_id, {
+        agent_id: row.agent_id,
+        id: row.agent_id,
+        name: profile.name || row.agent_id,
+        email: profile.email || row.agent_id,
+        total_tickets: 0,
+        ftr_values: [],
+        resolution_values: [],
+        days: [],
+      });
     }
 
-    page += 1;
-    if (tickets.length < 50) hasMore = false;
-  }
-
-  const result = new Map();
-  for (const [key, data] of dailyMetrics.entries()) {
-    const [date, agentId] = key.split("|");
-    const avgFtr = data.ftr_values.length > 0
-      ? data.ftr_values.reduce((a, b) => a + b, 0) / data.ftr_values.length
-      : 0;
-    const avgResolution = data.resolution_values.length > 0
-      ? data.resolution_values.reduce((a, b) => a + b, 0) / data.resolution_values.length
-      : 0;
-
-    result.set(key, {
-      date,
-      agent_id: agentId,
-      handled_tickets: data.handled_tickets,
-      avg_ftr_ms: Math.round(avgFtr),
-      avg_resolution_time_ms: Math.round(avgResolution),
+    const agent = agentsById.get(row.agent_id);
+    agent.total_tickets += row.handled_tickets;
+    if (avgFtr) agent.ftr_values.push(avgFtr);
+    if (avgResolution) agent.resolution_values.push(avgResolution);
+    agent.days.push({
+      date: row.date,
+      tickets: row.handled_tickets,
+      avg_ftr_ms: avgFtr,
+      avg_resolution_time_ms: avgResolution,
     });
+
+    if (!timelineByDate.has(row.date)) {
+      timelineByDate.set(row.date, { date: row.date, tickets: 0, ftr_values: [], resolution_values: [] });
+    }
+    const day = timelineByDate.get(row.date);
+    day.tickets += row.handled_tickets;
+    if (avgFtr) day.ftr_values.push(avgFtr);
+    if (avgResolution) day.resolution_values.push(avgResolution);
   }
 
-  return result;
+  const agents = Array.from(agentsById.values())
+    .map((agent) => ({
+      agent_id: agent.agent_id,
+      id: agent.id,
+      name: agent.name,
+      email: agent.email,
+      total_tickets: agent.total_tickets,
+      avg_ftr_ms: average(agent.ftr_values),
+      avg_resolution_time_ms: average(agent.resolution_values),
+      days: agent.days.sort((left, right) => left.date.localeCompare(right.date)),
+    }))
+    .sort((left, right) => right.total_tickets - left.total_tickets);
+
+  const timeline = Array.from(timelineByDate.values())
+    .map((day) => ({
+      date: day.date,
+      tickets: day.tickets,
+      avg_ftr_ms: average(day.ftr_values),
+      avg_resolution_time_ms: average(day.resolution_values),
+    }))
+    .sort((left, right) => left.date.localeCompare(right.date));
+
+  return {
+    summary: {
+      total_tickets: totalTickets,
+      avg_ftr_ms: average(summaryFtr),
+      avg_resolution_time_ms: average(summaryResolution),
+      active_agents: agents.length,
+    },
+    agents,
+    timeline,
+  };
 }
 
 export async function onRequest(context) {
+  if (context.request.method !== "GET") {
+    return methodNotAllowed(["GET"]);
+  }
+
+  const auth = await requireAuth(context);
+  if (auth.error) {
+    return auth.error;
+  }
+
   try {
-    await requireAuth(context);
-
     const url = new URL(context.request.url);
-    const preset = url.searchParams.get("preset") || "last_7_days";
-    const fromParam = url.searchParams.get("from");
-    const toParam = url.searchParams.get("to");
-    const agentsParam = url.searchParams.get("agents");
-    const groupsParam = url.searchParams.get("groups");
+    const from = parseDateParam(url.searchParams.get("from"), "from");
+    const to = parseDateParam(url.searchParams.get("to"), "to");
 
-    const agentIds = agentsParam ? agentsParam.split(",").map((a) => a.trim()) : [];
-    const groupIds = groupsParam ? groupsParam.split(",").map((g) => g.trim()) : [];
-
-    const { from, to } = await getOrComputeDateRange(context.env, preset, fromParam, toParam);
-    const { from: prevFrom, to: prevTo } = getPreviousPeriod(from, to);
-
-    const currentMetrics = await getValidatedDailyMetrics(context.env, from, to, agentIds, groupIds);
-    const prevMetrics = await getValidatedDailyMetrics(context.env, prevFrom, prevTo, agentIds, groupIds);
-
-    const agentsByEmail = new Map();
-    const timeline = new Map();
-    let totalTickets = 0;
-    let ftrValues = [];
-    let resolutionValues = [];
-    const uniqueAgents = new Set();
-
-    for (const [, data] of currentMetrics.entries()) {
-      const { agent_id, date, handled_tickets, avg_ftr_ms, avg_resolution_time_ms } = data;
-
-      uniqueAgents.add(agent_id);
-      totalTickets += handled_tickets;
-      ftrValues.push(avg_ftr_ms);
-      resolutionValues.push(avg_resolution_time_ms);
-
-      if (!agentsByEmail.has(agent_id)) {
-        agentsByEmail.set(agent_id, {
-          agent_id,
-          total_tickets: 0,
-          ftr_values: [],
-          resolution_values: [],
-        });
-      }
-
-      const agent = agentsByEmail.get(agent_id);
-      agent.total_tickets += handled_tickets;
-      agent.ftr_values.push(avg_ftr_ms);
-      agent.resolution_values.push(avg_resolution_time_ms);
-
-      if (!timeline.has(date)) {
-        timeline.set(date, { date, tickets: 0, ftr_values: [], resolution_values: [] });
-      }
-      const dayData = timeline.get(date);
-      dayData.tickets += handled_tickets;
-      dayData.ftr_values.push(avg_ftr_ms);
-      dayData.resolution_values.push(avg_resolution_time_ms);
+    if (to <= from) {
+      return errorResponse("to must be after from", 400);
     }
 
-    const avgFtr = ftrValues.length > 0 ? Math.round(ftrValues.reduce((a, b) => a + b, 0) / ftrValues.length) : 0;
-    const avgResolution = resolutionValues.length > 0 ? Math.round(resolutionValues.reduce((a, b) => a + b, 0) / resolutionValues.length) : 0;
+    const filters = {
+      agentIds: splitParam(url.searchParams.get("agents")),
+      groupIds: splitParam(url.searchParams.get("groups")),
+    };
+    const previous = getPreviousPeriod(from, to);
+    const dashboard = await getHelpDeskDashboard(context.env);
+    const agentDirectory = buildAgentDirectory(dashboard);
 
-    let prevTotalTickets = 0;
-    let prevFtrValues = [];
-    let prevResolutionValues = [];
-    let prevUniqueAgents = new Set();
+    const [current, prev] = await Promise.all([
+      computePeriod(context.env, from, to, filters, agentDirectory),
+      computePeriod(context.env, previous.from, previous.to, filters, agentDirectory),
+    ]);
 
-    for (const [, data] of prevMetrics.entries()) {
-      prevTotalTickets += data.handled_tickets;
-      prevFtrValues.push(data.avg_ftr_ms);
-      prevResolutionValues.push(data.avg_resolution_time_ms);
-      prevUniqueAgents.add(data.agent_id);
-    }
-
-    const prevAvgFtr = prevFtrValues.length > 0 ? Math.round(prevFtrValues.reduce((a, b) => a + b, 0) / prevFtrValues.length) : 0;
-    const prevAvgResolution = prevResolutionValues.length > 0 ? Math.round(prevResolutionValues.reduce((a, b) => a + b, 0) / prevResolutionValues.length) : 0;
-
-    const agents = Array.from(agentsByEmail.values()).map((agent) => ({
-      agent_id: agent.agent_id,
-      total_tickets: agent.total_tickets,
-      avg_ftr_ms: agent.ftr_values.length > 0 ? Math.round(agent.ftr_values.reduce((a, b) => a + b, 0) / agent.ftr_values.length) : 0,
-      avg_resolution_time_ms: agent.resolution_values.length > 0 ? Math.round(agent.resolution_values.reduce((a, b) => a + b, 0) / agent.resolution_values.length) : 0,
-    }));
-
-    const timelineArray = Array.from(timeline.values()).map((day) => ({
-      date: day.date,
-      tickets: day.tickets,
-      avg_ftr_ms: day.ftr_values.length > 0 ? Math.round(day.ftr_values.reduce((a, b) => a + b, 0) / day.ftr_values.length) : 0,
-      avg_resolution_time_ms: day.resolution_values.length > 0 ? Math.round(day.resolution_values.reduce((a, b) => a + b, 0) / day.resolution_values.length) : 0,
-    })).sort((a, b) => new Date(a.date) - new Date(b.date));
-
-    return new Response(
-      JSON.stringify({
-        period: { from: from.toISOString(), to: to.toISOString() },
-        summary: {
-          total_tickets: totalTickets,
-          avg_ftr_ms: avgFtr,
-          avg_resolution_time_ms: avgResolution,
-          active_agents: uniqueAgents.size,
-          prev_period: {
-            total_tickets: prevTotalTickets,
-            avg_ftr_ms: prevAvgFtr,
-            avg_resolution_time_ms: prevAvgResolution,
-            active_agents: prevUniqueAgents.size,
-          },
-        },
-        agents,
-        timeline: timelineArray,
-        capabilities: {
-          per_agent_period_metrics: true,
-          per_agent_daily_metrics: false,
-          account_daily_timeline: true,
-        },
-      }),
-      { status: 200, headers: { "Content-Type": "application/json" } }
-    );
-  } catch (error) {
-    console.error("Analytics worker error:", error.message, error.stack);
-    return new Response(JSON.stringify({
-      error: error.message,
-      details: process.env.NODE_ENV === "development" ? error.stack : undefined
-    }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
+    return json({
+      period: { from: from.toISOString(), to: to.toISOString() },
+      summary: { ...current.summary, prev_period: prev.summary },
+      agents: current.agents,
+      timeline: current.timeline,
+      capabilities: {
+        per_agent_period_metrics: true,
+        per_agent_daily_metrics: true,
+        account_daily_timeline: true,
+        source: "ticket_events",
+      },
     });
+  } catch (error) {
+    const message = error.message || "HelpDesk analytics failed.";
+    const status = message.startsWith("Missing required param") || message.startsWith("Invalid date") ? 400 : 500;
+    return errorResponse(message, status);
   }
 }
