@@ -2577,6 +2577,8 @@ function renderApp() {
     appContent.innerHTML = renderCreateUserForm("livechat");
   } else if (state.section === "livechat-analytics") {
     appContent.innerHTML = renderAnalytics();
+  } else if (state.section === "helpdesk-analytics") {
+    renderHelpdeskAnalytics();
   } else if (state.section === "helpdesk-users") {
     appContent.innerHTML = renderHelpDeskUsers();
   } else if (state.section === "helpdesk-groups") {
@@ -2594,6 +2596,13 @@ function renderApp() {
 
   if (state.section === "livechat-analytics" && !state.analytics.loading && !state.analytics.data && !state.analytics.error) {
     fetchAnalytics();
+  }
+
+  if (state.section === "helpdesk-analytics" && !state.helpdesk_analytics.loading && !state.helpdesk_analytics.data && !state.helpdesk_analytics.error) {
+    const range = getDateRange(state.helpdesk_analytics.filters.preset);
+    state.helpdesk_analytics.filters.from = range.from;
+    state.helpdesk_analytics.filters.to = range.to;
+    fetchHelpdeskAnalytics();
   }
 }
 
