@@ -123,12 +123,13 @@ function filterCachedRows(rows, filters) {
   });
 }
 
-async function listTicketsForDay(env, from, to) {
+async function listTicketsForRange(env, from, to) {
   const ticketsById = new Map();
 
   for (const status of STATUSES) {
     let nextCursor = null;
     let page = 0;
+    let reachedFrom = false;
 
     do {
       const params = new URLSearchParams({
@@ -136,8 +137,6 @@ async function listTicketsForDay(env, from, to) {
         order: "desc",
         sortBy: "lastMessageAt",
         status,
-        lastMessageFrom: from.toISOString(),
-        lastMessageTo: to.toISOString(),
       });
       if (nextCursor) {
         params.set("next.value", nextCursor.value);
@@ -148,6 +147,13 @@ async function listTicketsForDay(env, from, to) {
       const tickets = normalizeTicketList(payload);
 
       for (const ticket of tickets) {
+        const lastMsg = ticket.lastMessageAt || ticket.updatedAt || ticket.updated_at;
+        const msgDate = lastMsg ? new Date(lastMsg) : null;
+        if (!msgDate || msgDate < from) {
+          reachedFrom = true;
+          continue;
+        }
+        if (msgDate > to) continue;
         const id = ticket.ID || ticket.id;
         if (id) ticketsById.set(String(id), ticket);
       }
@@ -155,7 +161,9 @@ async function listTicketsForDay(env, from, to) {
       const lastTicket = tickets[tickets.length - 1];
       const lastId = lastTicket?.ID || lastTicket?.id;
       const lastValue = lastTicket?.lastMessageAt || lastTicket?.updatedAt || lastTicket?.updated_at;
-      nextCursor = tickets.length === PAGE_SIZE && lastId && lastValue ? { id: String(lastId), value: lastValue } : null;
+      const lastDate = lastValue ? new Date(lastValue) : null;
+      if (lastDate && lastDate < from) reachedFrom = true;
+      nextCursor = !reachedFrom && tickets.length === PAGE_SIZE && lastId && lastValue ? { id: String(lastId), value: lastValue } : null;
       page += 1;
     } while (nextCursor && page < MAX_PAGES_PER_DAY_STATUS);
   }
@@ -164,7 +172,7 @@ async function listTicketsForDay(env, from, to) {
 }
 
 async function computeDay(env, from, to, filters, timezoneOffsetMinutes) {
-  const tickets = await listTicketsForDay(env, from, to);
+  const tickets = await listTicketsForRange(env, from, to);
   const counts = new Map();
 
   for (const ticket of tickets) {

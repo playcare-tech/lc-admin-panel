@@ -1967,23 +1967,14 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0) {
   }
 }
 
-async function fetchHelpdeskAnalyticsDayResponses(ranges, filters) {
-  const responses = [];
-  state.helpdesk_analytics.loadProgress = {
-    current: 0,
-    total: ranges.length,
-    cacheHits: 0,
-    savedDays: 0,
-    liveDays: 0,
-  };
-  for (let index = 0; index < ranges.length; index += 1) {
-    state.helpdesk_analytics.loadProgress.current = index + 1;
-    state.helpdesk_analytics.loadStatus = `Preparing day ${index + 1}/${ranges.length}...`;
-    renderHelpdeskAnalytics();
-    responses.push(...(await fetchHelpdeskAnalyticsRange(ranges[index], filters)));
-    await sleep(250);
-  }
-  return responses;
+async function fetchHelpdeskAnalyticsDayResponses(filters) {
+  state.helpdesk_analytics.loadProgress = { current: 0, total: 1, cacheHits: 0, savedDays: 0, liveDays: 0 };
+  state.helpdesk_analytics.loadStatus = "Loading HelpDesk data...";
+  renderHelpdeskAnalytics();
+  const response = await fetchHelpdeskAnalyticsRange({ from: filters.from, to: filters.to, cacheFullDay: false }, filters);
+  state.helpdesk_analytics.loadProgress.current = 1;
+  state.helpdesk_analytics.loadProgress.liveDays = 1;
+  return response;
 }
 
 function renderHelpdeskAnalyticsLoading(container) {
@@ -2026,7 +2017,7 @@ async function fetchHelpdeskAnalytics() {
   renderHelpdeskAnalytics();
 
   try {
-    const responses = await fetchHelpdeskAnalyticsDayResponses(helpdeskAnalyticsDayRanges(filters.from, filters.to), filters);
+    const responses = await fetchHelpdeskAnalyticsDayResponses(filters);
     state.helpdesk_analytics.data = mergeHelpdeskAnalyticsResponses(responses, filters);
     renderHelpdeskAnalytics();
   } catch (error) {
