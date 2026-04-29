@@ -28,18 +28,6 @@ function dateKey(date, timezoneOffsetMinutes = 0) {
   return new Date(date.getTime() - timezoneOffsetMinutes * 60000).toISOString().slice(0, 10);
 }
 
-function eventDate(event) {
-  const date = new Date(event.date || event.createdAt || event.created_at);
-  return isValidDate(date) ? date : null;
-}
-
-function eventAuthorId(event) {
-  return event.author?.ID || event.author?.id || event.authorID || event.authorId || event.createdBy;
-}
-
-function isAgentMessage(event) {
-  return event?.type === "message" && event.author?.type === "agent" && !event.isPrivate;
-}
 
 function normalizeTicketList(payload) {
   return Array.isArray(payload) ? payload : payload?.tickets || payload?.data || payload?.items || [];
@@ -181,28 +169,20 @@ async function computeDay(env, from, to, filters, timezoneOffsetMinutes) {
 
   for (const ticket of tickets) {
     const teamIds = (ticket.teamIDs || ticket.teamIds || []).map(String);
-    const ticketId = String(ticket.ID || ticket.id || "");
-    const counted = new Set();
+    const agentId = ticket.assigneeID || ticket.assignedTo || ticket.agentID || ticket.agent_id;
+    if (!agentId) continue;
+    if (!matchesFilters(agentId, teamIds, filters)) continue;
 
-    for (const event of ticket.events || []) {
-      if (!isAgentMessage(event)) continue;
-      const date = eventDate(event);
-      if (!date || date < from || date >= to) continue;
+    const lastMsg = ticket.lastMessageAt || ticket.updatedAt || ticket.updated_at;
+    const date = lastMsg ? new Date(lastMsg) : null;
+    if (!date || !isValidDate(date)) continue;
 
-      const agentId = eventAuthorId(event);
-      if (!agentId || !matchesFilters(agentId, teamIds, filters)) continue;
-
-      const localDay = dateKey(date, timezoneOffsetMinutes);
-      const countKey = `${localDay}|${agentId}|${ticketId}`;
-      if (counted.has(countKey)) continue;
-      counted.add(countKey);
-
-      const rowKey = `${localDay}|${agentId}`;
-      if (!counts.has(rowKey)) {
-        counts.set(rowKey, { date: localDay, agent_id: String(agentId), handled_tickets: 0 });
-      }
-      counts.get(rowKey).handled_tickets += 1;
+    const localDay = dateKey(date, timezoneOffsetMinutes);
+    const rowKey = `${localDay}|${agentId}`;
+    if (!counts.has(rowKey)) {
+      counts.set(rowKey, { date: localDay, agent_id: String(agentId), handled_tickets: 0 });
     }
+    counts.get(rowKey).handled_tickets += 1;
   }
 
   return Array.from(counts.values());
