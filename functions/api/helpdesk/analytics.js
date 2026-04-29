@@ -60,8 +60,74 @@ function eventAuthorId(event) {
   return event.author?.ID || event.author?.id || event.authorID || event.authorId || event.createdBy;
 }
 
+function eventDate(event) {
+  const date = new Date(event.date || event.createdAt || event.created_at);
+  return isValidDate(date) ? date : null;
+}
+
 function isAgentMessage(event) {
   return event?.type === "message" && event.author?.type === "agent" && !event.isPrivate;
+}
+
+function firstNonEmpty(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== "");
+}
+
+function assignmentAgentId(event) {
+  return firstNonEmpty(
+    event.agentID,
+    event.agentId,
+    event.assigneeID,
+    event.assigneeId,
+    event.ownerID,
+    event.ownerId,
+    event.assignment?.agentID,
+    event.assignment?.agentId,
+    event.assignedTo?.ID,
+    event.assignedTo?.id,
+    event.to?.agentID,
+    event.to?.agentId,
+    event.value?.agentID,
+    event.value?.agentId,
+    event.new?.agentID,
+    event.new?.agentId,
+    event.data?.agentID,
+    event.data?.agentId,
+  );
+}
+
+function ticketAssignedAgentId(ticket) {
+  return firstNonEmpty(
+    ticket.agentID,
+    ticket.agentId,
+    ticket.ownerID,
+    ticket.ownerId,
+    ticket.assignment?.agentID,
+    ticket.assignment?.agentId,
+    ticket.assignee?.ID,
+    ticket.assignee?.id,
+  );
+}
+
+function assignmentDateForReply(ticket, agentId, replyDate) {
+  const assignmentEvents = (ticket.events || [])
+    .filter((event) => event.type === "assignment")
+    .map((event) => ({ agentId: assignmentAgentId(event), date: eventDate(event) }))
+    .filter((event) => event.agentId && isValidDate(event.date) && event.date <= replyDate)
+    .sort((left, right) => right.date - left.date);
+
+  const matchingAssignment = assignmentEvents.find((event) => String(event.agentId) === String(agentId));
+  if (matchingAssignment) {
+    return matchingAssignment.date;
+  }
+
+  const currentAssignedAgentId = ticketAssignedAgentId(ticket);
+  if (currentAssignedAgentId && String(currentAssignedAgentId) === String(agentId)) {
+    const assignedAt = new Date(ticket.assignedAt || ticket.assigned_at || ticket.updatedAt || ticket.updated_at);
+    return isValidDate(assignedAt) && assignedAt <= replyDate ? assignedAt : null;
+  }
+
+  return null;
 }
 
 function firstClientMessageDate(ticket) {
@@ -149,49 +215,48 @@ async function computePeriod(env, from, to, filters, agentDirectory, options = {
 
   for (const ticket of tickets) {
     const teamIds = (ticket.teamIDs || ticket.teamIds || []).map(String);
-    const firstClientAt = firstClientMessageDate(ticket);
-
     const agentReplyEvents = (ticket.events || [])
       .filter(isAgentMessage)
-      .map((event) => ({ event, date: new Date(event.date || event.createdAt) }))
+      .map((event) => ({ event, date: eventDate(event) }))
       .filter(({ date }) => isValidDate(date) && date >= from && date < to)
       .sort((left, right) => left.date - right.date);
 
-    const countedAgents = new Set();
-    for (const { event, date } of agentReplyEvents) {
+    const firstProcessEvent = agentReplyEvents.find(({ event }) => {
       const agentId = eventAuthorId(event);
-      if (!agentId || countedAgents.has(String(agentId))) {
-        continue;
-      }
-      if (!agentMatchesFilters(agentId, teamIds, filters.agentIds, filters.groupIds)) {
-        continue;
-      }
+      return agentId && agentMatchesFilters(agentId, teamIds, filters.agentIds, filters.groupIds);
+    });
 
-      countedAgents.add(String(agentId));
-      const replyDate = dateKey(date, timezoneOffsetMinutes);
-      const key = `${replyDate}|${agentId}`;
-      if (!dailyByAgent.has(key)) {
-        dailyByAgent.set(key, {
-          date: replyDate,
-          agent_id: String(agentId),
-          handled_tickets: 0,
-          ftr_values: [],
-          resolution_values: [],
-        });
-      }
+    if (!firstProcessEvent) {
+      continue;
+    }
 
-      const row = dailyByAgent.get(key);
-      row.handled_tickets += 1;
+    const { event, date } = firstProcessEvent;
+    const agentId = eventAuthorId(event);
+    const replyDate = dateKey(date, timezoneOffsetMinutes);
+    const key = `${replyDate}|${agentId}`;
+    if (!dailyByAgent.has(key)) {
+      dailyByAgent.set(key, {
+        date: replyDate,
+        agent_id: String(agentId),
+        handled_tickets: 0,
+        ftr_values: [],
+        resolution_values: [],
+      });
+    }
 
-      if (firstClientAt && date > firstClientAt) {
-        row.ftr_values.push(date.getTime() - firstClientAt.getTime());
-      }
+    const row = dailyByAgent.get(key);
+    row.handled_tickets += 1;
 
-      const solvedAt = ticket.solvedAt || ticket.resolvedAt || ticket.closedAt;
-      const solvedDate = solvedAt ? new Date(solvedAt) : null;
-      if (firstClientAt && isValidDate(solvedDate) && solvedDate > firstClientAt) {
-        row.resolution_values.push(solvedDate.getTime() - firstClientAt.getTime());
-      }
+    const assignedAt = assignmentDateForReply(ticket, agentId, date);
+    if (assignedAt && date > assignedAt) {
+      row.ftr_values.push(date.getTime() - assignedAt.getTime());
+    }
+
+    const solvedAt = ticket.solvedAt || ticket.resolvedAt || ticket.closedAt;
+    const solvedDate = solvedAt ? new Date(solvedAt) : null;
+    const firstClientAt = firstClientMessageDate(ticket);
+    if (firstClientAt && isValidDate(solvedDate) && solvedDate > firstClientAt) {
+      row.resolution_values.push(solvedDate.getTime() - firstClientAt.getTime());
     }
   }
 

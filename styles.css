@@ -264,7 +264,8 @@ body {
 }
 
 .helpdesk-leaderboard-wrapper {
-  max-width: 100%;
+  width: 100%;
+  max-width: calc(100vw - 300px);
   overflow-x: auto;
   padding: 0;
   border: 1px solid var(--line);
@@ -968,6 +969,10 @@ body {
   .analytics-card-grid,
   .helpdesk-analytics-filters {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .helpdesk-leaderboard-wrapper {
+    max-width: calc(100vw - 32px);
   }
 
   .log-grid-two {
