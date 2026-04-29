@@ -1960,12 +1960,13 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0) {
     return [response];
   } catch (error) {
     const duration = range.to.getTime() - range.from.getTime();
-    if (!/too many/i.test(error.message || "") || duration <= 30 * 60 * 1000 || depth >= 8) {
+    const canRetrySmaller = /too many|503|service unavailable/i.test(error.message || "");
+    if (!canRetrySmaller || duration <= 30 * 60 * 1000 || depth >= 8) {
       throw error;
     }
 
     const middle = new Date(range.from.getTime() + Math.floor(duration / 2));
-    state.helpdesk_analytics.loadStatus = "HelpDesk rate limit hit. Loading smaller portions...";
+    state.helpdesk_analytics.loadStatus = "HelpDesk request was too large. Loading smaller portions...";
     renderHelpdeskAnalytics();
     await sleep(500);
     const first = await fetchHelpdeskAnalyticsRange({ from: range.from, to: middle, cacheFullDay: false }, filters, depth + 1);
