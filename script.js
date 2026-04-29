@@ -1708,6 +1708,636 @@ function renderAnalytics() {
   `;
 }
 
+// Task 7: Date Helper Functions
+function getDateRange(preset) {
+  const now = new Date();
+  let from, to;
+
+  switch (preset) {
+    case "today":
+      from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      to = new Date(from.getTime() + 24 * 60 * 60 * 1000 - 1);
+      break;
+    case "yesterday":
+      to = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+      from = new Date(to.getTime() - 24 * 60 * 60 * 1000 + 1);
+      break;
+    case "last_7_days":
+      to = new Date(now.getTime() - 1000);
+      from = new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
+      break;
+    case "last_30_days":
+      to = new Date(now.getTime() - 1000);
+      from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+      break;
+    case "this_week":
+      const startOfWeek = new Date(now);
+      startOfWeek.setDate(now.getDate() - now.getDay());
+      from = new Date(startOfWeek.getFullYear(), startOfWeek.getMonth(), startOfWeek.getDate());
+      to = new Date(from.getTime() + 7 * 24 * 60 * 60 * 1000 - 1);
+      break;
+    case "last_week":
+      const endOfLastWeek = new Date(now);
+      endOfLastWeek.setDate(now.getDate() - now.getDay() - 1);
+      to = new Date(endOfLastWeek.getFullYear(), endOfLastWeek.getMonth(), endOfLastWeek.getDate() + 1, 23, 59, 59);
+      from = new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
+      break;
+    case "this_month":
+      from = new Date(now.getFullYear(), now.getMonth(), 1);
+      to = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+      break;
+    case "last_month":
+      from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      to = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
+      break;
+    default:
+      to = new Date(now.getTime() - 1000);
+      from = new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
+  }
+
+  return { from, to };
+}
+
+function formatDate(date) {
+  return date.toISOString().split("T")[0];
+}
+
+function formatDurationHelpdesk(milliseconds) {
+  if (!milliseconds || milliseconds <= 0) return "0m";
+
+  const totalSeconds = Math.floor(milliseconds / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+function formatDelta(current, previous) {
+  if (previous === 0) return current === 0 ? "0%" : "∞";
+  const delta = ((current - previous) / previous) * 100;
+  return `${delta > 0 ? "+" : ""}${Math.round(delta)}%`;
+}
+
+// Task 8: Create fetchAnalytics Function for HelpDesk
+async function fetchHelpdeskAnalytics() {
+  const { filters } = state.helpdesk_analytics;
+  state.helpdesk_analytics.loading = true;
+  state.helpdesk_analytics.error = null;
+
+  try {
+    const params = new URLSearchParams();
+    params.append("preset", filters.preset);
+
+    if (filters.from) params.append("from", filters.from.toISOString());
+    if (filters.to) params.append("to", filters.to.toISOString());
+    if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
+    if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
+
+    const response = await fetch(`/api/helpdesk/analytics?${params.toString()}`);
+    if (!response.ok) {
+      throw new Error(`API error: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    state.helpdesk_analytics.data = data;
+    renderHelpdeskAnalytics();
+  } catch (error) {
+    console.error("Fetch analytics error:", error);
+    state.helpdesk_analytics.error = error.message;
+    renderHelpdeskAnalytics();
+  } finally {
+    state.helpdesk_analytics.loading = false;
+  }
+}
+
+// Task 9: Create renderAnalytics Function with Filter Bar
+function renderHelpdeskAnalytics() {
+  const container = document.getElementById("appContent");
+  const { filters, loading, error, data } = state.helpdesk_analytics;
+
+  if (!filters.from || !filters.to) {
+    const range = getDateRange(filters.preset);
+    filters.from = range.from;
+    filters.to = range.to;
+  }
+
+  container.innerHTML = "";
+
+  const filterBar = document.createElement("div");
+  filterBar.className = "filter-bar d-flex gap-3 align-items-center mb-4 flex-wrap";
+
+  // Preset dropdown
+  const presetGroup = document.createElement("div");
+  presetGroup.className = "filter-group";
+  const presetLabel = document.createElement("label");
+  presetLabel.htmlFor = "preset-select";
+  presetLabel.className = "form-label";
+  presetLabel.textContent = "Period";
+  const presetSelect = document.createElement("select");
+  presetSelect.id = "preset-select";
+  presetSelect.className = "form-select";
+  const optionsHtml = `<option value="today">Today</option>
+    <option value="yesterday">Yesterday</option>
+    <option value="last_7_days" selected>Last 7 days</option>
+    <option value="last_30_days">Last 30 days</option>
+    <option value="this_week">This week</option>
+    <option value="last_week">Last week</option>
+    <option value="this_month">This month</option>
+    <option value="last_month">Last month</option>
+    <option value="custom">Custom range</option>`;
+  presetSelect.innerHTML = optionsHtml;
+  presetGroup.appendChild(presetLabel);
+  presetGroup.appendChild(presetSelect);
+  filterBar.appendChild(presetGroup);
+
+  // Custom date inputs
+  const customDatesDiv = document.createElement("div");
+  customDatesDiv.id = "custom-dates";
+  customDatesDiv.className = "d-none filter-group";
+  const fromLabel = document.createElement("label");
+  fromLabel.htmlFor = "from-date";
+  fromLabel.className = "form-label";
+  fromLabel.textContent = "From";
+  const fromInput = document.createElement("input");
+  fromInput.type = "date";
+  fromInput.id = "from-date";
+  fromInput.className = "form-control";
+  customDatesDiv.appendChild(fromLabel);
+  customDatesDiv.appendChild(fromInput);
+  filterBar.appendChild(customDatesDiv);
+
+  const customDatesToDiv = document.createElement("div");
+  customDatesToDiv.id = "custom-dates-to";
+  customDatesToDiv.className = "d-none filter-group";
+  const toLabel = document.createElement("label");
+  toLabel.htmlFor = "to-date";
+  toLabel.className = "form-label";
+  toLabel.textContent = "To";
+  const toInput = document.createElement("input");
+  toInput.type = "date";
+  toInput.id = "to-date";
+  toInput.className = "form-control";
+  customDatesToDiv.appendChild(toLabel);
+  customDatesToDiv.appendChild(toInput);
+  filterBar.appendChild(customDatesToDiv);
+
+  // Groups filter
+  const groupsFilter = document.createElement("div");
+  groupsFilter.id = "groups-filter";
+  groupsFilter.className = "filter-group";
+  const groupsLabel = document.createElement("label");
+  groupsLabel.className = "form-label";
+  groupsLabel.textContent = "Groups";
+  const groupsCheckboxes = document.createElement("div");
+  groupsCheckboxes.id = "groups-checkboxes";
+  groupsCheckboxes.className = "checkbox-group";
+  groupsFilter.appendChild(groupsLabel);
+  groupsFilter.appendChild(groupsCheckboxes);
+  filterBar.appendChild(groupsFilter);
+
+  // Agents filter
+  const agentsFilter = document.createElement("div");
+  agentsFilter.id = "agents-filter";
+  agentsFilter.className = "filter-group";
+  const agentsLabel = document.createElement("label");
+  agentsLabel.className = "form-label";
+  agentsLabel.textContent = "Agents";
+  const agentsCheckboxes = document.createElement("div");
+  agentsCheckboxes.id = "agents-checkboxes";
+  agentsCheckboxes.className = "checkbox-group";
+  agentsFilter.appendChild(agentsLabel);
+  agentsFilter.appendChild(agentsCheckboxes);
+  filterBar.appendChild(agentsFilter);
+
+  // Compare toggle
+  const compareGroup = document.createElement("div");
+  compareGroup.className = "filter-group";
+  const compareLabel = document.createElement("label");
+  compareLabel.className = "form-check-label";
+  const compareInput = document.createElement("input");
+  compareInput.type = "checkbox";
+  compareInput.id = "compare-toggle";
+  compareInput.className = "form-check-input";
+  compareInput.checked = true;
+  compareLabel.appendChild(compareInput);
+  compareLabel.appendChild(document.createTextNode("Compare periods"));
+  compareGroup.appendChild(compareLabel);
+  filterBar.appendChild(compareGroup);
+
+  container.appendChild(filterBar);
+
+  // Wire up event handlers
+  presetSelect.addEventListener("change", (e) => {
+    filters.preset = e.target.value;
+    const customDates = document.getElementById("custom-dates");
+    if (e.target.value === "custom") {
+      customDates.classList.remove("d-none");
+    } else {
+      customDates.classList.add("d-none");
+      const range = getDateRange(e.target.value);
+      filters.from = range.from;
+      filters.to = range.to;
+      fetchHelpdeskAnalytics();
+    }
+  });
+
+  document.getElementById("from-date")?.addEventListener("change", (e) => {
+    filters.from = e.target.value ? new Date(e.target.value) : null;
+    if (filters.from && filters.to) fetchHelpdeskAnalytics();
+  });
+
+  document.getElementById("to-date")?.addEventListener("change", (e) => {
+    filters.to = e.target.value ? new Date(e.target.value) : null;
+    if (filters.from && filters.to) fetchHelpdeskAnalytics();
+  });
+
+  document.getElementById("compare-toggle")?.addEventListener("change", (e) => {
+    filters.compare = e.target.checked;
+    renderHelpdeskAnalytics();
+  });
+
+  renderFiltersConditional();
+
+  // Render data sections if available
+  if (data) {
+    renderMetricsAndPanels();
+    renderLeaderboard();
+  } else if (loading) {
+    const loadingDiv = document.createElement("div");
+    loadingDiv.className = "alert alert-info";
+    loadingDiv.textContent = "Loading...";
+    container.appendChild(loadingDiv);
+  } else if (error) {
+    const errorDiv = document.createElement("div");
+    errorDiv.className = "alert alert-danger";
+    errorDiv.textContent = `Error: ${error}`;
+    container.appendChild(errorDiv);
+  }
+}
+
+function renderFiltersConditional() {
+  const agentsFilter = document.getElementById("agents-filter");
+  const groupsFilter = document.getElementById("groups-filter");
+  const { agents: selectedAgents, groups: selectedGroups } = state.helpdesk_analytics.filters;
+
+  if (selectedAgents.length === 0) {
+    groupsFilter.classList.remove("d-none");
+    agentsFilter.classList.remove("d-none");
+  } else {
+    groupsFilter.classList.add("d-none");
+    agentsFilter.classList.remove("d-none");
+  }
+
+  const agentsCheckboxes = document.getElementById("agents-checkboxes");
+  agentsCheckboxes.innerHTML = "";
+  (state.helpdesk.agents || []).forEach((agent) => {
+    const div = document.createElement("div");
+    div.className = "form-check";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.id = `agent-${agent.id}`;
+    input.className = "form-check-input agent-checkbox";
+    input.value = agent.id;
+    input.checked = selectedAgents.includes(agent.id);
+    const label = document.createElement("label");
+    label.className = "form-check-label";
+    label.htmlFor = `agent-${agent.id}`;
+    label.textContent = agent.email;
+    div.appendChild(input);
+    div.appendChild(label);
+    agentsCheckboxes.appendChild(div);
+  });
+
+  const groupsCheckboxes = document.getElementById("groups-checkboxes");
+  groupsCheckboxes.innerHTML = "";
+  (state.helpdesk.groups || []).forEach((group) => {
+    const div = document.createElement("div");
+    div.className = "form-check";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.id = `group-${group.id}`;
+    input.className = "form-check-input group-checkbox";
+    input.value = group.id;
+    input.checked = selectedGroups.includes(group.id);
+    const label = document.createElement("label");
+    label.className = "form-check-label";
+    label.htmlFor = `group-${group.id}`;
+    label.textContent = group.name;
+    div.appendChild(input);
+    div.appendChild(label);
+    groupsCheckboxes.appendChild(div);
+  });
+
+  document.querySelectorAll(".agent-checkbox").forEach((checkbox) => {
+    checkbox.addEventListener("change", (e) => {
+      const { filters } = state.helpdesk_analytics;
+      if (e.target.checked) {
+        filters.agents.push(e.target.value);
+      } else {
+        filters.agents = filters.agents.filter((id) => id !== e.target.value);
+      }
+      renderFiltersConditional();
+      fetchHelpdeskAnalytics();
+    });
+  });
+
+  document.querySelectorAll(".group-checkbox").forEach((checkbox) => {
+    checkbox.addEventListener("change", (e) => {
+      const { filters } = state.helpdesk_analytics;
+      if (e.target.checked) {
+        filters.groups.push(e.target.value);
+      } else {
+        filters.groups = filters.groups.filter((id) => id !== e.target.value);
+      }
+      renderFiltersConditional();
+      fetchHelpdeskAnalytics();
+    });
+  });
+}
+
+function renderMetricsAndPanels() {
+  if (!state.helpdesk_analytics.data) return;
+
+  const { summary } = state.helpdesk_analytics.data;
+  const { compare } = state.helpdesk_analytics.filters;
+  const container = document.getElementById("appContent");
+
+  const currentSummary = summary;
+  const prevSummary = summary.prev_period;
+
+  function formatDeltaBadge(current, prev, lowerIsBetter = false) {
+    if (typeof current !== "number" || typeof prev !== "number" || prev === 0) return "—";
+    const delta = lowerIsBetter
+      ? ((prev - current) / prev) * 100
+      : ((current - prev) / prev) * 100;
+    const isImprovement = lowerIsBetter ? delta > 0 : delta > 0;
+    const badgeClass = isImprovement ? "badge-success" : "badge-danger";
+    return `${delta > 0 ? "+" : ""}${Math.round(delta)}%`;
+  }
+
+  const metricsRow = document.createElement("div");
+  metricsRow.className = "metrics-row d-flex gap-4 mb-5 flex-wrap";
+
+  function createMetricCard(title, value, prevValue, deltaValue, lowerIsBetter = false) {
+    const card = document.createElement("div");
+    card.className = "analytics-card";
+
+    const cardValue = document.createElement("div");
+    cardValue.className = "card-value";
+    cardValue.textContent = value;
+
+    const divider = document.createElement("hr");
+    divider.className = "card-divider";
+
+    const footer = document.createElement("div");
+    footer.className = "card-footer d-flex justify-content-between";
+
+    const label = document.createElement("span");
+    label.className = "card-label";
+    label.textContent = `prev: ${prevValue}`;
+    footer.appendChild(label);
+
+    if (compare) {
+      const badge = document.createElement("span");
+      badge.className = "badge badge-success";
+      const delta = formatDeltaBadge(deltaValue, prevValue, lowerIsBetter);
+      badge.textContent = delta;
+      footer.appendChild(badge);
+    }
+
+    const cardTitle = document.createElement("div");
+    cardTitle.className = "card-title";
+    cardTitle.textContent = title;
+
+    card.appendChild(cardValue);
+    card.appendChild(divider);
+    card.appendChild(footer);
+    card.appendChild(cardTitle);
+    return card;
+  }
+
+  metricsRow.appendChild(createMetricCard(
+    "Total Tickets",
+    currentSummary.total_tickets,
+    prevSummary.total_tickets,
+    currentSummary.total_tickets
+  ));
+  metricsRow.appendChild(createMetricCard(
+    "Avg FTR",
+    formatDurationHelpdesk(currentSummary.avg_ftr_ms),
+    formatDurationHelpdesk(prevSummary.avg_ftr_ms),
+    currentSummary.avg_ftr_ms,
+    true
+  ));
+  metricsRow.appendChild(createMetricCard(
+    "Avg Resolution",
+    formatDurationHelpdesk(currentSummary.avg_resolution_time_ms),
+    formatDurationHelpdesk(prevSummary.avg_resolution_time_ms),
+    currentSummary.avg_resolution_time_ms,
+    true
+  ));
+  metricsRow.appendChild(createMetricCard(
+    "Active Agents",
+    currentSummary.active_agents,
+    prevSummary.active_agents,
+    currentSummary.active_agents
+  ));
+
+  const metricsSection = container.querySelector(".metrics-section");
+  metricsSection.appendChild(metricsRow);
+
+  const top5Row = document.createElement("div");
+  top5Row.className = "top5-row d-flex gap-4 mb-5 flex-wrap";
+
+  const top5TicketsPanel = document.createElement("div");
+  top5TicketsPanel.className = "top5-panel";
+  const top5TicketsTitle = document.createElement("h6");
+  top5TicketsTitle.textContent = "Top 5 by Tickets";
+  top5TicketsPanel.appendChild(top5TicketsTitle);
+
+  const top5TicketsList = document.createElement("ul");
+  top5TicketsList.className = "list-unstyled";
+  state.helpdesk_analytics.data.agents
+    .sort((a, b) => b.total_tickets - a.total_tickets)
+    .slice(0, 5)
+    .forEach((agent) => {
+      const li = document.createElement("li");
+      li.textContent = `${agent.agent_id} — ${agent.total_tickets} tickets`;
+      top5TicketsList.appendChild(li);
+    });
+  top5TicketsPanel.appendChild(top5TicketsList);
+  top5Row.appendChild(top5TicketsPanel);
+
+  const top5FtrPanel = document.createElement("div");
+  top5FtrPanel.className = "top5-panel";
+  const top5FtrTitle = document.createElement("h6");
+  top5FtrTitle.textContent = "Top 5 by Fastest FTR";
+  top5FtrPanel.appendChild(top5FtrTitle);
+
+  const top5FtrList = document.createElement("ul");
+  top5FtrList.className = "list-unstyled";
+  state.helpdesk_analytics.data.agents
+    .filter((a) => a.avg_ftr_ms > 0)
+    .sort((a, b) => a.avg_ftr_ms - b.avg_ftr_ms)
+    .slice(0, 5)
+    .forEach((agent) => {
+      const li = document.createElement("li");
+      li.textContent = `${agent.agent_id} — ${formatDurationHelpdesk(agent.avg_ftr_ms)}`;
+      top5FtrList.appendChild(li);
+    });
+  top5FtrPanel.appendChild(top5FtrList);
+  top5Row.appendChild(top5FtrPanel);
+
+  metricsSection.appendChild(top5Row);
+}
+
+function renderLeaderboard() {
+  if (!state.helpdesk_analytics.data) return;
+
+  const { filters, data: analytics } = state.helpdesk_analytics;
+  const container = document.getElementById("appContent");
+
+  const isMonthly = filters.preset === "this_month" || filters.preset === "last_month" ||
+    (filters.from && filters.to && (filters.to - filters.from) > 31 * 24 * 60 * 60 * 1000);
+
+  const timeline = analytics.timeline;
+  let columnHeaders = [];
+
+  if (isMonthly) {
+    const weeks = new Map();
+    timeline.forEach((day) => {
+      const date = new Date(day.date);
+      const weekNum = Math.floor((date.getDate() - date.getDay() + 6) / 7);
+      if (!weeks.has(weekNum)) {
+        weeks.set(weekNum, []);
+      }
+      weeks.get(weekNum).push(day);
+    });
+    columnHeaders = Array.from(weeks.entries()).map(([weekNum, days]) => ({
+      label: `Week ${weekNum}`,
+      days: days,
+    }));
+  } else {
+    columnHeaders = timeline.map((day) => ({
+      label: new Date(day.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      days: [day],
+    }));
+  }
+
+  const sortedAgents = [...analytics.agents].sort((a, b) => b.total_tickets - a.total_tickets);
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "leaderboard-wrapper";
+
+  const table = document.createElement("table");
+  table.className = "leaderboard-table";
+
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+
+  const th1 = document.createElement("th");
+  th1.className = "col-rank sticky-left";
+  th1.textContent = "Rank";
+  const th2 = document.createElement("th");
+  th2.className = "col-agent sticky-left";
+  th2.textContent = "Agent";
+  const th3 = document.createElement("th");
+  th3.className = "col-tickets sticky-left";
+  th3.textContent = "Total Tickets";
+  const th4 = document.createElement("th");
+  th4.className = "col-ftr sticky-left";
+  th4.textContent = "Avg FTR";
+  const th5 = document.createElement("th");
+  th5.className = "col-resolution sticky-left";
+  th5.textContent = "Avg Resolution";
+
+  headerRow.appendChild(th1);
+  headerRow.appendChild(th2);
+  headerRow.appendChild(th3);
+  headerRow.appendChild(th4);
+  headerRow.appendChild(th5);
+
+  columnHeaders.forEach((col) => {
+    const th = document.createElement("th");
+    th.className = "col-period";
+    th.textContent = col.label;
+    headerRow.appendChild(th);
+  });
+
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+
+  const summaryRow = document.createElement("tr");
+  summaryRow.className = "summary-row";
+  const summaryCell = document.createElement("td");
+  summaryCell.colSpan = 5;
+  summaryCell.style.fontWeight = "600";
+  summaryCell.textContent = "Account Summary";
+  summaryRow.appendChild(summaryCell);
+
+  columnHeaders.forEach((col) => {
+    const td = document.createElement("td");
+    td.className = "col-period";
+    const dayData = col.days[0];
+    td.innerHTML = `<div class="period-metrics"><div>${dayData.tickets}</div><div class="metric-small">${formatDurationHelpdesk(dayData.avg_ftr_ms)}</div><div class="metric-small">${formatDurationHelpdesk(dayData.avg_resolution_time_ms)}</div></div>`;
+    summaryRow.appendChild(td);
+  });
+  tbody.appendChild(summaryRow);
+
+  sortedAgents.forEach((agent, index) => {
+    const rank = index + 1;
+    const rankLabel = rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : String(rank);
+
+    const row = document.createElement("tr");
+
+    const rankCell = document.createElement("td");
+    rankCell.className = "col-rank sticky-left";
+    rankCell.textContent = rankLabel;
+    row.appendChild(rankCell);
+
+    const agentCell = document.createElement("td");
+    agentCell.className = "col-agent sticky-left";
+    agentCell.textContent = agent.agent_id;
+    row.appendChild(agentCell);
+
+    const ticketsCell = document.createElement("td");
+    ticketsCell.className = "col-tickets sticky-left";
+    const ticketsBold = document.createElement("strong");
+    ticketsBold.textContent = agent.total_tickets;
+    ticketsCell.appendChild(ticketsBold);
+    row.appendChild(ticketsCell);
+
+    const ftrCell = document.createElement("td");
+    ftrCell.className = "col-ftr sticky-left";
+    ftrCell.textContent = formatDurationHelpdesk(agent.avg_ftr_ms);
+    row.appendChild(ftrCell);
+
+    const resolutionCell = document.createElement("td");
+    resolutionCell.className = "col-resolution sticky-left";
+    resolutionCell.textContent = formatDurationHelpdesk(agent.avg_resolution_time_ms);
+    row.appendChild(resolutionCell);
+
+    columnHeaders.forEach(() => {
+      const td = document.createElement("td");
+      td.className = "col-period";
+      td.innerHTML = `<div class="period-metrics"><div>—</div><div class="metric-small">—</div><div class="metric-small">—</div></div>`;
+      row.appendChild(td);
+    });
+
+    tbody.appendChild(row);
+  });
+
+  table.appendChild(tbody);
+  wrapper.appendChild(table);
+  const leaderboardSection = container.querySelector(".leaderboard-section");
+  leaderboardSection.appendChild(wrapper);
+}
+
 async function fetchAnalytics() {
   ensureAnalyticsRange();
   state.analytics.loading = true;
