@@ -72,7 +72,14 @@ async function getValidatedDailyMetrics(env, from, to, agentIds, groupIds) {
   let hasMore = true;
 
   while (hasMore) {
-    const ticketsResp = await helpdeskRequest(env, `/tickets?page=${page}&include=messages`, { method: "GET" });
+    let ticketsResp;
+    try {
+      ticketsResp = await helpdeskRequest(env, `/tickets?page=${page}`, { method: "GET" });
+    } catch (err) {
+      console.error(`HelpDesk /tickets API error on page ${page}:`, err.message);
+      throw err;
+    }
+
     const tickets = Array.isArray(ticketsResp) ? ticketsResp : ticketsResp.tickets || [];
 
     if (!tickets || tickets.length === 0) {
@@ -269,8 +276,11 @@ export async function onRequest(context) {
       { status: 200, headers: { "Content-Type": "application/json" } }
     );
   } catch (error) {
-    console.error("Analytics error:", error);
-    return new Response(JSON.stringify({ error: error.message }), {
+    console.error("Analytics worker error:", error.message, error.stack);
+    return new Response(JSON.stringify({
+      error: error.message,
+      details: process.env.NODE_ENV === "development" ? error.stack : undefined
+    }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
     });

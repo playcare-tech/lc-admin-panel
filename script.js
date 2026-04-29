@@ -1816,6 +1816,7 @@ async function fetchHelpdeskAnalytics() {
 // Task 9: Create renderAnalytics Function with Filter Bar
 function renderHelpdeskAnalytics() {
   const container = document.getElementById("appContent");
+  const filterBarContainer = document.getElementById("filterBar");
   const { filters, loading, error, data } = state.helpdesk_analytics;
 
   if (!filters.from || !filters.to) {
@@ -1825,9 +1826,11 @@ function renderHelpdeskAnalytics() {
   }
 
   container.innerHTML = "";
+  filterBarContainer.innerHTML = "";
+  filterBarContainer.classList.remove("d-none");
 
   const filterBar = document.createElement("div");
-  filterBar.className = "filter-bar d-flex gap-3 align-items-center mb-4 flex-wrap";
+  filterBar.className = "d-flex gap-3 align-items-center flex-wrap w-100";
 
   // Preset dropdown
   const presetGroup = document.createElement("div");
@@ -1927,7 +1930,7 @@ function renderHelpdeskAnalytics() {
   compareGroup.appendChild(compareLabel);
   filterBar.appendChild(compareGroup);
 
-  container.appendChild(filterBar);
+  filterBarContainer.appendChild(filterBar);
 
   // Wire up event handlers
   presetSelect.addEventListener("change", (e) => {
@@ -2564,6 +2567,7 @@ function renderModal() {
 }
 
 function renderApp() {
+  const filterBar = document.getElementById("filterBar");
   pageTitle.textContent = currentSectionTitle();
   document.querySelectorAll(".sidebar-link").forEach((button) => {
     button.classList.toggle("active", button.dataset.section === state.section);
@@ -2571,24 +2575,34 @@ function renderApp() {
 
   if (state.section === "livechat-users") {
     appContent.innerHTML = renderLiveChatUsers();
+    filterBar.classList.add("d-none");
   } else if (state.section === "livechat-groups") {
     appContent.innerHTML = renderLiveChatGroups();
+    filterBar.classList.add("d-none");
   } else if (state.section === "create-livechat-user") {
     appContent.innerHTML = renderCreateUserForm("livechat");
+    filterBar.classList.add("d-none");
   } else if (state.section === "livechat-analytics") {
     appContent.innerHTML = renderAnalytics();
+    filterBar.classList.add("d-none");
   } else if (state.section === "helpdesk-analytics") {
+    filterBar.classList.add("d-none");
     renderHelpdeskAnalytics();
   } else if (state.section === "helpdesk-users") {
     appContent.innerHTML = renderHelpDeskUsers();
+    filterBar.classList.add("d-none");
   } else if (state.section === "helpdesk-groups") {
     appContent.innerHTML = renderHelpDeskGroups();
+    filterBar.classList.add("d-none");
   } else if (state.section === "create-helpdesk-user") {
     appContent.innerHTML = renderCreateUserForm("helpdesk");
+    filterBar.classList.add("d-none");
   } else if (state.section === "admin-users") {
     appContent.innerHTML = renderAdminUsers();
+    filterBar.classList.add("d-none");
   } else {
     appContent.innerHTML = renderLogs();
+    filterBar.classList.add("d-none");
   }
 
   renderModal();

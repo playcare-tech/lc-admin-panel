@@ -177,6 +177,20 @@ body {
   font-size: 12px;
 }
 
+.workspace-filter-bar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.workspace-filter-bar.d-none {
+  display: none !important;
+}
+
 .workspace-content {
   display: grid;
   gap: 14px;
