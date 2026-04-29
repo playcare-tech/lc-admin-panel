@@ -221,6 +221,13 @@ function eventAuthorType(event) {
   return author.type || event.authorType || event.createdByType || event.author?.role || "";
 }
 
+function isPublicMessageEvent(event) {
+  const type = event.type || event.eventType || "";
+  const hasMessagePayload = Boolean(event.message || event.text || event.content);
+  const isMessage = type === "message" || type === "tickets.events.message" || hasMessagePayload;
+  return isMessage && !Boolean(event.isPrivate || event.private);
+}
+
 async function listTicketsForRange(env, from, to) {
   const ticketsById = new Map();
 
@@ -278,23 +285,22 @@ async function computeDay(env, from, to, filters, timezoneOffsetMinutes) {
 
   for (const ticket of tickets) {
     const teamIds = (ticket.teamIDs || ticket.teamIds || []).map(String);
-    const ticketId = ticket.ID || ticket.id;
+    const shortId = ticket.shortID || ticket.shortId || ticket.ID || ticket.id;
     const events = Array.isArray(ticket.events) ? ticket.events : [];
 
     for (const event of events) {
-      const isMessage = event.type === "message" || event.eventType === "message";
       const authorType = eventAuthorType(event);
       const agentId = eventAuthorAgentId(event);
-      const isPrivate = Boolean(event.isPrivate || event.private);
       const value = event.createdAt || event.date || event.timestamp;
       const date = value ? new Date(value) : null;
 
-      if (!isMessage || authorType !== "agent" || isPrivate || !agentId || !date || !isValidDate(date)) continue;
+      if (!isPublicMessageEvent(event) || !agentId || !date || !isValidDate(date)) continue;
+      if (authorType && authorType !== "agent") continue;
       if (date < from || date > to) continue;
       if (!matchesFilters(agentId, teamIds, filters)) continue;
 
       const localDay = dateKey(date, timezoneOffsetMinutes);
-      const countKey = `${localDay}|${agentId}|${ticketId || ""}`;
+      const countKey = `${localDay}|${agentId}|${shortId || ""}`;
       if (counted.has(countKey)) continue;
       counted.add(countKey);
 
@@ -346,7 +352,7 @@ function rowsToResponse(rows, from, to, agentDirectory, cache = {}) {
       per_agent_daily_metrics: true,
       account_daily_timeline: true,
       cached_past_days: true,
-      source: "ticket_events_last_message",
+      source: "ticket_public_message_events_by_short_id",
     },
   };
 }
