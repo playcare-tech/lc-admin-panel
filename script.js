@@ -1821,6 +1821,7 @@ async function fetchHelpdeskAnalytics() {
     if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
     if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
     if (!filters.compare) params.append("compare", "0");
+    params.append("tz_offset", String(new Date().getTimezoneOffset()));
 
     state.helpdesk_analytics.data = await api(`/api/helpdesk/analytics?${params.toString()}`);
     renderHelpdeskAnalytics();
@@ -2258,35 +2259,43 @@ function renderLeaderboard() {
 
   const { filters, data: analytics } = state.helpdesk_analytics;
   const container = document.getElementById("appContent");
+  const timelineByDate = new Map((analytics.timeline || []).map((day) => [day.date, day]));
+  const from = filters.from || new Date(analytics.period.from);
+  const to = filters.to || new Date(analytics.period.to);
+  const rangeDays = [];
+  const cursor = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  const end = new Date(to.getFullYear(), to.getMonth(), to.getDate());
 
-  const isMonthly = filters.preset === "this_month" || filters.preset === "last_month" ||
-    (filters.from && filters.to && (filters.to - filters.from) > 31 * 24 * 60 * 60 * 1000);
-
-  const timeline = analytics.timeline;
-  let columnHeaders = [];
-
-  if (isMonthly) {
-    const weeks = new Map();
-    timeline.forEach((day) => {
-      const date = new Date(day.date);
-      const weekNum = Math.floor((date.getDate() - date.getDay() + 6) / 7);
-      if (!weeks.has(weekNum)) {
-        weeks.set(weekNum, []);
-      }
-      weeks.get(weekNum).push(day);
+  while (cursor <= end) {
+    const key = localDateValue(cursor);
+    rangeDays.push({
+      date: key,
+      label: cursor.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
     });
-    columnHeaders = Array.from(weeks.entries()).map(([weekNum, days]) => ({
-      label: `Week ${weekNum}`,
-      days: days,
-    }));
-  } else {
-    columnHeaders = timeline.map((day) => ({
-      label: new Date(day.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-      days: [day],
-    }));
+    cursor.setDate(cursor.getDate() + 1);
   }
 
-  const sortedAgents = [...analytics.agents].sort((a, b) => b.total_tickets - a.total_tickets);
+  const useWeekly = rangeDays.length > 31;
+  const columnHeaders = useWeekly
+    ? Array.from(
+        rangeDays.reduce((weeks, day) => {
+          const date = new Date(`${day.date}T00:00:00`);
+          const weekStart = new Date(date);
+          weekStart.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+          const key = localDateValue(weekStart);
+          if (!weeks.has(key)) {
+            weeks.set(key, { label: `Week of ${weekStart.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`, days: [] });
+          }
+          weeks.get(key).days.push(timelineByDate.get(day.date) || { date: day.date, tickets: 0, avg_ftr_ms: 0, avg_resolution_time_ms: 0 });
+          return weeks;
+        }, new Map()).values(),
+      )
+    : rangeDays.map((day) => ({
+        label: day.label,
+        days: [timelineByDate.get(day.date) || { date: day.date, tickets: 0, avg_ftr_ms: 0, avg_resolution_time_ms: 0 }],
+      }));
+
+  const sortedAgents = [...(analytics.agents || [])].sort((a, b) => b.total_tickets - a.total_tickets);
   const summarizeDays = (days) => {
     const tickets = days.reduce((sum, day) => sum + (day.tickets || 0), 0);
     const ftr = days.map((day) => day.avg_ftr_ms).filter((value) => value > 0);
@@ -2301,28 +2310,33 @@ function renderLeaderboard() {
   };
 
   const wrapper = document.createElement("div");
-  wrapper.className = "leaderboard-wrapper";
+  wrapper.className = "leaderboard-wrapper helpdesk-leaderboard-wrapper";
 
   const table = document.createElement("table");
-  table.className = "leaderboard-table";
+  table.className = "leaderboard-table helpdesk-leaderboard-table";
 
   const thead = document.createElement("thead");
   const headerRow = document.createElement("tr");
 
   const th1 = document.createElement("th");
   th1.className = "col-rank sticky-left";
+  th1.rowSpan = 2;
   th1.textContent = "Rank";
   const th2 = document.createElement("th");
   th2.className = "col-agent sticky-left";
+  th2.rowSpan = 2;
   th2.textContent = "Agent";
   const th3 = document.createElement("th");
   th3.className = "col-tickets sticky-left";
+  th3.rowSpan = 2;
   th3.textContent = "Processed Tickets";
   const th4 = document.createElement("th");
   th4.className = "col-ftr sticky-left";
+  th4.rowSpan = 2;
   th4.textContent = "Avg FTR";
   const th5 = document.createElement("th");
   th5.className = "col-resolution sticky-left";
+  th5.rowSpan = 2;
   th5.textContent = "Avg Resolution";
 
   headerRow.appendChild(th1);
@@ -2334,11 +2348,22 @@ function renderLeaderboard() {
   columnHeaders.forEach((col) => {
     const th = document.createElement("th");
     th.className = "col-period";
+    th.colSpan = 3;
     th.textContent = col.label;
     headerRow.appendChild(th);
   });
 
   thead.appendChild(headerRow);
+  const subHeaderRow = document.createElement("tr");
+  columnHeaders.forEach(() => {
+    ["Tickets", "FTR", "Resolution"].forEach((label) => {
+      const th = document.createElement("th");
+      th.className = "col-period-sub";
+      th.textContent = label;
+      subHeaderRow.appendChild(th);
+    });
+  });
+  thead.appendChild(subHeaderRow);
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
@@ -2352,11 +2377,13 @@ function renderLeaderboard() {
   summaryRow.appendChild(summaryCell);
 
   columnHeaders.forEach((col) => {
-    const td = document.createElement("td");
-    td.className = "col-period";
     const dayData = summarizeDays(col.days);
-    td.innerHTML = `<div class="period-metrics"><div>${dayData.tickets}</div><div class="metric-small">${formatDurationHelpdesk(dayData.avg_ftr_ms)}</div><div class="metric-small">${formatDurationHelpdesk(dayData.avg_resolution_time_ms)}</div></div>`;
-    summaryRow.appendChild(td);
+    [dayData.tickets, formatDurationHelpdesk(dayData.avg_ftr_ms), formatDurationHelpdesk(dayData.avg_resolution_time_ms)].forEach((value) => {
+      const td = document.createElement("td");
+      td.className = "col-period";
+      td.textContent = value;
+      summaryRow.appendChild(td);
+    });
   });
   tbody.appendChild(summaryRow);
 
@@ -2400,14 +2427,18 @@ function renderLeaderboard() {
 
     const dayMap = helpdeskAnalyticsAgentDayMap(agent);
     columnHeaders.forEach((col) => {
-      const td = document.createElement("td");
-      td.className = "col-period";
       const agentDays = col.days.map((day) => dayMap.get(day.date)).filter(Boolean);
       const dayData = summarizeDays(agentDays);
-      td.innerHTML = dayData.tickets
-        ? `<div class="period-metrics"><div>${dayData.tickets}</div><div class="metric-small">${formatDurationHelpdesk(dayData.avg_ftr_ms)}</div><div class="metric-small">${formatDurationHelpdesk(dayData.avg_resolution_time_ms)}</div></div>`
-        : `<div class="period-metrics"><div>—</div><div class="metric-small">—</div><div class="metric-small">—</div></div>`;
-      row.appendChild(td);
+      [
+        dayData.tickets || "—",
+        dayData.tickets ? formatDurationHelpdesk(dayData.avg_ftr_ms) : "—",
+        dayData.tickets ? formatDurationHelpdesk(dayData.avg_resolution_time_ms) : "—",
+      ].forEach((value) => {
+        const td = document.createElement("td");
+        td.className = "col-period";
+        td.textContent = value;
+        row.appendChild(td);
+      });
     });
 
     tbody.appendChild(row);

@@ -30,8 +30,8 @@ function getPreviousPeriod(from, to) {
   };
 }
 
-function dateKey(date) {
-  return date.toISOString().slice(0, 10);
+function dateKey(date, timezoneOffsetMinutes = 0) {
+  return new Date(date.getTime() - timezoneOffsetMinutes * 60000).toISOString().slice(0, 10);
 }
 
 function average(values) {
@@ -145,6 +145,7 @@ function buildAgentDirectory(dashboard) {
 async function computePeriod(env, from, to, filters, agentDirectory, options = {}) {
   const tickets = await listTicketsForWindow(env, from, to, options);
   const dailyByAgent = new Map();
+  const timezoneOffsetMinutes = Number(options.timezoneOffsetMinutes || 0);
 
   for (const ticket of tickets) {
     const teamIds = (ticket.teamIDs || ticket.teamIds || []).map(String);
@@ -167,10 +168,11 @@ async function computePeriod(env, from, to, filters, agentDirectory, options = {
       }
 
       countedAgents.add(String(agentId));
-      const key = `${dateKey(date)}|${agentId}`;
+      const replyDate = dateKey(date, timezoneOffsetMinutes);
+      const key = `${replyDate}|${agentId}`;
       if (!dailyByAgent.has(key)) {
         dailyByAgent.set(key, {
-          date: dateKey(date),
+          date: replyDate,
           agent_id: String(agentId),
           handled_tickets: 0,
           ftr_values: [],
@@ -297,15 +299,19 @@ export async function onRequest(context) {
       agentIds: splitParam(url.searchParams.get("agents")),
       groupIds: splitParam(url.searchParams.get("groups")),
     };
+    const timezoneOffsetMinutes = Number(url.searchParams.get("tz_offset") || 0);
     const previous = getPreviousPeriod(from, to);
     const dashboard = await getHelpDeskDashboard(context.env);
     const agentDirectory = buildAgentDirectory(dashboard);
 
-    const current = await computePeriod(context.env, from, to, filters, agentDirectory);
+    const current = await computePeriod(context.env, from, to, filters, agentDirectory, { timezoneOffsetMinutes });
     const prev =
       url.searchParams.get("compare") === "0"
         ? { summary: { total_tickets: 0, avg_ftr_ms: 0, avg_resolution_time_ms: 0, active_agents: 0 } }
-        : await computePeriod(context.env, previous.from, previous.to, filters, agentDirectory, { maxPagesPerQuery: 1 });
+        : await computePeriod(context.env, previous.from, previous.to, filters, agentDirectory, {
+            maxPagesPerQuery: 1,
+            timezoneOffsetMinutes,
+          });
 
     return json({
       period: { from: from.toISOString(), to: to.toISOString() },

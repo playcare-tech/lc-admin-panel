@@ -263,6 +263,103 @@ body {
   font-size: 12px;
 }
 
+.helpdesk-leaderboard-wrapper {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: var(--shadow);
+}
+
+.helpdesk-leaderboard-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+.helpdesk-leaderboard-table th,
+.helpdesk-leaderboard-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.86);
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.helpdesk-leaderboard-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #f7f9ff;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.helpdesk-leaderboard-table .col-period,
+.helpdesk-leaderboard-table .col-period-sub {
+  min-width: 96px;
+  text-align: center;
+}
+
+.helpdesk-leaderboard-table .col-rank {
+  left: 0;
+  min-width: 64px;
+  text-align: center;
+}
+
+.helpdesk-leaderboard-table .col-agent {
+  left: 64px;
+  min-width: 280px;
+  max-width: 320px;
+}
+
+.helpdesk-leaderboard-table .col-tickets {
+  left: 344px;
+  min-width: 132px;
+  text-align: right;
+}
+
+.helpdesk-leaderboard-table .col-ftr {
+  left: 476px;
+  min-width: 112px;
+  text-align: right;
+}
+
+.helpdesk-leaderboard-table .col-resolution {
+  left: 588px;
+  min-width: 132px;
+  text-align: right;
+  border-right: 1px solid var(--line);
+}
+
+.helpdesk-leaderboard-table .sticky-left {
+  position: sticky;
+  z-index: 2;
+}
+
+.helpdesk-leaderboard-table thead .sticky-left {
+  z-index: 4;
+}
+
+.helpdesk-leaderboard-table tbody tr:hover td {
+  background: #f8fbff;
+}
+
+.helpdesk-leaderboard-table .summary-row td {
+  background: rgba(109, 40, 217, 0.08);
+  font-weight: 800;
+}
+
+.leaderboard-section {
+  width: 100%;
+}
+
 .workspace-content {
   display: grid;
   gap: 14px;
