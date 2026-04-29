@@ -5,6 +5,9 @@ import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
 const STATUSES = ["open", "pending", "onhold", "solved", "closed"];
 const PAGE_SIZE = 100;
 const MAX_PAGES_PER_DAY_STATUS = 1000;
+const DAILY_TABLE = "helpdesk_analytics_daily_v2";
+const DAILY_FETCH_TABLE = "helpdesk_analytics_daily_fetches_v2";
+const AGENT_FETCH_TABLE = "helpdesk_analytics_agent_fetches_v2";
 
 function isValidDate(value) {
   return value instanceof Date && !Number.isNaN(value.getTime());
@@ -81,11 +84,35 @@ async function ensureHelpDeskAnalyticsCache(db) {
       )`,
     )
     .run();
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS ${DAILY_TABLE} (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        handled_tickets INTEGER NOT NULL DEFAULT 0,
+        avg_ftr_ms REAL NOT NULL DEFAULT 0,
+        avg_resolution_time_ms REAL NOT NULL DEFAULT 0,
+        cached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(date, agent_id)
+      )`,
+    )
+    .run();
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_${DAILY_TABLE}_date ON ${DAILY_TABLE}(date)`).run();
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_${DAILY_TABLE}_agent ON ${DAILY_TABLE}(agent_id)`).run();
   await db.prepare("CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_date ON helpdesk_analytics_daily(date)").run();
   await db.prepare("CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_agent ON helpdesk_analytics_daily(agent_id)").run();
   await db
     .prepare(
       `CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily_fetches (
+        date TEXT PRIMARY KEY,
+        cached_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )`,
+    )
+    .run();
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS ${DAILY_FETCH_TABLE} (
         date TEXT PRIMARY KEY,
         cached_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )`,
@@ -101,13 +128,23 @@ async function ensureHelpDeskAnalyticsCache(db) {
       )`,
     )
     .run();
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS ${AGENT_FETCH_TABLE} (
+        date TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        cached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(date, agent_id)
+      )`,
+    )
+    .run();
 }
 
 async function readCachedDay(env, date) {
-  const fetchRecord = await env.DB.prepare("SELECT date FROM helpdesk_analytics_daily_fetches WHERE date = ?").bind(date).first();
+  const fetchRecord = await env.DB.prepare(`SELECT date FROM ${DAILY_FETCH_TABLE} WHERE date = ?`).bind(date).first();
   const { results } = await env.DB.prepare(
     `SELECT date, agent_id, handled_tickets
-     FROM helpdesk_analytics_daily
+     FROM ${DAILY_TABLE}
      WHERE date = ?
      ORDER BY handled_tickets DESC`,
   )
@@ -118,7 +155,7 @@ async function readCachedDay(env, date) {
 }
 
 async function hasCachedFullDay(env, date) {
-  return Boolean(await env.DB.prepare("SELECT date FROM helpdesk_analytics_daily_fetches WHERE date = ?").bind(date).first());
+  return Boolean(await env.DB.prepare(`SELECT date FROM ${DAILY_FETCH_TABLE} WHERE date = ?`).bind(date).first());
 }
 
 async function countCachedAgentDays(env, date, agentIds) {
@@ -126,7 +163,7 @@ async function countCachedAgentDays(env, date, agentIds) {
   const placeholders = agentIds.map(() => "?").join(", ");
   const row = await env.DB.prepare(
     `SELECT COUNT(*) AS count
-     FROM helpdesk_analytics_agent_fetches
+     FROM ${AGENT_FETCH_TABLE}
      WHERE date = ? AND agent_id IN (${placeholders})`,
   )
     .bind(date, ...agentIds)
@@ -136,7 +173,7 @@ async function countCachedAgentDays(env, date, agentIds) {
 
 async function readCachedAgentDay(env, date, agentId) {
   const fetchRecord = await env.DB.prepare(
-    "SELECT date FROM helpdesk_analytics_agent_fetches WHERE date = ? AND agent_id = ?",
+    `SELECT date FROM ${AGENT_FETCH_TABLE} WHERE date = ? AND agent_id = ?`,
   )
     .bind(date, agentId)
     .first();
@@ -144,7 +181,7 @@ async function readCachedAgentDay(env, date, agentId) {
 
   const { results } = await env.DB.prepare(
     `SELECT date, agent_id, handled_tickets
-     FROM helpdesk_analytics_daily
+     FROM ${DAILY_TABLE}
      WHERE date = ? AND agent_id = ?`,
   )
     .bind(date, agentId)
@@ -154,16 +191,16 @@ async function readCachedAgentDay(env, date, agentId) {
 
 async function writeCachedDay(env, date, rows) {
   const statements = [
-    env.DB.prepare("DELETE FROM helpdesk_analytics_daily WHERE date = ?").bind(date),
+    env.DB.prepare(`DELETE FROM ${DAILY_TABLE} WHERE date = ?`).bind(date),
     ...rows.map((row) =>
       env.DB.prepare(
-        `INSERT INTO helpdesk_analytics_daily
+        `INSERT INTO ${DAILY_TABLE}
           (date, agent_id, handled_tickets, avg_ftr_ms, avg_resolution_time_ms, cached_at)
          VALUES (?, ?, ?, 0, 0, CURRENT_TIMESTAMP)`,
       ).bind(date, row.agent_id, row.handled_tickets),
     ),
     env.DB.prepare(
-      "INSERT OR REPLACE INTO helpdesk_analytics_daily_fetches (date, cached_at) VALUES (?, CURRENT_TIMESTAMP)",
+      `INSERT OR REPLACE INTO ${DAILY_FETCH_TABLE} (date, cached_at) VALUES (?, CURRENT_TIMESTAMP)`,
     ).bind(date),
   ];
   await env.DB.batch(statements);
@@ -172,16 +209,16 @@ async function writeCachedDay(env, date, rows) {
 async function writeCachedAgentDay(env, date, agentId, rows) {
   const agentRows = rows.filter((row) => String(row.agent_id) === String(agentId));
   const statements = [
-    env.DB.prepare("DELETE FROM helpdesk_analytics_daily WHERE date = ? AND agent_id = ?").bind(date, agentId),
+    env.DB.prepare(`DELETE FROM ${DAILY_TABLE} WHERE date = ? AND agent_id = ?`).bind(date, agentId),
     ...agentRows.map((row) =>
       env.DB.prepare(
-        `INSERT INTO helpdesk_analytics_daily
+        `INSERT INTO ${DAILY_TABLE}
           (date, agent_id, handled_tickets, avg_ftr_ms, avg_resolution_time_ms, cached_at)
          VALUES (?, ?, ?, 0, 0, CURRENT_TIMESTAMP)`,
       ).bind(date, row.agent_id, row.handled_tickets),
     ),
     env.DB.prepare(
-      "INSERT OR REPLACE INTO helpdesk_analytics_agent_fetches (date, agent_id, cached_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+      `INSERT OR REPLACE INTO ${AGENT_FETCH_TABLE} (date, agent_id, cached_at) VALUES (?, ?, CURRENT_TIMESTAMP)`,
     ).bind(date, agentId),
   ];
   await env.DB.batch(statements);
@@ -234,16 +271,14 @@ async function listTicketsForRange(env, from, to) {
   for (const status of STATUSES) {
     let nextCursor = null;
     let page = 0;
-    let reachedFrom = false;
-
     do {
       const params = new URLSearchParams({
         pageSize: String(PAGE_SIZE),
-        order: "desc",
-        sortBy: "lastMessageAt",
+        order: "asc",
+        sortBy: "updatedAt",
         status,
-        lastMessageFrom: from.toISOString(),
-        lastMessageTo: to.toISOString(),
+        updatedDateFrom: from.toISOString(),
+        updatedDateTo: to.toISOString(),
       });
       if (nextCursor) {
         params.set("next.value", nextCursor.value);
@@ -254,23 +289,17 @@ async function listTicketsForRange(env, from, to) {
       const tickets = normalizeTicketList(payload);
 
       for (const ticket of tickets) {
-        const lastMsg = ticket.lastMessageAt || ticket.updatedAt || ticket.updated_at;
-        const msgDate = lastMsg ? new Date(lastMsg) : null;
-        if (!msgDate || msgDate < from) {
-          reachedFrom = true;
-          continue;
-        }
-        if (msgDate > to) continue;
+        const updatedValue = ticket.updatedAt || ticket.updated_at || ticket.lastMessageAt;
+        const updatedDate = updatedValue ? new Date(updatedValue) : null;
+        if (!updatedDate || updatedDate < from || updatedDate > to) continue;
         const id = ticket.ID || ticket.id;
         if (id) ticketsById.set(String(id), ticket);
       }
 
       const lastTicket = tickets[tickets.length - 1];
       const lastId = lastTicket?.ID || lastTicket?.id;
-      const lastValue = lastTicket?.lastMessageAt || lastTicket?.updatedAt || lastTicket?.updated_at;
-      const lastDate = lastValue ? new Date(lastValue) : null;
-      if (lastDate && lastDate < from) reachedFrom = true;
-      nextCursor = !reachedFrom && tickets.length === PAGE_SIZE && lastId && lastValue ? { id: String(lastId), value: lastValue } : null;
+      const lastValue = lastTicket?.updatedAt || lastTicket?.updated_at || lastTicket?.lastMessageAt;
+      nextCursor = tickets.length === PAGE_SIZE && lastId && lastValue ? { id: String(lastId), value: lastValue } : null;
       page += 1;
     } while (nextCursor && page < MAX_PAGES_PER_DAY_STATUS);
   }
