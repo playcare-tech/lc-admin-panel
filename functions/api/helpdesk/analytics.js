@@ -54,6 +54,17 @@ function matchesFilters(agentId, teamIds, filters) {
   return true;
 }
 
+function targetAgentIds(agentDirectory, filters) {
+  return Array.from(agentDirectory.values())
+    .filter((agent) => {
+      if (filters.excludeAgentIds.includes(agent.id)) return false;
+      if (filters.agentIds.length && !filters.agentIds.includes(agent.id)) return false;
+      if (filters.groupIds.length && !agent.teamIDs.some((teamId) => filters.groupIds.includes(String(teamId)))) return false;
+      return true;
+    })
+    .map((agent) => agent.id);
+}
+
 async function ensureHelpDeskAnalyticsCache(db) {
   if (!db) throw new Error("Missing DB binding.");
   await db
@@ -80,12 +91,20 @@ async function ensureHelpDeskAnalyticsCache(db) {
       )`,
     )
     .run();
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS helpdesk_analytics_agent_fetches (
+        date TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        cached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(date, agent_id)
+      )`,
+    )
+    .run();
 }
 
 async function readCachedDay(env, date) {
   const fetchRecord = await env.DB.prepare("SELECT date FROM helpdesk_analytics_daily_fetches WHERE date = ?").bind(date).first();
-  if (!fetchRecord) return null;
-
   const { results } = await env.DB.prepare(
     `SELECT date, agent_id, handled_tickets
      FROM helpdesk_analytics_daily
@@ -93,6 +112,42 @@ async function readCachedDay(env, date) {
      ORDER BY handled_tickets DESC`,
   )
     .bind(date)
+    .all();
+  if (fetchRecord || results?.length) return results || [];
+  return null;
+}
+
+async function hasCachedFullDay(env, date) {
+  return Boolean(await env.DB.prepare("SELECT date FROM helpdesk_analytics_daily_fetches WHERE date = ?").bind(date).first());
+}
+
+async function countCachedAgentDays(env, date, agentIds) {
+  if (!agentIds.length) return 0;
+  const placeholders = agentIds.map(() => "?").join(", ");
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS count
+     FROM helpdesk_analytics_agent_fetches
+     WHERE date = ? AND agent_id IN (${placeholders})`,
+  )
+    .bind(date, ...agentIds)
+    .first();
+  return Number(row?.count || 0);
+}
+
+async function readCachedAgentDay(env, date, agentId) {
+  const fetchRecord = await env.DB.prepare(
+    "SELECT date FROM helpdesk_analytics_agent_fetches WHERE date = ? AND agent_id = ?",
+  )
+    .bind(date, agentId)
+    .first();
+  if (!fetchRecord) return null;
+
+  const { results } = await env.DB.prepare(
+    `SELECT date, agent_id, handled_tickets
+     FROM helpdesk_analytics_daily
+     WHERE date = ? AND agent_id = ?`,
+  )
+    .bind(date, agentId)
     .all();
   return results || [];
 }
@@ -114,13 +169,56 @@ async function writeCachedDay(env, date, rows) {
   await env.DB.batch(statements);
 }
 
-function filterCachedRows(rows, filters) {
+async function writeCachedAgentDay(env, date, agentId, rows) {
+  const agentRows = rows.filter((row) => String(row.agent_id) === String(agentId));
+  const statements = [
+    env.DB.prepare("DELETE FROM helpdesk_analytics_daily WHERE date = ? AND agent_id = ?").bind(date, agentId),
+    ...agentRows.map((row) =>
+      env.DB.prepare(
+        `INSERT INTO helpdesk_analytics_daily
+          (date, agent_id, handled_tickets, avg_ftr_ms, avg_resolution_time_ms, cached_at)
+         VALUES (?, ?, ?, 0, 0, CURRENT_TIMESTAMP)`,
+      ).bind(date, row.agent_id, row.handled_tickets),
+    ),
+    env.DB.prepare(
+      "INSERT OR REPLACE INTO helpdesk_analytics_agent_fetches (date, agent_id, cached_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+    ).bind(date, agentId),
+  ];
+  await env.DB.batch(statements);
+}
+
+function filterCachedRows(rows, filters, agentDirectory = new Map()) {
   return rows.filter((row) => {
     const agentId = String(row.agent_id);
+    const agent = agentDirectory.get(agentId) || { teamIDs: [] };
     if (filters.excludeAgentIds.includes(agentId)) return false;
     if (filters.agentIds.length && !filters.agentIds.includes(agentId)) return false;
+    if (filters.groupIds.length && !agent.teamIDs.some((teamId) => filters.groupIds.includes(String(teamId)))) return false;
     return true;
   });
+}
+
+function eventAuthorAgentId(event) {
+  const author = event.author || event.createdBy || {};
+  if (typeof author === "string") return author;
+  return (
+    author.ID ||
+    author.id ||
+    author.agentID ||
+    author.agentId ||
+    event.agentID ||
+    event.agentId ||
+    event.authorID ||
+    event.authorId ||
+    event.createdByID ||
+    event.createdById ||
+    ""
+  );
+}
+
+function eventAuthorType(event) {
+  const author = event.author || event.createdBy || {};
+  return author.type || event.authorType || event.createdByType || event.author?.role || "";
 }
 
 async function listTicketsForRange(env, from, to) {
@@ -185,9 +283,8 @@ async function computeDay(env, from, to, filters, timezoneOffsetMinutes) {
 
     for (const event of events) {
       const isMessage = event.type === "message" || event.eventType === "message";
-      const author = event.author || event.createdBy || {};
-      const authorType = author.type || event.authorType || event.createdByType;
-      const agentId = author.ID || author.id || author.agentID || author.agentId || event.agentID || event.agentId;
+      const authorType = eventAuthorType(event);
+      const agentId = eventAuthorAgentId(event);
       const isPrivate = Boolean(event.isPrivate || event.private);
       const value = event.createdAt || event.date || event.timestamp;
       const date = value ? new Date(value) : null;
@@ -273,23 +370,40 @@ export async function onRequest(context) {
     const today = dateKey(new Date(), timezoneOffsetMinutes);
     const fullDayCache = url.searchParams.get("cache_full_day") === "1";
     const shouldImport = url.searchParams.get("import") === "1";
+    const importAgentId = url.searchParams.get("import_agent_id") || "";
     const filters = {
       agentIds: splitParam(url.searchParams.get("agents")),
       excludeAgentIds: splitParam(url.searchParams.get("exclude_agents")),
       groupIds: splitParam(url.searchParams.get("groups")),
     };
+    if (importAgentId) {
+      filters.agentIds = [importAgentId];
+      filters.excludeAgentIds = filters.excludeAgentIds.filter((agentId) => agentId !== importAgentId);
+    }
 
     const dashboard = await getHelpDeskDashboard(context.env);
     const agentDirectory = buildAgentDirectory(dashboard);
-    const cacheable = fullDayCache && localDate < today && !filters.groupIds.length;
-    const cachedRows = cacheable ? await readCachedDay(context.env, localDate) : null;
-    let rows = cachedRows ? filterCachedRows(cachedRows, filters) : [];
+    const cacheable = fullDayCache && localDate < today;
+    const wantedAgentIds = targetAgentIds(agentDirectory, filters);
+    const fullDayCached = cacheable && !importAgentId ? await hasCachedFullDay(context.env, localDate) : false;
+    const cachedAgentDays =
+      cacheable && !importAgentId && !fullDayCached ? await countCachedAgentDays(context.env, localDate, wantedAgentIds) : 0;
+    const cachedRows = cacheable
+      ? importAgentId
+        ? await readCachedAgentDay(context.env, localDate, importAgentId)
+        : await readCachedDay(context.env, localDate)
+      : null;
+    let rows = cachedRows ? filterCachedRows(cachedRows, filters, agentDirectory) : [];
     const cacheMeta = {
       date: localDate,
+      agent_id: importAgentId || null,
       checked: cacheable,
       hit: Boolean(cachedRows),
       source: cacheable ? (cachedRows ? "d1" : "helpdesk") : "helpdesk_live",
       cacheable,
+      missing: cacheable && !importAgentId && !fullDayCached && cachedAgentDays < wantedAgentIds.length,
+      imported_agents: cachedAgentDays,
+      expected_agents: cacheable && !importAgentId ? wantedAgentIds.length : null,
     };
 
     const shouldFetchHelpDesk = shouldImport || localDate === today;
@@ -297,7 +411,11 @@ export async function onRequest(context) {
     if (!cachedRows && shouldFetchHelpDesk) {
       rows = await computeDay(context.env, from, to, filters, timezoneOffsetMinutes);
       if (cacheable) {
-        await writeCachedDay(context.env, localDate, rows);
+        if (importAgentId) {
+          await writeCachedAgentDay(context.env, localDate, importAgentId, rows);
+        } else {
+          await writeCachedDay(context.env, localDate, rows);
+        }
         cacheMeta.source = "helpdesk_saved";
         cacheMeta.saved = true;
       } else {

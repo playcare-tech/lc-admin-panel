@@ -1937,7 +1937,7 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
   };
 }
 
-async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode = false) {
+async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode = false, importAgentId = "") {
   const params = new URLSearchParams();
   params.append("from", range.from.toISOString());
   params.append("to", range.to.toISOString());
@@ -1946,11 +1946,15 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
   if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
   if (range.cacheFullDay) params.append("cache_full_day", "1");
   if (importMode) params.append("import", "1");
+  if (importAgentId) params.append("import_agent_id", importAgentId);
   params.append("tz_offset", String(new Date().getTimezoneOffset()));
 
   const dayLabel = range.from.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const agentName = importAgentId
+    ? helpdeskAgentLabel({ id: importAgentId, agent_id: importAgentId })
+    : "";
   state.helpdesk_analytics.loadStatus = importMode
-    ? `Importing HelpDesk data for ${dayLabel}...`
+    ? `Importing ${agentName ? `${agentName} — ` : ""}${dayLabel}...`
     : range.cacheFullDay
     ? `Checking D1 cache for ${dayLabel}...`
     : `Loading HelpDesk data for ${dayLabel}...`;
@@ -1980,9 +1984,21 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
     state.helpdesk_analytics.loadStatus = "HelpDesk request was too large. Loading smaller portions...";
     renderHelpdeskAnalytics();
     await sleep(500);
-    const first = await fetchHelpdeskAnalyticsRange({ from: range.from, to: middle, cacheFullDay: false }, filters, depth + 1, importMode);
+    const first = await fetchHelpdeskAnalyticsRange(
+      { from: range.from, to: middle, cacheFullDay: false },
+      filters,
+      depth + 1,
+      importMode,
+      importAgentId,
+    );
     await sleep(500);
-    const second = await fetchHelpdeskAnalyticsRange({ from: new Date(middle.getTime() + 1), to: range.to, cacheFullDay: false }, filters, depth + 1, importMode);
+    const second = await fetchHelpdeskAnalyticsRange(
+      { from: new Date(middle.getTime() + 1), to: range.to, cacheFullDay: false },
+      filters,
+      depth + 1,
+      importMode,
+      importAgentId,
+    );
     if (depth === 0 && state.helpdesk_analytics.loadProgress) {
       state.helpdesk_analytics.loadProgress.liveDays += 1;
     }
@@ -2023,10 +2039,74 @@ async function fetchHelpdeskAnalyticsDayResponses(filters, importMode = false) {
   return responses;
 }
 
+function helpdeskAnalyticsImportAgents(filters) {
+  const include = new Set(filters.agents.map(String));
+  const exclude = new Set(filters.excludeAgents.map(String));
+  const groups = new Set(filters.groups.map(String));
+
+  return (state.helpdesk.agents || []).filter((agent) => {
+    const id = String(agent.id);
+    if (exclude.has(id)) return false;
+    if (include.size && !include.has(id)) return false;
+    if (groups.size) {
+      const teamIds = (agent.teamIDs || agent.teams?.map((team) => team.id) || []).map(String);
+      if (!teamIds.some((teamId) => groups.has(teamId))) return false;
+    }
+    return true;
+  });
+}
+
+async function importHelpdeskAnalyticsAgentResponses(filters) {
+  const ranges = helpdeskAnalyticsDayRanges(filters.from, filters.to);
+  const agents = helpdeskAnalyticsImportAgents(filters);
+  const responses = [];
+
+  if (!agents.length) {
+    throw new Error("No agents match the selected filters.");
+  }
+
+  state.helpdesk_analytics.loadProgress = {
+    current: 0,
+    total: ranges.length * agents.length,
+    cacheHits: 0,
+    savedDays: 0,
+    liveDays: 0,
+    unit: "agent-days",
+  };
+
+  let current = 0;
+  for (const [agentIndex, agent] of agents.entries()) {
+    for (const [rangeIndex, range] of ranges.entries()) {
+      state.helpdesk_analytics.loadProgress.current = current;
+      state.helpdesk_analytics.loadStatus = `Importing agent ${agentIndex + 1}/${agents.length}, day ${rangeIndex + 1}/${ranges.length}...`;
+      renderHelpdeskAnalytics();
+
+      const agentFilters = {
+        ...filters,
+        agents: [String(agent.id)],
+        excludeAgents: filters.excludeAgents.filter((id) => String(id) !== String(agent.id)),
+      };
+      const result = await fetchHelpdeskAnalyticsRange(range, agentFilters, 0, true, String(agent.id));
+      responses.push(...result);
+
+      current += 1;
+      state.helpdesk_analytics.loadProgress.current = current;
+      renderHelpdeskAnalytics();
+
+      if (current < ranges.length * agents.length) {
+        await sleep(200);
+      }
+    }
+  }
+
+  return responses;
+}
+
 function renderHelpdeskAnalyticsLoading(container) {
   const { loadProgress, loadStatus } = state.helpdesk_analytics;
   const total = loadProgress?.total || 0;
   const current = loadProgress?.current || 0;
+  const unit = loadProgress?.unit || "days";
   const percent = total ? Math.min(100, Math.round((current / total) * 100)) : 8;
   const cacheHits = loadProgress?.cacheHits || 0;
   const savedDays = loadProgress?.savedDays || 0;
@@ -2037,7 +2117,7 @@ function renderHelpdeskAnalyticsLoading(container) {
   loadingDiv.innerHTML = `
     <div class="helpdesk-analytics-loading-head">
       <strong>${escapeHtml(loadStatus || "Loading HelpDesk data...")}</strong>
-      ${total ? `<span>${current}/${total} days</span>` : ""}
+      ${total ? `<span>${current}/${total} ${escapeHtml(unit)}</span>` : ""}
     </div>
     <div class="progress helpdesk-analytics-progress" role="progressbar" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100">
       <div class="progress-bar" style="width: ${percent}%"></div>
@@ -2091,7 +2171,7 @@ async function importHelpdeskAnalytics() {
   renderHelpdeskAnalytics();
 
   try {
-    const responses = await fetchHelpdeskAnalyticsDayResponses(filters, true);
+    const responses = await importHelpdeskAnalyticsAgentResponses(filters);
     state.helpdesk_analytics.data = mergeHelpdeskAnalyticsResponses(responses, filters);
     renderHelpdeskAnalytics();
   } catch (error) {
