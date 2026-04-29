@@ -1986,13 +1986,8 @@ function renderFiltersConditional() {
   const groupsFilter = document.getElementById("groups-filter");
   const { agents: selectedAgents, groups: selectedGroups } = state.helpdesk_analytics.filters;
 
-  if (selectedAgents.length === 0) {
-    groupsFilter.classList.remove("d-none");
-    agentsFilter.classList.remove("d-none");
-  } else {
-    groupsFilter.classList.add("d-none");
-    agentsFilter.classList.remove("d-none");
-  }
+  agentsFilter.classList.remove("d-none");
+  groupsFilter.classList.remove("d-none");
 
   const agentsCheckboxes = document.getElementById("agents-checkboxes");
   agentsCheckboxes.innerHTML = "";
@@ -2013,7 +2008,7 @@ function renderFiltersConditional() {
   const groupSelect = document.createElement("select");
   groupSelect.multiple = true;
   groupSelect.className = "form-select filter-multiselect";
-  (state.helpdesk.groups || []).forEach((group) => {
+  (state.helpdesk.teams || []).forEach((group) => {
     const option = document.createElement("option");
     option.value = group.id;
     option.textContent = group.name;

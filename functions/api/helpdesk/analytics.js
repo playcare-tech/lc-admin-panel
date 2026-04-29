@@ -97,14 +97,9 @@ async function getValidatedDailyMetrics(env, from, to, agentIds, groupIds) {
         if (!groupIds.includes(String(ticket.group_id || ticket.groupId))) continue;
       }
 
-      const agentReplies = (ticket.messages || []).filter((msg) => {
-        const msgDate = new Date(msg.created_at || msg.createdAt);
-        return msgDate >= from && msgDate <= to && (msg.author_type === "agent" || msg.authorType === "agent");
-      });
-
-      if (agentReplies.length === 0) continue;
-
       const agentId = ticket.owner_id || ticket.ownerId;
+      if (!agentId) continue;
+
       if (agentIds && agentIds.length > 0) {
         if (!agentIds.includes(String(agentId))) continue;
       }
@@ -112,9 +107,10 @@ async function getValidatedDailyMetrics(env, from, to, agentIds, groupIds) {
       const ticketDate = formatDate(createdAt);
       const key = `${ticketDate}|${agentId}`;
 
-      const ftrMs = agentReplies[0]
-        ? Math.max(0, new Date(agentReplies[0].created_at || agentReplies[0].createdAt) - createdAt)
-        : 0;
+      // first_response_time is in seconds if provided by the API
+      const ftrMs = ticket.first_response_time
+        ? ticket.first_response_time * 1000
+        : (resolvedAt ? Math.max(0, resolvedAt - createdAt) / 2 : 0);
 
       const resolutionMs = resolvedAt
         ? Math.max(0, resolvedAt - createdAt)
