@@ -48,7 +48,7 @@ const state = {
     loadStatus: "",
     loadProgress: null,
     filters: {
-      preset: "last_7_days",
+      preset: "this_month",
       from: null,
       to: null,
       agents: [],
@@ -1847,9 +1847,9 @@ function activeHelpdeskAnalyticsFilters() {
 }
 
 function resetHelpdeskAnalyticsFilters() {
-  const range = getDateRange("last_7_days");
+  const range = getDateRange("this_month");
   state.helpdesk_analytics.filters = {
-    preset: "last_7_days",
+    preset: "this_month",
     from: range.from,
     to: range.to,
     agents: [],
@@ -2303,7 +2303,7 @@ function renderHelpdeskAnalytics() {
 
   // Render data sections if available
   if (data) {
-    if (data.cache?.missing_days) {
+    if (!loading && data.cache?.missing_days) {
       const missingDiv = document.createElement("div");
       missingDiv.className = "alert alert-warning";
       missingDiv.textContent = `${data.cache.missing_days} selected day(s) are not imported into D1 yet. Click "Import from HelpDesk" to load and save them.`;
