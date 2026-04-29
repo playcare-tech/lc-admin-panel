@@ -1996,68 +1996,42 @@ function renderFiltersConditional() {
 
   const agentsCheckboxes = document.getElementById("agents-checkboxes");
   agentsCheckboxes.innerHTML = "";
+  const agentSelect = document.createElement("select");
+  agentSelect.multiple = true;
+  agentSelect.className = "form-select filter-multiselect";
   (state.helpdesk.agents || []).forEach((agent) => {
-    const div = document.createElement("div");
-    div.className = "form-check";
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.id = `agent-${agent.id}`;
-    input.className = "form-check-input agent-checkbox";
-    input.value = agent.id;
-    input.checked = selectedAgents.includes(agent.id);
-    const label = document.createElement("label");
-    label.className = "form-check-label";
-    label.htmlFor = `agent-${agent.id}`;
-    label.textContent = agent.email;
-    div.appendChild(input);
-    div.appendChild(label);
-    agentsCheckboxes.appendChild(div);
+    const option = document.createElement("option");
+    option.value = agent.id;
+    option.textContent = agent.email;
+    option.selected = selectedAgents.includes(agent.id);
+    agentSelect.appendChild(option);
   });
+  agentsCheckboxes.appendChild(agentSelect);
 
   const groupsCheckboxes = document.getElementById("groups-checkboxes");
   groupsCheckboxes.innerHTML = "";
+  const groupSelect = document.createElement("select");
+  groupSelect.multiple = true;
+  groupSelect.className = "form-select filter-multiselect";
   (state.helpdesk.groups || []).forEach((group) => {
-    const div = document.createElement("div");
-    div.className = "form-check";
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.id = `group-${group.id}`;
-    input.className = "form-check-input group-checkbox";
-    input.value = group.id;
-    input.checked = selectedGroups.includes(group.id);
-    const label = document.createElement("label");
-    label.className = "form-check-label";
-    label.htmlFor = `group-${group.id}`;
-    label.textContent = group.name;
-    div.appendChild(input);
-    div.appendChild(label);
-    groupsCheckboxes.appendChild(div);
+    const option = document.createElement("option");
+    option.value = group.id;
+    option.textContent = group.name;
+    option.selected = selectedGroups.includes(group.id);
+    groupSelect.appendChild(option);
+  });
+  groupsCheckboxes.appendChild(groupSelect);
+
+  agentSelect.addEventListener("change", () => {
+    const { filters } = state.helpdesk_analytics;
+    filters.agents = Array.from(agentSelect.selectedOptions).map((o) => o.value);
+    fetchHelpdeskAnalytics();
   });
 
-  document.querySelectorAll(".agent-checkbox").forEach((checkbox) => {
-    checkbox.addEventListener("change", (e) => {
-      const { filters } = state.helpdesk_analytics;
-      if (e.target.checked) {
-        filters.agents.push(e.target.value);
-      } else {
-        filters.agents = filters.agents.filter((id) => id !== e.target.value);
-      }
-      renderFiltersConditional();
-      fetchHelpdeskAnalytics();
-    });
-  });
-
-  document.querySelectorAll(".group-checkbox").forEach((checkbox) => {
-    checkbox.addEventListener("change", (e) => {
-      const { filters } = state.helpdesk_analytics;
-      if (e.target.checked) {
-        filters.groups.push(e.target.value);
-      } else {
-        filters.groups = filters.groups.filter((id) => id !== e.target.value);
-      }
-      renderFiltersConditional();
-      fetchHelpdeskAnalytics();
-    });
+  groupSelect.addEventListener("change", () => {
+    const { filters } = state.helpdesk_analytics;
+    filters.groups = Array.from(groupSelect.selectedOptions).map((o) => o.value);
+    fetchHelpdeskAnalytics();
   });
 }
 
@@ -2149,7 +2123,9 @@ function renderMetricsAndPanels() {
     currentSummary.active_agents
   ));
 
-  const metricsSection = container.querySelector(".metrics-section");
+  const metricsSection = document.createElement("div");
+  metricsSection.className = "metrics-section";
+  container.appendChild(metricsSection);
   metricsSection.appendChild(metricsRow);
 
   const top5Row = document.createElement("div");

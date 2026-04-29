@@ -180,7 +180,7 @@ body {
 .workspace-filter-bar {
   display: flex;
   gap: 12px;
-  align-items: center;
+  align-items: flex-end;
   flex-wrap: wrap;
   padding: 12px 20px;
   border-bottom: 1px solid var(--border);
@@ -189,6 +189,13 @@ body {
 
 .workspace-filter-bar.d-none {
   display: none !important;
+}
+
+.filter-multiselect {
+  min-width: 160px;
+  max-width: 220px;
+  height: 72px;
+  font-size: 0.82rem;
 }
 
 .workspace-content {
