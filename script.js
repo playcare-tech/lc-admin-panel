@@ -1845,6 +1845,93 @@ function resetHelpdeskAnalyticsFilters() {
   fetchHelpdeskAnalytics();
 }
 
+function helpdeskAnalyticsDayRanges(from, to) {
+  const ranges = [];
+  const cursor = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  const end = new Date(to.getFullYear(), to.getMonth(), to.getDate());
+
+  while (cursor <= end) {
+    const dayStart = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate(), 0, 0, 0);
+    const dayEnd = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate(), 23, 59, 59, 999);
+    ranges.push({
+      from: new Date(Math.max(dayStart.getTime(), from.getTime())),
+      to: new Date(Math.min(dayEnd.getTime(), to.getTime())),
+    });
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return ranges;
+}
+
+function mergeHelpdeskAnalyticsResponses(responses, filters) {
+  const agentsById = new Map();
+  const timelineByDate = new Map();
+
+  for (const response of responses) {
+    for (const day of response.timeline || []) {
+      if (!timelineByDate.has(day.date)) timelineByDate.set(day.date, { date: day.date, tickets: 0 });
+      timelineByDate.get(day.date).tickets += Number(day.tickets || 0);
+    }
+
+    for (const agent of response.agents || []) {
+      const key = String(agent.agent_id || agent.id);
+      if (!agentsById.has(key)) {
+        agentsById.set(key, {
+          ...agent,
+          total_tickets: 0,
+          days: [],
+        });
+      }
+      const current = agentsById.get(key);
+      current.name = current.name || agent.name;
+      current.email = current.email || agent.email;
+      current.total_tickets += Number(agent.total_tickets || 0);
+      current.days.push(...(agent.days || []));
+    }
+  }
+
+  const agents = Array.from(agentsById.values()).sort((left, right) => right.total_tickets - left.total_tickets);
+  const totalTickets = agents.reduce((sum, agent) => sum + agent.total_tickets, 0);
+
+  return {
+    period: { from: filters.from.toISOString(), to: filters.to.toISOString() },
+    summary: {
+      total_tickets: totalTickets,
+      active_agents: agents.filter((agent) => agent.total_tickets > 0).length,
+      prev_period: { total_tickets: 0, active_agents: 0 },
+    },
+    agents,
+    timeline: Array.from(timelineByDate.values()).sort((left, right) => left.date.localeCompare(right.date)),
+    capabilities: responses[0]?.capabilities || {},
+  };
+}
+
+async function fetchHelpdeskAnalyticsDayResponses(ranges, filters) {
+  const responses = [];
+  const concurrency = 4;
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < ranges.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const range = ranges[index];
+      const params = new URLSearchParams();
+      params.append("from", range.from.toISOString());
+      params.append("to", range.to.toISOString());
+      if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
+      if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
+      if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
+      params.append("compare", "0");
+      params.append("tz_offset", String(new Date().getTimezoneOffset()));
+      responses[index] = await api(`/api/helpdesk/analytics?${params.toString()}`);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, ranges.length) }, worker));
+  return responses;
+}
+
 // Task 8: Create fetchAnalytics Function for HelpDesk
 async function fetchHelpdeskAnalytics() {
   const filters = cloneHelpdeskAnalyticsFilters();
@@ -1854,18 +1941,8 @@ async function fetchHelpdeskAnalytics() {
   renderHelpdeskAnalytics();
 
   try {
-    const params = new URLSearchParams();
-    params.append("preset", filters.preset);
-
-    if (filters.from) params.append("from", filters.from.toISOString());
-    if (filters.to) params.append("to", filters.to.toISOString());
-    if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
-    if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
-    if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
-    if (!filters.compare) params.append("compare", "0");
-    params.append("tz_offset", String(new Date().getTimezoneOffset()));
-
-    state.helpdesk_analytics.data = await api(`/api/helpdesk/analytics?${params.toString()}`);
+    const responses = await fetchHelpdeskAnalyticsDayResponses(helpdeskAnalyticsDayRanges(filters.from, filters.to), filters);
+    state.helpdesk_analytics.data = mergeHelpdeskAnalyticsResponses(responses, filters);
     renderHelpdeskAnalytics();
   } catch (error) {
     console.error("Fetch analytics error:", error);
@@ -1999,21 +2076,6 @@ function renderHelpdeskAnalytics() {
   excludeAgentsFilter.appendChild(excludeAgentsCheckboxes);
   filterBar.appendChild(excludeAgentsFilter);
 
-  // Compare toggle
-  const compareGroup = document.createElement("div");
-  compareGroup.className = "filter-group";
-  const compareLabel = document.createElement("label");
-  compareLabel.className = "form-check-label";
-  const compareInput = document.createElement("input");
-  compareInput.type = "checkbox";
-  compareInput.id = "compare-toggle";
-  compareInput.className = "form-check-input";
-  compareInput.checked = filters.compare;
-  compareLabel.appendChild(compareInput);
-  compareLabel.appendChild(document.createTextNode("Compare periods"));
-  compareGroup.appendChild(compareLabel);
-  filterBar.appendChild(compareGroup);
-
   filterBarContainer.appendChild(filterBar);
 
   const actionBar = document.createElement("div");
@@ -2057,10 +2119,6 @@ function renderHelpdeskAnalytics() {
     customDatesToDiv.classList.remove("d-none");
   }
 
-  document.getElementById("compare-toggle")?.addEventListener("change", (e) => {
-    filters.compare = e.target.checked;
-    renderHelpdeskAnalytics();
-  });
   document.getElementById("helpdeskAnalyticsApplyBtn")?.addEventListener("click", () => {
     fetchHelpdeskAnalytics();
   });
@@ -2229,26 +2287,14 @@ function renderMetricsAndPanels() {
   if (!state.helpdesk_analytics.data) return;
 
   const { summary } = state.helpdesk_analytics.data;
-  const { compare } = activeHelpdeskAnalyticsFilters();
   const container = document.getElementById("appContent");
 
   const currentSummary = summary;
-  const prevSummary = summary.prev_period;
-
-  function formatDeltaBadge(current, prev, lowerIsBetter = false) {
-    if (typeof current !== "number" || typeof prev !== "number" || prev === 0) return "—";
-    const delta = lowerIsBetter
-      ? ((prev - current) / prev) * 100
-      : ((current - prev) / prev) * 100;
-    const isImprovement = lowerIsBetter ? delta > 0 : delta > 0;
-    const badgeClass = isImprovement ? "badge-success" : "badge-danger";
-    return `${delta > 0 ? "+" : ""}${Math.round(delta)}%`;
-  }
 
   const metricsRow = document.createElement("div");
   metricsRow.className = "metrics-row d-flex gap-4 mb-5 flex-wrap";
 
-  function createMetricCard(title, value, prevValue, deltaValue, lowerIsBetter = false) {
+  function createMetricCard(title, value) {
     const card = document.createElement("div");
     card.className = "analytics-card";
 
@@ -2259,57 +2305,22 @@ function renderMetricsAndPanels() {
     const divider = document.createElement("hr");
     divider.className = "card-divider";
 
-    const footer = document.createElement("div");
-    footer.className = "card-footer d-flex justify-content-between";
-
-    const label = document.createElement("span");
-    label.className = "card-label";
-    label.textContent = `prev: ${prevValue}`;
-    footer.appendChild(label);
-
-    if (compare) {
-      const badge = document.createElement("span");
-      badge.className = "badge badge-success";
-      const delta = formatDeltaBadge(deltaValue, prevValue, lowerIsBetter);
-      badge.textContent = delta;
-      footer.appendChild(badge);
-    }
-
     const cardTitle = document.createElement("div");
     cardTitle.className = "card-title";
     cardTitle.textContent = title;
 
     card.appendChild(cardValue);
     card.appendChild(divider);
-    card.appendChild(footer);
     card.appendChild(cardTitle);
     return card;
   }
 
   metricsRow.appendChild(createMetricCard(
     "Processed Tickets",
-    currentSummary.total_tickets,
-    prevSummary.total_tickets,
     currentSummary.total_tickets
   ));
   metricsRow.appendChild(createMetricCard(
-    "Avg FTR",
-    formatDurationHelpdesk(currentSummary.avg_ftr_ms),
-    formatDurationHelpdesk(prevSummary.avg_ftr_ms),
-    currentSummary.avg_ftr_ms,
-    true
-  ));
-  metricsRow.appendChild(createMetricCard(
-    "Avg Resolution",
-    formatDurationHelpdesk(currentSummary.avg_resolution_time_ms),
-    formatDurationHelpdesk(prevSummary.avg_resolution_time_ms),
-    currentSummary.avg_resolution_time_ms,
-    true
-  ));
-  metricsRow.appendChild(createMetricCard(
     "Active Agents",
-    currentSummary.active_agents,
-    prevSummary.active_agents,
     currentSummary.active_agents
   ));
 
@@ -2339,26 +2350,6 @@ function renderMetricsAndPanels() {
     });
   top5TicketsPanel.appendChild(top5TicketsList);
   top5Row.appendChild(top5TicketsPanel);
-
-  const top5FtrPanel = document.createElement("div");
-  top5FtrPanel.className = "top5-panel";
-  const top5FtrTitle = document.createElement("h6");
-  top5FtrTitle.textContent = "Top 5 by Fastest FTR";
-  top5FtrPanel.appendChild(top5FtrTitle);
-
-  const top5FtrList = document.createElement("ul");
-  top5FtrList.className = "list-unstyled";
-  state.helpdesk_analytics.data.agents
-    .filter((a) => a.avg_ftr_ms > 0)
-    .sort((a, b) => a.avg_ftr_ms - b.avg_ftr_ms)
-    .slice(0, 5)
-    .forEach((agent) => {
-      const li = document.createElement("li");
-      li.textContent = `${helpdeskAgentLabel(agent)} — ${formatDurationHelpdesk(agent.avg_ftr_ms)}`;
-      top5FtrList.appendChild(li);
-    });
-  top5FtrPanel.appendChild(top5FtrList);
-  top5Row.appendChild(top5FtrPanel);
 
   metricsSection.appendChild(top5Row);
 }
@@ -2396,27 +2387,19 @@ function renderLeaderboard() {
           if (!weeks.has(key)) {
             weeks.set(key, { label: `Week of ${weekStart.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`, days: [] });
           }
-          weeks.get(key).days.push(timelineByDate.get(day.date) || { date: day.date, tickets: 0, avg_ftr_ms: 0, avg_resolution_time_ms: 0 });
+          weeks.get(key).days.push(timelineByDate.get(day.date) || { date: day.date, tickets: 0 });
           return weeks;
         }, new Map()).values(),
       )
     : rangeDays.map((day) => ({
         label: day.label,
-        days: [timelineByDate.get(day.date) || { date: day.date, tickets: 0, avg_ftr_ms: 0, avg_resolution_time_ms: 0 }],
+        days: [timelineByDate.get(day.date) || { date: day.date, tickets: 0 }],
       }));
 
   const sortedAgents = [...(analytics.agents || [])].sort((a, b) => b.total_tickets - a.total_tickets);
   const summarizeDays = (days) => {
     const tickets = days.reduce((sum, day) => sum + (day.tickets || 0), 0);
-    const ftr = days.map((day) => day.avg_ftr_ms).filter((value) => value > 0);
-    const resolution = days.map((day) => day.avg_resolution_time_ms).filter((value) => value > 0);
-    return {
-      tickets,
-      avg_ftr_ms: ftr.length ? Math.round(ftr.reduce((sum, value) => sum + value, 0) / ftr.length) : 0,
-      avg_resolution_time_ms: resolution.length
-        ? Math.round(resolution.reduce((sum, value) => sum + value, 0) / resolution.length)
-        : 0,
-    };
+    return { tickets };
   };
 
   const wrapper = document.createElement("div");
@@ -2440,25 +2423,15 @@ function renderLeaderboard() {
   th3.className = "col-tickets sticky-left";
   th3.rowSpan = 2;
   th3.textContent = "Processed Tickets";
-  const th4 = document.createElement("th");
-  th4.className = "col-ftr sticky-left";
-  th4.rowSpan = 2;
-  th4.textContent = "Avg FTR";
-  const th5 = document.createElement("th");
-  th5.className = "col-resolution sticky-left";
-  th5.rowSpan = 2;
-  th5.textContent = "Avg Resolution";
 
   headerRow.appendChild(th1);
   headerRow.appendChild(th2);
   headerRow.appendChild(th3);
-  headerRow.appendChild(th4);
-  headerRow.appendChild(th5);
 
   columnHeaders.forEach((col) => {
     const th = document.createElement("th");
     th.className = "col-period";
-    th.colSpan = 3;
+    th.colSpan = 1;
     th.textContent = col.label;
     headerRow.appendChild(th);
   });
@@ -2466,12 +2439,10 @@ function renderLeaderboard() {
   thead.appendChild(headerRow);
   const subHeaderRow = document.createElement("tr");
   columnHeaders.forEach(() => {
-    ["Tickets", "FTR", "Resolution"].forEach((label) => {
-      const th = document.createElement("th");
-      th.className = "col-period-sub";
-      th.textContent = label;
-      subHeaderRow.appendChild(th);
-    });
+    const th = document.createElement("th");
+    th.className = "col-period-sub";
+    th.textContent = "Tickets";
+    subHeaderRow.appendChild(th);
   });
   thead.appendChild(subHeaderRow);
   table.appendChild(thead);
@@ -2481,19 +2452,17 @@ function renderLeaderboard() {
   const summaryRow = document.createElement("tr");
   summaryRow.className = "summary-row";
   const summaryCell = document.createElement("td");
-  summaryCell.colSpan = 5;
+  summaryCell.colSpan = 3;
   summaryCell.style.fontWeight = "600";
   summaryCell.textContent = "Account Summary";
   summaryRow.appendChild(summaryCell);
 
   columnHeaders.forEach((col) => {
     const dayData = summarizeDays(col.days);
-    [dayData.tickets, formatDurationHelpdesk(dayData.avg_ftr_ms), formatDurationHelpdesk(dayData.avg_resolution_time_ms)].forEach((value) => {
-      const td = document.createElement("td");
-      td.className = "col-period";
-      td.textContent = value;
-      summaryRow.appendChild(td);
-    });
+    const td = document.createElement("td");
+    td.className = "col-period";
+    td.textContent = dayData.tickets;
+    summaryRow.appendChild(td);
   });
   tbody.appendChild(summaryRow);
 
@@ -2525,30 +2494,14 @@ function renderLeaderboard() {
     ticketsCell.appendChild(ticketsBold);
     row.appendChild(ticketsCell);
 
-    const ftrCell = document.createElement("td");
-    ftrCell.className = "col-ftr sticky-left";
-    ftrCell.textContent = formatDurationHelpdesk(agent.avg_ftr_ms);
-    row.appendChild(ftrCell);
-
-    const resolutionCell = document.createElement("td");
-    resolutionCell.className = "col-resolution sticky-left";
-    resolutionCell.textContent = formatDurationHelpdesk(agent.avg_resolution_time_ms);
-    row.appendChild(resolutionCell);
-
     const dayMap = helpdeskAnalyticsAgentDayMap(agent);
     columnHeaders.forEach((col) => {
       const agentDays = col.days.map((day) => dayMap.get(day.date)).filter(Boolean);
       const dayData = summarizeDays(agentDays);
-      [
-        dayData.tickets || "—",
-        dayData.tickets ? formatDurationHelpdesk(dayData.avg_ftr_ms) : "—",
-        dayData.tickets ? formatDurationHelpdesk(dayData.avg_resolution_time_ms) : "—",
-      ].forEach((value) => {
-        const td = document.createElement("td");
-        td.className = "col-period";
-        td.textContent = value;
-        row.appendChild(td);
-      });
+      const td = document.createElement("td");
+      td.className = "col-period";
+      td.textContent = dayData.tickets || "—";
+      row.appendChild(td);
     });
 
     tbody.appendChild(row);

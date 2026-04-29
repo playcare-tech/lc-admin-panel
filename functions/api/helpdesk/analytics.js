@@ -3,40 +3,18 @@ import { errorResponse, json, methodNotAllowed } from "../../_lib/http.js";
 import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
 
 const STATUSES = ["open", "pending", "onhold", "solved", "closed"];
-const SILOS = ["tickets"];
 const PAGE_SIZE = 100;
-const MAX_PAGES_PER_QUERY = 7;
+const MAX_PAGES_PER_DAY_STATUS = 1000;
 
 function isValidDate(value) {
   return value instanceof Date && !Number.isNaN(value.getTime());
 }
 
 function parseDateParam(value, name) {
-  if (!value) {
-    throw new Error(`Missing required param: ${name}`);
-  }
+  if (!value) throw new Error(`Missing required param: ${name}`);
   const date = new Date(value);
-  if (!isValidDate(date)) {
-    throw new Error(`Invalid date format for ${name}`);
-  }
+  if (!isValidDate(date)) throw new Error(`Invalid date format for ${name}`);
   return date;
-}
-
-function getPreviousPeriod(from, to) {
-  const duration = to.getTime() - from.getTime();
-  return {
-    from: new Date(from.getTime() - duration),
-    to: new Date(from.getTime()),
-  };
-}
-
-function dateKey(date, timezoneOffsetMinutes = 0) {
-  return new Date(date.getTime() - timezoneOffsetMinutes * 60000).toISOString().slice(0, 10);
-}
-
-function average(values) {
-  const usable = values.filter((value) => Number.isFinite(value) && value > 0);
-  return usable.length ? Math.round(usable.reduce((sum, value) => sum + value, 0) / usable.length) : 0;
 }
 
 function splitParam(value) {
@@ -46,21 +24,8 @@ function splitParam(value) {
     .filter(Boolean);
 }
 
-function agentMatchesFilters(agentId, teamIds, selectedAgentIds, selectedGroupIds, excludedAgentIds) {
-  if (excludedAgentIds.includes(String(agentId))) {
-    return false;
-  }
-  if (selectedAgentIds.length && !selectedAgentIds.includes(String(agentId))) {
-    return false;
-  }
-  if (selectedGroupIds.length && !teamIds.some((teamId) => selectedGroupIds.includes(String(teamId)))) {
-    return false;
-  }
-  return true;
-}
-
-function eventAuthorId(event) {
-  return event.author?.ID || event.author?.id || event.authorID || event.authorId || event.createdBy;
+function dateKey(date, timezoneOffsetMinutes = 0) {
+  return new Date(date.getTime() - timezoneOffsetMinutes * 60000).toISOString().slice(0, 10);
 }
 
 function eventDate(event) {
@@ -68,132 +33,16 @@ function eventDate(event) {
   return isValidDate(date) ? date : null;
 }
 
+function eventAuthorId(event) {
+  return event.author?.ID || event.author?.id || event.authorID || event.authorId || event.createdBy;
+}
+
 function isAgentMessage(event) {
   return event?.type === "message" && event.author?.type === "agent" && !event.isPrivate;
 }
 
-function firstNonEmpty(...values) {
-  return values.find((value) => value !== undefined && value !== null && value !== "");
-}
-
-function assignmentAgentId(event) {
-  return firstNonEmpty(
-    event.agentID,
-    event.agentId,
-    event.assigneeID,
-    event.assigneeId,
-    event.ownerID,
-    event.ownerId,
-    event.assignment?.agentID,
-    event.assignment?.agentId,
-    event.assignedTo?.ID,
-    event.assignedTo?.id,
-    event.to?.agentID,
-    event.to?.agentId,
-    event.value?.agentID,
-    event.value?.agentId,
-    event.new?.agentID,
-    event.new?.agentId,
-    event.data?.agentID,
-    event.data?.agentId,
-  );
-}
-
-function ticketAssignedAgentId(ticket) {
-  return firstNonEmpty(
-    ticket.agentID,
-    ticket.agentId,
-    ticket.ownerID,
-    ticket.ownerId,
-    ticket.assignment?.agentID,
-    ticket.assignment?.agentId,
-    ticket.assignee?.ID,
-    ticket.assignee?.id,
-  );
-}
-
-function assignmentDateForReply(ticket, agentId, replyDate) {
-  const assignmentEvents = (ticket.events || [])
-    .filter((event) => event.type === "assignment")
-    .map((event) => ({ agentId: assignmentAgentId(event), date: eventDate(event) }))
-    .filter((event) => event.agentId && isValidDate(event.date) && event.date <= replyDate)
-    .sort((left, right) => right.date - left.date);
-
-  const matchingAssignment = assignmentEvents.find((event) => String(event.agentId) === String(agentId));
-  if (matchingAssignment) {
-    return matchingAssignment.date;
-  }
-
-  const currentAssignedAgentId = ticketAssignedAgentId(ticket);
-  if (currentAssignedAgentId && String(currentAssignedAgentId) === String(agentId)) {
-    const assignedAt = new Date(ticket.assignedAt || ticket.assigned_at || ticket.updatedAt || ticket.updated_at);
-    return isValidDate(assignedAt) && assignedAt <= replyDate ? assignedAt : null;
-  }
-
-  return null;
-}
-
-function firstClientMessageDate(ticket) {
-  const clientEvents = (ticket.events || [])
-    .filter((event) => event.type === "message" && event.author?.type === "client")
-    .map((event) => new Date(event.date || event.createdAt))
-    .filter(isValidDate)
-    .sort((left, right) => left - right);
-
-  if (clientEvents.length) {
-    return clientEvents[0];
-  }
-
-  const createdAt = new Date(ticket.createdAt || ticket.created_at);
-  return isValidDate(createdAt) ? createdAt : null;
-}
-
 function normalizeTicketList(payload) {
   return Array.isArray(payload) ? payload : payload?.tickets || payload?.data || payload?.items || [];
-}
-
-async function listTicketsForWindow(env, from, to, { maxPagesPerQuery = MAX_PAGES_PER_QUERY } = {}) {
-  const ticketsById = new Map();
-  const baseParams = {
-    pageSize: String(PAGE_SIZE),
-    order: "desc",
-    sortBy: "lastMessageAt",
-    lastMessageFrom: from.toISOString(),
-    lastMessageTo: to.toISOString(),
-  };
-
-  for (const silo of SILOS) {
-    for (const status of STATUSES) {
-      let nextCursor = null;
-      let page = 0;
-
-      do {
-        const params = new URLSearchParams({ ...baseParams, silo, status });
-        if (nextCursor) {
-          params.set("next.value", nextCursor.value);
-          params.set("next.ID", nextCursor.id);
-        }
-
-        const payload = await helpdeskRequest(env, `/tickets?${params.toString()}`, { method: "GET" });
-        const tickets = normalizeTicketList(payload);
-
-        for (const ticket of tickets) {
-          const id = ticket.ID || ticket.id;
-          if (id) {
-            ticketsById.set(String(id), ticket);
-          }
-        }
-
-        const lastTicket = tickets[tickets.length - 1];
-        const lastId = lastTicket?.ID || lastTicket?.id;
-        const lastValue = lastTicket?.lastMessageAt || lastTicket?.updatedAt || lastTicket?.updated_at;
-        nextCursor = tickets.length === PAGE_SIZE && lastId && lastValue ? { id: String(lastId), value: lastValue } : null;
-        page += 1;
-      } while (nextCursor && page < maxPagesPerQuery);
-    }
-  }
-
-  return Array.from(ticketsById.values());
 }
 
 function buildAgentDirectory(dashboard) {
@@ -204,200 +53,237 @@ function buildAgentDirectory(dashboard) {
         id: String(agent.id),
         email: agent.email || "",
         name: agent.name || agent.email || String(agent.id),
-        teams: agent.teams || [],
         teamIDs: (agent.teamIDs || agent.teams?.map((team) => team.id) || []).map(String),
       },
     ]),
   );
 }
 
-async function computePeriod(env, from, to, filters, agentDirectory, options = {}) {
-  const tickets = await listTicketsForWindow(env, from, to, options);
-  const dailyByAgent = new Map();
-  const timezoneOffsetMinutes = Number(options.timezoneOffsetMinutes || 0);
+function matchesFilters(agentId, teamIds, filters) {
+  if (filters.excludeAgentIds.includes(String(agentId))) return false;
+  if (filters.agentIds.length && !filters.agentIds.includes(String(agentId))) return false;
+  if (filters.groupIds.length && !teamIds.some((teamId) => filters.groupIds.includes(String(teamId)))) return false;
+  return true;
+}
+
+async function ensureHelpDeskAnalyticsCache(db) {
+  if (!db) throw new Error("Missing DB binding.");
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        handled_tickets INTEGER NOT NULL DEFAULT 0,
+        avg_ftr_ms REAL NOT NULL DEFAULT 0,
+        avg_resolution_time_ms REAL NOT NULL DEFAULT 0,
+        cached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(date, agent_id)
+      )`,
+    )
+    .run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_date ON helpdesk_analytics_daily(date)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_agent ON helpdesk_analytics_daily(agent_id)").run();
+  await db
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily_fetches (
+        date TEXT PRIMARY KEY,
+        cached_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )`,
+    )
+    .run();
+}
+
+async function readCachedDay(env, date) {
+  const fetchRecord = await env.DB.prepare("SELECT date FROM helpdesk_analytics_daily_fetches WHERE date = ?").bind(date).first();
+  if (!fetchRecord) return null;
+
+  const { results } = await env.DB.prepare(
+    `SELECT date, agent_id, handled_tickets
+     FROM helpdesk_analytics_daily
+     WHERE date = ?
+     ORDER BY handled_tickets DESC`,
+  )
+    .bind(date)
+    .all();
+  return results || [];
+}
+
+async function writeCachedDay(env, date, rows) {
+  const statements = [
+    env.DB.prepare("DELETE FROM helpdesk_analytics_daily WHERE date = ?").bind(date),
+    ...rows.map((row) =>
+      env.DB.prepare(
+        `INSERT INTO helpdesk_analytics_daily
+          (date, agent_id, handled_tickets, avg_ftr_ms, avg_resolution_time_ms, cached_at)
+         VALUES (?, ?, ?, 0, 0, CURRENT_TIMESTAMP)`,
+      ).bind(date, row.agent_id, row.handled_tickets),
+    ),
+    env.DB.prepare(
+      "INSERT OR REPLACE INTO helpdesk_analytics_daily_fetches (date, cached_at) VALUES (?, CURRENT_TIMESTAMP)",
+    ).bind(date),
+  ];
+  await env.DB.batch(statements);
+}
+
+function filterCachedRows(rows, filters) {
+  return rows.filter((row) => {
+    const agentId = String(row.agent_id);
+    if (filters.excludeAgentIds.includes(agentId)) return false;
+    if (filters.agentIds.length && !filters.agentIds.includes(agentId)) return false;
+    return true;
+  });
+}
+
+async function listTicketsForDay(env, from, to) {
+  const ticketsById = new Map();
+
+  for (const status of STATUSES) {
+    let nextCursor = null;
+    let page = 0;
+
+    do {
+      const params = new URLSearchParams({
+        pageSize: String(PAGE_SIZE),
+        order: "desc",
+        sortBy: "lastMessageAt",
+        status,
+        lastMessageFrom: from.toISOString(),
+        lastMessageTo: to.toISOString(),
+      });
+      if (nextCursor) {
+        params.set("next.value", nextCursor.value);
+        params.set("next.ID", nextCursor.id);
+      }
+
+      const payload = await helpdeskRequest(env, `/tickets?${params.toString()}`, { method: "GET" });
+      const tickets = normalizeTicketList(payload);
+
+      for (const ticket of tickets) {
+        const id = ticket.ID || ticket.id;
+        if (id) ticketsById.set(String(id), ticket);
+      }
+
+      const lastTicket = tickets[tickets.length - 1];
+      const lastId = lastTicket?.ID || lastTicket?.id;
+      const lastValue = lastTicket?.lastMessageAt || lastTicket?.updatedAt || lastTicket?.updated_at;
+      nextCursor = tickets.length === PAGE_SIZE && lastId && lastValue ? { id: String(lastId), value: lastValue } : null;
+      page += 1;
+    } while (nextCursor && page < MAX_PAGES_PER_DAY_STATUS);
+  }
+
+  return Array.from(ticketsById.values());
+}
+
+async function computeDay(env, from, to, filters, timezoneOffsetMinutes) {
+  const tickets = await listTicketsForDay(env, from, to);
+  const counts = new Map();
 
   for (const ticket of tickets) {
     const teamIds = (ticket.teamIDs || ticket.teamIds || []).map(String);
     const ticketId = String(ticket.ID || ticket.id || "");
-    const agentReplyEvents = (ticket.events || [])
-      .filter(isAgentMessage)
-      .map((event) => ({ event, date: eventDate(event) }))
-      .filter(({ date }) => isValidDate(date) && date >= from && date < to)
-      .sort((left, right) => left.date - right.date);
+    const counted = new Set();
 
-    const countedAgentDays = new Set();
-    for (const { event, date } of agentReplyEvents) {
+    for (const event of ticket.events || []) {
+      if (!isAgentMessage(event)) continue;
+      const date = eventDate(event);
+      if (!date || date < from || date >= to) continue;
+
       const agentId = eventAuthorId(event);
-      if (!agentId || !agentMatchesFilters(agentId, teamIds, filters.agentIds, filters.groupIds, filters.excludedAgentIds)) {
-        continue;
-      }
+      if (!agentId || !matchesFilters(agentId, teamIds, filters)) continue;
 
-      const replyDate = dateKey(date, timezoneOffsetMinutes);
-      const ticketCountKey = `${replyDate}|${agentId}|${ticketId}`;
-      if (countedAgentDays.has(ticketCountKey)) {
-        continue;
-      }
-      countedAgentDays.add(ticketCountKey);
+      const localDay = dateKey(date, timezoneOffsetMinutes);
+      const countKey = `${localDay}|${agentId}|${ticketId}`;
+      if (counted.has(countKey)) continue;
+      counted.add(countKey);
 
-      const key = `${replyDate}|${agentId}`;
-      if (!dailyByAgent.has(key)) {
-        dailyByAgent.set(key, {
-          date: replyDate,
-          agent_id: String(agentId),
-          handled_tickets: 0,
-          ftr_values: [],
-          resolution_values: [],
-        });
+      const rowKey = `${localDay}|${agentId}`;
+      if (!counts.has(rowKey)) {
+        counts.set(rowKey, { date: localDay, agent_id: String(agentId), handled_tickets: 0 });
       }
-
-      const row = dailyByAgent.get(key);
-      row.handled_tickets += 1;
-
-      const assignedAt = assignmentDateForReply(ticket, agentId, date);
-      if (assignedAt && date > assignedAt) {
-        row.ftr_values.push(date.getTime() - assignedAt.getTime());
-      }
-
-      const solvedAt = ticket.solvedAt || ticket.resolvedAt || ticket.closedAt;
-      const solvedDate = solvedAt ? new Date(solvedAt) : null;
-      const firstClientAt = firstClientMessageDate(ticket);
-      if (firstClientAt && isValidDate(solvedDate) && solvedDate > firstClientAt) {
-        row.resolution_values.push(solvedDate.getTime() - firstClientAt.getTime());
-      }
+      counts.get(rowKey).handled_tickets += 1;
     }
   }
 
-  const agentsById = new Map();
-  const timelineByDate = new Map();
-  const summaryFtr = [];
-  const summaryResolution = [];
-  let totalTickets = 0;
+  return Array.from(counts.values());
+}
 
-  for (const row of dailyByAgent.values()) {
-    const avgFtr = average(row.ftr_values);
-    const avgResolution = average(row.resolution_values);
-    totalTickets += row.handled_tickets;
-    if (avgFtr) summaryFtr.push(avgFtr);
-    if (avgResolution) summaryResolution.push(avgResolution);
-
-    if (!agentsById.has(row.agent_id)) {
-      const profile = agentDirectory.get(row.agent_id) || {};
-      agentsById.set(row.agent_id, {
-        agent_id: row.agent_id,
-        id: row.agent_id,
-        name: profile.name || row.agent_id,
-        email: profile.email || row.agent_id,
-        total_tickets: 0,
-        ftr_values: [],
-        resolution_values: [],
-        days: [],
-      });
-    }
-
-    const agent = agentsById.get(row.agent_id);
-    agent.total_tickets += row.handled_tickets;
-    if (avgFtr) agent.ftr_values.push(avgFtr);
-    if (avgResolution) agent.resolution_values.push(avgResolution);
-    agent.days.push({
-      date: row.date,
-      tickets: row.handled_tickets,
-      avg_ftr_ms: avgFtr,
-      avg_resolution_time_ms: avgResolution,
-    });
-
-    if (!timelineByDate.has(row.date)) {
-      timelineByDate.set(row.date, { date: row.date, tickets: 0, ftr_values: [], resolution_values: [] });
-    }
-    const day = timelineByDate.get(row.date);
-    day.tickets += row.handled_tickets;
-    if (avgFtr) day.ftr_values.push(avgFtr);
-    if (avgResolution) day.resolution_values.push(avgResolution);
-  }
-
-  const agents = Array.from(agentsById.values())
-    .map((agent) => ({
-      agent_id: agent.agent_id,
-      id: agent.id,
-      name: agent.name,
-      email: agent.email,
-      total_tickets: agent.total_tickets,
-      avg_ftr_ms: average(agent.ftr_values),
-      avg_resolution_time_ms: average(agent.resolution_values),
-      days: agent.days.sort((left, right) => left.date.localeCompare(right.date)),
-    }))
+function rowsToResponse(rows, from, to, agentDirectory) {
+  const agents = rows
+    .map((row) => {
+      const profile = agentDirectory.get(String(row.agent_id)) || {};
+      return {
+        agent_id: String(row.agent_id),
+        id: String(row.agent_id),
+        name: profile.name || String(row.agent_id),
+        email: profile.email || String(row.agent_id),
+        total_tickets: Number(row.handled_tickets || 0),
+        days: [{ date: row.date, tickets: Number(row.handled_tickets || 0) }],
+      };
+    })
     .sort((left, right) => right.total_tickets - left.total_tickets);
 
-  const timeline = Array.from(timelineByDate.values())
-    .map((day) => ({
-      date: day.date,
-      tickets: day.tickets,
-      avg_ftr_ms: average(day.ftr_values),
-      avg_resolution_time_ms: average(day.resolution_values),
-    }))
-    .sort((left, right) => left.date.localeCompare(right.date));
+  const totalTickets = agents.reduce((sum, agent) => sum + agent.total_tickets, 0);
+  const timelineByDate = new Map();
+  for (const row of rows) {
+    if (!timelineByDate.has(row.date)) timelineByDate.set(row.date, { date: row.date, tickets: 0 });
+    timelineByDate.get(row.date).tickets += Number(row.handled_tickets || 0);
+  }
 
   return {
+    period: { from: from.toISOString(), to: to.toISOString() },
     summary: {
       total_tickets: totalTickets,
-      avg_ftr_ms: average(summaryFtr),
-      avg_resolution_time_ms: average(summaryResolution),
-      active_agents: agents.length,
+      active_agents: agents.filter((agent) => agent.total_tickets > 0).length,
+      prev_period: { total_tickets: 0, active_agents: 0 },
     },
     agents,
-    timeline,
+    timeline: Array.from(timelineByDate.values()).sort((left, right) => left.date.localeCompare(right.date)),
+    capabilities: {
+      per_agent_period_metrics: true,
+      per_agent_daily_metrics: true,
+      account_daily_timeline: true,
+      cached_past_days: true,
+      source: "ticket_events_last_message",
+    },
   };
 }
 
 export async function onRequest(context) {
-  if (context.request.method !== "GET") {
-    return methodNotAllowed(["GET"]);
-  }
+  if (context.request.method !== "GET") return methodNotAllowed(["GET"]);
 
   const auth = await requireAuth(context);
-  if (auth.error) {
-    return auth.error;
-  }
+  if (auth.error) return auth.error;
 
   try {
+    await ensureHelpDeskAnalyticsCache(context.env.DB);
+
     const url = new URL(context.request.url);
     const from = parseDateParam(url.searchParams.get("from"), "from");
     const to = parseDateParam(url.searchParams.get("to"), "to");
+    if (to <= from) return errorResponse("to must be after from", 400);
 
-    if (to <= from) {
-      return errorResponse("to must be after from", 400);
-    }
-
+    const timezoneOffsetMinutes = Number(url.searchParams.get("tz_offset") || 0);
+    const localDate = dateKey(from, timezoneOffsetMinutes);
+    const today = dateKey(new Date(), timezoneOffsetMinutes);
     const filters = {
       agentIds: splitParam(url.searchParams.get("agents")),
-      excludedAgentIds: splitParam(url.searchParams.get("exclude_agents")),
+      excludeAgentIds: splitParam(url.searchParams.get("exclude_agents")),
       groupIds: splitParam(url.searchParams.get("groups")),
     };
-    const timezoneOffsetMinutes = Number(url.searchParams.get("tz_offset") || 0);
-    const previous = getPreviousPeriod(from, to);
+
     const dashboard = await getHelpDeskDashboard(context.env);
     const agentDirectory = buildAgentDirectory(dashboard);
+    const cacheable = localDate < today && !filters.groupIds.length;
+    const cachedRows = cacheable ? await readCachedDay(context.env, localDate) : null;
+    let rows = cachedRows ? filterCachedRows(cachedRows, filters) : [];
 
-    const current = await computePeriod(context.env, from, to, filters, agentDirectory, { timezoneOffsetMinutes });
-    const prev =
-      url.searchParams.get("compare") === "0"
-        ? { summary: { total_tickets: 0, avg_ftr_ms: 0, avg_resolution_time_ms: 0, active_agents: 0 } }
-        : await computePeriod(context.env, previous.from, previous.to, filters, agentDirectory, {
-            maxPagesPerQuery: 1,
-            timezoneOffsetMinutes,
-          });
+    if (!cachedRows) {
+      rows = await computeDay(context.env, from, to, filters, timezoneOffsetMinutes);
+      if (cacheable) await writeCachedDay(context.env, localDate, rows);
+    }
 
-    return json({
-      period: { from: from.toISOString(), to: to.toISOString() },
-      summary: { ...current.summary, prev_period: prev.summary },
-      agents: current.agents,
-      timeline: current.timeline,
-      capabilities: {
-        per_agent_period_metrics: true,
-        per_agent_daily_metrics: true,
-        account_daily_timeline: true,
-        source: "ticket_events",
-      },
-    });
+    return json(rowsToResponse(rows, from, to, agentDirectory));
   } catch (error) {
     const message = error.message || "HelpDesk analytics failed.";
     const status = message.startsWith("Missing required param") || message.startsWith("Invalid date") ? 400 : 500;

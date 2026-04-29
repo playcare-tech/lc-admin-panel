@@ -59,3 +59,8 @@ CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily (
 
 CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_date ON helpdesk_analytics_daily(date);
 CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_agent ON helpdesk_analytics_daily(agent_id);
+
+CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily_fetches (
+  date TEXT PRIMARY KEY,
+  cached_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);

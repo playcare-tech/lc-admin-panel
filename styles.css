@@ -200,7 +200,7 @@ body {
 
 .helpdesk-analytics-filters {
   display: grid;
-  grid-template-columns: minmax(150px, 200px) repeat(3, minmax(220px, 1fr)) auto;
+  grid-template-columns: minmax(150px, 200px) repeat(3, minmax(220px, 1fr));
   align-items: start;
   gap: 14px;
   width: 100%;
@@ -333,18 +333,6 @@ body {
 
 .helpdesk-leaderboard-table .col-tickets {
   left: 344px;
-  min-width: 132px;
-  text-align: right;
-}
-
-.helpdesk-leaderboard-table .col-ftr {
-  left: 476px;
-  min-width: 112px;
-  text-align: right;
-}
-
-.helpdesk-leaderboard-table .col-resolution {
-  left: 588px;
   min-width: 132px;
   text-align: right;
   border-right: 1px solid var(--line);
