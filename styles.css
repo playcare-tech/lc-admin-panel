@@ -200,10 +200,16 @@ body {
 
 .helpdesk-analytics-filters {
   display: grid;
-  grid-template-columns: minmax(160px, 220px) minmax(220px, 1fr) minmax(260px, 1.35fr) auto;
+  grid-template-columns: minmax(150px, 200px) repeat(3, minmax(220px, 1fr)) auto;
   align-items: start;
   gap: 14px;
   width: 100%;
+}
+
+.helpdesk-analytics-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .helpdesk-analytics-filters .filter-group {
@@ -238,6 +244,11 @@ body {
 
 .analytics-check-option:hover {
   background: rgba(37, 99, 235, 0.08);
+}
+
+.analytics-check-option:has(input:checked) {
+  background: rgba(37, 99, 235, 0.12);
+  outline: 1px solid rgba(37, 99, 235, 0.22);
 }
 
 .analytics-check-option span {

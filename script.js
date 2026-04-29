@@ -50,11 +50,14 @@ const state = {
       from: null,
       to: null,
       agents: [],
+      excludeAgents: [],
       groups: [],
       agentSearch: "",
+      excludeAgentSearch: "",
       groupSearch: "",
       compare: true,
     },
+    appliedFilters: null,
     data: null,
   },
 };
@@ -1805,9 +1808,47 @@ function helpdeskAnalyticsAgentDayMap(agent) {
   return new Map((agent.days || []).map((day) => [day.date, day]));
 }
 
+function cloneHelpdeskAnalyticsFilters(filters = state.helpdesk_analytics.filters) {
+  return {
+    preset: filters.preset,
+    from: filters.from ? new Date(filters.from) : null,
+    to: filters.to ? new Date(filters.to) : null,
+    agents: [...filters.agents],
+    excludeAgents: [...filters.excludeAgents],
+    groups: [...filters.groups],
+    agentSearch: filters.agentSearch,
+    excludeAgentSearch: filters.excludeAgentSearch,
+    groupSearch: filters.groupSearch,
+    compare: filters.compare,
+  };
+}
+
+function activeHelpdeskAnalyticsFilters() {
+  return state.helpdesk_analytics.appliedFilters || cloneHelpdeskAnalyticsFilters();
+}
+
+function resetHelpdeskAnalyticsFilters() {
+  const range = getDateRange("last_7_days");
+  state.helpdesk_analytics.filters = {
+    preset: "last_7_days",
+    from: range.from,
+    to: range.to,
+    agents: [],
+    excludeAgents: [],
+    groups: [],
+    agentSearch: "",
+    excludeAgentSearch: "",
+    groupSearch: "",
+    compare: true,
+  };
+  state.helpdesk_analytics.appliedFilters = cloneHelpdeskAnalyticsFilters();
+  fetchHelpdeskAnalytics();
+}
+
 // Task 8: Create fetchAnalytics Function for HelpDesk
 async function fetchHelpdeskAnalytics() {
-  const { filters } = state.helpdesk_analytics;
+  const filters = cloneHelpdeskAnalyticsFilters();
+  state.helpdesk_analytics.appliedFilters = filters;
   state.helpdesk_analytics.loading = true;
   state.helpdesk_analytics.error = null;
   renderHelpdeskAnalytics();
@@ -1819,6 +1860,7 @@ async function fetchHelpdeskAnalytics() {
     if (filters.from) params.append("from", filters.from.toISOString());
     if (filters.to) params.append("to", filters.to.toISOString());
     if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
+    if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
     if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
     if (!filters.compare) params.append("compare", "0");
     params.append("tz_offset", String(new Date().getTimezoneOffset()));
@@ -1943,6 +1985,20 @@ function renderHelpdeskAnalytics() {
   agentsFilter.appendChild(agentsCheckboxes);
   filterBar.appendChild(agentsFilter);
 
+  // Exclude agents filter
+  const excludeAgentsFilter = document.createElement("div");
+  excludeAgentsFilter.id = "exclude-agents-filter";
+  excludeAgentsFilter.className = "filter-group";
+  const excludeAgentsLabel = document.createElement("label");
+  excludeAgentsLabel.className = "form-label";
+  excludeAgentsLabel.textContent = "Exclude agents";
+  const excludeAgentsCheckboxes = document.createElement("div");
+  excludeAgentsCheckboxes.id = "exclude-agents-checkboxes";
+  excludeAgentsCheckboxes.className = "checkbox-group";
+  excludeAgentsFilter.appendChild(excludeAgentsLabel);
+  excludeAgentsFilter.appendChild(excludeAgentsCheckboxes);
+  filterBar.appendChild(excludeAgentsFilter);
+
   // Compare toggle
   const compareGroup = document.createElement("div");
   compareGroup.className = "filter-group";
@@ -1960,6 +2016,14 @@ function renderHelpdeskAnalytics() {
 
   filterBarContainer.appendChild(filterBar);
 
+  const actionBar = document.createElement("div");
+  actionBar.className = "helpdesk-analytics-actions";
+  actionBar.innerHTML = `
+    <button id="helpdeskAnalyticsApplyBtn" class="btn btn-primary" type="button">Filter</button>
+    <button id="helpdeskAnalyticsResetBtn" class="btn btn-outline-secondary" type="button">Reset filters</button>
+  `;
+  filterBarContainer.appendChild(actionBar);
+
   // Wire up event handlers
   presetSelect.addEventListener("change", (e) => {
     filters.preset = e.target.value;
@@ -1974,18 +2038,18 @@ function renderHelpdeskAnalytics() {
       const range = getDateRange(e.target.value);
       filters.from = range.from;
       filters.to = range.to;
-      fetchHelpdeskAnalytics();
+      renderHelpdeskAnalytics();
     }
   });
 
   document.getElementById("from-date")?.addEventListener("change", (e) => {
     filters.from = e.target.value ? new Date(`${e.target.value}T00:00:00`) : null;
-    if (filters.from && filters.to) fetchHelpdeskAnalytics();
+    renderHelpdeskAnalytics();
   });
 
   document.getElementById("to-date")?.addEventListener("change", (e) => {
     filters.to = e.target.value ? new Date(`${e.target.value}T23:59:59`) : null;
-    if (filters.from && filters.to) fetchHelpdeskAnalytics();
+    renderHelpdeskAnalytics();
   });
 
   if (filters.preset === "custom") {
@@ -1996,6 +2060,12 @@ function renderHelpdeskAnalytics() {
   document.getElementById("compare-toggle")?.addEventListener("change", (e) => {
     filters.compare = e.target.checked;
     renderHelpdeskAnalytics();
+  });
+  document.getElementById("helpdeskAnalyticsApplyBtn")?.addEventListener("click", () => {
+    fetchHelpdeskAnalytics();
+  });
+  document.getElementById("helpdeskAnalyticsResetBtn")?.addEventListener("click", () => {
+    resetHelpdeskAnalyticsFilters();
   });
 
   renderFiltersConditional();
@@ -2019,21 +2089,25 @@ function renderHelpdeskAnalytics() {
 
 function renderFiltersConditional() {
   const agentsFilter = document.getElementById("agents-filter");
+  const excludeAgentsFilter = document.getElementById("exclude-agents-filter");
   const groupsFilter = document.getElementById("groups-filter");
   const {
     agents: selectedAgents,
+    excludeAgents: selectedExcludeAgents,
     groups: selectedGroups,
     agentSearch,
+    excludeAgentSearch,
     groupSearch,
   } = state.helpdesk_analytics.filters;
 
   agentsFilter.classList.remove("d-none");
+  excludeAgentsFilter.classList.remove("d-none");
   groupsFilter.classList.remove("d-none");
 
-  const renderChecklist = ({ rootId, searchId, items, selected, emptyText, nameFor, subFor }) => {
+  const renderChecklist = ({ rootId, searchId, searchValue, items, selected, emptyText, nameFor, subFor }) => {
     const root = document.getElementById(rootId);
     root.innerHTML = `
-      <input id="${searchId}" class="form-control form-control-sm analytics-filter-search" type="search" placeholder="Search" value="${escapeHtml(rootId === "agents-checkboxes" ? agentSearch : groupSearch)}" />
+      <input id="${searchId}" class="form-control form-control-sm analytics-filter-search" type="search" placeholder="Search" value="${escapeHtml(searchValue)}" />
       <div class="analytics-checklist">
         ${
           items.length
@@ -2061,8 +2135,24 @@ function renderFiltersConditional() {
   renderChecklist({
     rootId: "agents-checkboxes",
     searchId: "helpdeskAnalyticsAgentSearch",
+    searchValue: agentSearch,
     items: visibleAgents,
     selected: selectedAgents,
+    emptyText: "No agents match this search.",
+    nameFor: (agent) => agent.name || agent.email || agent.id,
+    subFor: (agent) => agent.email && agent.email !== agent.name ? agent.email : "",
+  });
+
+  const normalizedExcludeAgentSearch = excludeAgentSearch.trim().toLowerCase();
+  const visibleExcludeAgents = (state.helpdesk.agents || []).filter((agent) =>
+    !normalizedExcludeAgentSearch || helpdeskFilterText(agent).includes(normalizedExcludeAgentSearch),
+  );
+  renderChecklist({
+    rootId: "exclude-agents-checkboxes",
+    searchId: "helpdeskAnalyticsExcludeAgentSearch",
+    searchValue: excludeAgentSearch,
+    items: visibleExcludeAgents,
+    selected: selectedExcludeAgents,
     emptyText: "No agents match this search.",
     nameFor: (agent) => agent.name || agent.email || agent.id,
     subFor: (agent) => agent.email && agent.email !== agent.name ? agent.email : "",
@@ -2075,6 +2165,7 @@ function renderFiltersConditional() {
   renderChecklist({
     rootId: "groups-checkboxes",
     searchId: "helpdeskAnalyticsGroupSearch",
+    searchValue: groupSearch,
     items: visibleGroups,
     selected: selectedGroups,
     emptyText: "No groups match this search.",
@@ -2086,6 +2177,11 @@ function renderFiltersConditional() {
     state.helpdesk_analytics.filters.agentSearch = event.target.value;
     renderHelpdeskAnalytics();
     document.getElementById("helpdeskAnalyticsAgentSearch")?.focus();
+  });
+  document.getElementById("helpdeskAnalyticsExcludeAgentSearch")?.addEventListener("input", (event) => {
+    state.helpdesk_analytics.filters.excludeAgentSearch = event.target.value;
+    renderHelpdeskAnalytics();
+    document.getElementById("helpdeskAnalyticsExcludeAgentSearch")?.focus();
   });
   document.getElementById("helpdeskAnalyticsGroupSearch")?.addEventListener("input", (event) => {
     state.helpdesk_analytics.filters.groupSearch = event.target.value;
@@ -2100,7 +2196,20 @@ function renderFiltersConditional() {
       );
       const hiddenSelected = selectedAgents.filter((id) => !visibleAgents.some((agent) => String(agent.id) === String(id)));
       state.helpdesk_analytics.filters.agents = [...new Set([...hiddenSelected, ...visibleSelected])];
-      fetchHelpdeskAnalytics();
+      renderHelpdeskAnalytics();
+    });
+  });
+
+  document.querySelectorAll("#exclude-agents-checkboxes input[type='checkbox']").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const visibleSelected = Array.from(document.querySelectorAll("#exclude-agents-checkboxes input[type='checkbox']:checked")).map(
+        (input) => input.value,
+      );
+      const hiddenSelected = selectedExcludeAgents.filter((id) =>
+        !visibleExcludeAgents.some((agent) => String(agent.id) === String(id)),
+      );
+      state.helpdesk_analytics.filters.excludeAgents = [...new Set([...hiddenSelected, ...visibleSelected])];
+      renderHelpdeskAnalytics();
     });
   });
 
@@ -2111,7 +2220,7 @@ function renderFiltersConditional() {
       );
       const hiddenSelected = selectedGroups.filter((id) => !visibleGroups.some((group) => String(group.id) === String(id)));
       state.helpdesk_analytics.filters.groups = [...new Set([...hiddenSelected, ...visibleSelected])];
-      fetchHelpdeskAnalytics();
+      renderHelpdeskAnalytics();
     });
   });
 }
@@ -2120,7 +2229,7 @@ function renderMetricsAndPanels() {
   if (!state.helpdesk_analytics.data) return;
 
   const { summary } = state.helpdesk_analytics.data;
-  const { compare } = state.helpdesk_analytics.filters;
+  const { compare } = activeHelpdeskAnalyticsFilters();
   const container = document.getElementById("appContent");
 
   const currentSummary = summary;
@@ -2257,7 +2366,8 @@ function renderMetricsAndPanels() {
 function renderLeaderboard() {
   if (!state.helpdesk_analytics.data) return;
 
-  const { filters, data: analytics } = state.helpdesk_analytics;
+  const { data: analytics } = state.helpdesk_analytics;
+  const filters = activeHelpdeskAnalyticsFilters();
   const container = document.getElementById("appContent");
   const timelineByDate = new Map((analytics.timeline || []).map((day) => [day.date, day]));
   const from = filters.from || new Date(analytics.period.from);

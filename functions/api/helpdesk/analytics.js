@@ -5,7 +5,7 @@ import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
 const STATUSES = ["open", "pending", "onhold", "solved", "closed"];
 const SILOS = ["tickets"];
 const PAGE_SIZE = 100;
-const MAX_PAGES_PER_QUERY = 2;
+const MAX_PAGES_PER_QUERY = 7;
 
 function isValidDate(value) {
   return value instanceof Date && !Number.isNaN(value.getTime());
@@ -46,7 +46,10 @@ function splitParam(value) {
     .filter(Boolean);
 }
 
-function agentMatchesFilters(agentId, teamIds, selectedAgentIds, selectedGroupIds) {
+function agentMatchesFilters(agentId, teamIds, selectedAgentIds, selectedGroupIds, excludedAgentIds) {
+  if (excludedAgentIds.includes(String(agentId))) {
+    return false;
+  }
   if (selectedAgentIds.length && !selectedAgentIds.includes(String(agentId))) {
     return false;
   }
@@ -154,9 +157,9 @@ async function listTicketsForWindow(env, from, to, { maxPagesPerQuery = MAX_PAGE
   const baseParams = {
     pageSize: String(PAGE_SIZE),
     order: "desc",
-    sortBy: "updatedAt",
-    updatedDateFrom: from.toISOString(),
-    updatedDateTo: to.toISOString(),
+    sortBy: "lastMessageAt",
+    lastMessageFrom: from.toISOString(),
+    lastMessageTo: to.toISOString(),
   };
 
   for (const silo of SILOS) {
@@ -183,7 +186,7 @@ async function listTicketsForWindow(env, from, to, { maxPagesPerQuery = MAX_PAGE
 
         const lastTicket = tickets[tickets.length - 1];
         const lastId = lastTicket?.ID || lastTicket?.id;
-        const lastValue = lastTicket?.updatedAt || lastTicket?.updated_at;
+        const lastValue = lastTicket?.lastMessageAt || lastTicket?.updatedAt || lastTicket?.updated_at;
         nextCursor = tickets.length === PAGE_SIZE && lastId && lastValue ? { id: String(lastId), value: lastValue } : null;
         page += 1;
       } while (nextCursor && page < maxPagesPerQuery);
@@ -215,48 +218,52 @@ async function computePeriod(env, from, to, filters, agentDirectory, options = {
 
   for (const ticket of tickets) {
     const teamIds = (ticket.teamIDs || ticket.teamIds || []).map(String);
+    const ticketId = String(ticket.ID || ticket.id || "");
     const agentReplyEvents = (ticket.events || [])
       .filter(isAgentMessage)
       .map((event) => ({ event, date: eventDate(event) }))
       .filter(({ date }) => isValidDate(date) && date >= from && date < to)
       .sort((left, right) => left.date - right.date);
 
-    const firstProcessEvent = agentReplyEvents.find(({ event }) => {
+    const countedAgentDays = new Set();
+    for (const { event, date } of agentReplyEvents) {
       const agentId = eventAuthorId(event);
-      return agentId && agentMatchesFilters(agentId, teamIds, filters.agentIds, filters.groupIds);
-    });
+      if (!agentId || !agentMatchesFilters(agentId, teamIds, filters.agentIds, filters.groupIds, filters.excludedAgentIds)) {
+        continue;
+      }
 
-    if (!firstProcessEvent) {
-      continue;
-    }
+      const replyDate = dateKey(date, timezoneOffsetMinutes);
+      const ticketCountKey = `${replyDate}|${agentId}|${ticketId}`;
+      if (countedAgentDays.has(ticketCountKey)) {
+        continue;
+      }
+      countedAgentDays.add(ticketCountKey);
 
-    const { event, date } = firstProcessEvent;
-    const agentId = eventAuthorId(event);
-    const replyDate = dateKey(date, timezoneOffsetMinutes);
-    const key = `${replyDate}|${agentId}`;
-    if (!dailyByAgent.has(key)) {
-      dailyByAgent.set(key, {
-        date: replyDate,
-        agent_id: String(agentId),
-        handled_tickets: 0,
-        ftr_values: [],
-        resolution_values: [],
-      });
-    }
+      const key = `${replyDate}|${agentId}`;
+      if (!dailyByAgent.has(key)) {
+        dailyByAgent.set(key, {
+          date: replyDate,
+          agent_id: String(agentId),
+          handled_tickets: 0,
+          ftr_values: [],
+          resolution_values: [],
+        });
+      }
 
-    const row = dailyByAgent.get(key);
-    row.handled_tickets += 1;
+      const row = dailyByAgent.get(key);
+      row.handled_tickets += 1;
 
-    const assignedAt = assignmentDateForReply(ticket, agentId, date);
-    if (assignedAt && date > assignedAt) {
-      row.ftr_values.push(date.getTime() - assignedAt.getTime());
-    }
+      const assignedAt = assignmentDateForReply(ticket, agentId, date);
+      if (assignedAt && date > assignedAt) {
+        row.ftr_values.push(date.getTime() - assignedAt.getTime());
+      }
 
-    const solvedAt = ticket.solvedAt || ticket.resolvedAt || ticket.closedAt;
-    const solvedDate = solvedAt ? new Date(solvedAt) : null;
-    const firstClientAt = firstClientMessageDate(ticket);
-    if (firstClientAt && isValidDate(solvedDate) && solvedDate > firstClientAt) {
-      row.resolution_values.push(solvedDate.getTime() - firstClientAt.getTime());
+      const solvedAt = ticket.solvedAt || ticket.resolvedAt || ticket.closedAt;
+      const solvedDate = solvedAt ? new Date(solvedAt) : null;
+      const firstClientAt = firstClientMessageDate(ticket);
+      if (firstClientAt && isValidDate(solvedDate) && solvedDate > firstClientAt) {
+        row.resolution_values.push(solvedDate.getTime() - firstClientAt.getTime());
+      }
     }
   }
 
@@ -362,6 +369,7 @@ export async function onRequest(context) {
 
     const filters = {
       agentIds: splitParam(url.searchParams.get("agents")),
+      excludedAgentIds: splitParam(url.searchParams.get("exclude_agents")),
       groupIds: splitParam(url.searchParams.get("groups")),
     };
     const timezoneOffsetMinutes = Number(url.searchParams.get("tz_offset") || 0);
