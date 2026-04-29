@@ -3,9 +3,9 @@ import { errorResponse, json, methodNotAllowed } from "../../_lib/http.js";
 import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
 
 const STATUSES = ["open", "pending", "onhold", "solved", "closed"];
-const SILOS = ["tickets", "archive"];
+const SILOS = ["tickets"];
 const PAGE_SIZE = 100;
-const MAX_PAGES_PER_QUERY = 100;
+const MAX_PAGES_PER_QUERY = 2;
 
 function isValidDate(value) {
   return value instanceof Date && !Number.isNaN(value.getTime());
@@ -83,7 +83,7 @@ function normalizeTicketList(payload) {
   return Array.isArray(payload) ? payload : payload?.tickets || payload?.data || payload?.items || [];
 }
 
-async function listTicketsForWindow(env, from, to) {
+async function listTicketsForWindow(env, from, to, { maxPagesPerQuery = MAX_PAGES_PER_QUERY } = {}) {
   const ticketsById = new Map();
   const baseParams = {
     pageSize: String(PAGE_SIZE),
@@ -120,7 +120,7 @@ async function listTicketsForWindow(env, from, to) {
         const lastValue = lastTicket?.updatedAt || lastTicket?.updated_at;
         nextCursor = tickets.length === PAGE_SIZE && lastId && lastValue ? { id: String(lastId), value: lastValue } : null;
         page += 1;
-      } while (nextCursor && page < MAX_PAGES_PER_QUERY);
+      } while (nextCursor && page < maxPagesPerQuery);
     }
   }
 
@@ -142,8 +142,8 @@ function buildAgentDirectory(dashboard) {
   );
 }
 
-async function computePeriod(env, from, to, filters, agentDirectory) {
-  const tickets = await listTicketsForWindow(env, from, to);
+async function computePeriod(env, from, to, filters, agentDirectory, options = {}) {
+  const tickets = await listTicketsForWindow(env, from, to, options);
   const dailyByAgent = new Map();
 
   for (const ticket of tickets) {
@@ -301,10 +301,11 @@ export async function onRequest(context) {
     const dashboard = await getHelpDeskDashboard(context.env);
     const agentDirectory = buildAgentDirectory(dashboard);
 
-    const [current, prev] = await Promise.all([
-      computePeriod(context.env, from, to, filters, agentDirectory),
-      computePeriod(context.env, previous.from, previous.to, filters, agentDirectory),
-    ]);
+    const current = await computePeriod(context.env, from, to, filters, agentDirectory);
+    const prev =
+      url.searchParams.get("compare") === "0"
+        ? { summary: { total_tickets: 0, avg_ftr_ms: 0, avg_resolution_time_ms: 0, active_agents: 0 } }
+        : await computePeriod(context.env, previous.from, previous.to, filters, agentDirectory, { maxPagesPerQuery: 1 });
 
     return json({
       period: { from: from.toISOString(), to: to.toISOString() },

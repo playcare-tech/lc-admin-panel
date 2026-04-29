@@ -1820,6 +1820,7 @@ async function fetchHelpdeskAnalytics() {
     if (filters.to) params.append("to", filters.to.toISOString());
     if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
     if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
+    if (!filters.compare) params.append("compare", "0");
 
     state.helpdesk_analytics.data = await api(`/api/helpdesk/analytics?${params.toString()}`);
     renderHelpdeskAnalytics();
