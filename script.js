@@ -1717,48 +1717,56 @@ function renderAnalytics() {
 // Task 7: Date Helper Functions
 function getDateRange(preset) {
   const now = new Date();
+  const startOfDay = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const endOfDay = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+  const startOfWeek = (date) => {
+    const copy = startOfDay(date);
+    const day = copy.getDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    copy.setDate(copy.getDate() + diff);
+    return copy;
+  };
   let from, to;
 
   switch (preset) {
     case "today":
-      from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      to = new Date(from.getTime() + 24 * 60 * 60 * 1000 - 1);
+      from = startOfDay(now);
+      to = now;
       break;
     case "yesterday":
-      to = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-      from = new Date(to.getTime() - 24 * 60 * 60 * 1000 + 1);
+      from = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+      to = endOfDay(from);
       break;
     case "last_7_days":
-      to = new Date(now.getTime() - 1000);
-      from = new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
+      from = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6));
+      to = now;
       break;
     case "last_30_days":
-      to = new Date(now.getTime() - 1000);
-      from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+      from = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29));
+      to = now;
       break;
     case "this_week":
-      const startOfWeek = new Date(now);
-      startOfWeek.setDate(now.getDate() - now.getDay());
-      from = new Date(startOfWeek.getFullYear(), startOfWeek.getMonth(), startOfWeek.getDate());
-      to = new Date(from.getTime() + 7 * 24 * 60 * 60 * 1000 - 1);
+      from = startOfWeek(now);
+      to = now;
       break;
-    case "last_week":
-      const endOfLastWeek = new Date(now);
-      endOfLastWeek.setDate(now.getDate() - now.getDay() - 1);
-      to = new Date(endOfLastWeek.getFullYear(), endOfLastWeek.getMonth(), endOfLastWeek.getDate() + 1, 23, 59, 59);
-      from = new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
+    case "last_week": {
+      const thisWeekStart = startOfWeek(now);
+      from = new Date(thisWeekStart);
+      from.setDate(from.getDate() - 7);
+      to = endOfDay(new Date(thisWeekStart.getFullYear(), thisWeekStart.getMonth(), thisWeekStart.getDate() - 1));
       break;
+    }
     case "this_month":
       from = new Date(now.getFullYear(), now.getMonth(), 1);
-      to = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+      to = now;
       break;
     case "last_month":
       from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      to = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
+      to = endOfDay(new Date(now.getFullYear(), now.getMonth(), 0));
       break;
     default:
-      to = new Date(now.getTime() - 1000);
-      from = new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
+      from = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6));
+      to = now;
   }
 
   return { from, to };
@@ -2012,6 +2020,7 @@ async function fetchHelpdeskAnalytics() {
   state.helpdesk_analytics.appliedFilters = filters;
   state.helpdesk_analytics.loading = true;
   state.helpdesk_analytics.error = null;
+  state.helpdesk_analytics.data = null;
   state.helpdesk_analytics.loadStatus = "";
   state.helpdesk_analytics.loadProgress = null;
   renderHelpdeskAnalytics();
