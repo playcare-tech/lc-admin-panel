@@ -91,10 +91,21 @@ async function api(path, options = {}) {
   });
 
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch (_error) {
+      payload = {
+        error: response.ok
+          ? "Invalid JSON response."
+          : `Request failed with ${response.status} ${response.statusText || ""}`.trim(),
+      };
+    }
+  }
 
   if (!response.ok) {
-    throw new Error(payload.error || "Request failed.");
+    throw new Error(payload.error || `Request failed with ${response.status}.`);
   }
 
   return payload;
@@ -1968,13 +1979,34 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0) {
 }
 
 async function fetchHelpdeskAnalyticsDayResponses(filters) {
-  state.helpdesk_analytics.loadProgress = { current: 0, total: 1, cacheHits: 0, savedDays: 0, liveDays: 0 };
-  state.helpdesk_analytics.loadStatus = "Loading HelpDesk data...";
-  renderHelpdeskAnalytics();
-  const response = await fetchHelpdeskAnalyticsRange({ from: filters.from, to: filters.to, cacheFullDay: false }, filters);
-  state.helpdesk_analytics.loadProgress.current = 1;
-  state.helpdesk_analytics.loadProgress.liveDays = 1;
-  return response;
+  const ranges = helpdeskAnalyticsDayRanges(filters.from, filters.to);
+  const responses = [];
+
+  state.helpdesk_analytics.loadProgress = {
+    current: 0,
+    total: ranges.length,
+    cacheHits: 0,
+    savedDays: 0,
+    liveDays: 0,
+  };
+
+  for (const [index, range] of ranges.entries()) {
+    state.helpdesk_analytics.loadProgress.current = index;
+    state.helpdesk_analytics.loadStatus = `Preparing day ${index + 1}/${ranges.length}...`;
+    renderHelpdeskAnalytics();
+
+    const result = await fetchHelpdeskAnalyticsRange(range, filters);
+    responses.push(...result);
+
+    state.helpdesk_analytics.loadProgress.current = index + 1;
+    renderHelpdeskAnalytics();
+
+    if (index < ranges.length - 1) {
+      await sleep(250);
+    }
+  }
+
+  return responses;
 }
 
 function renderHelpdeskAnalyticsLoading(container) {
