@@ -137,6 +137,8 @@ async function listTicketsForRange(env, from, to) {
         order: "desc",
         sortBy: "lastMessageAt",
         status,
+        lastMessageFrom: from.toISOString(),
+        lastMessageTo: to.toISOString(),
       });
       if (nextCursor) {
         params.set("next.value", nextCursor.value);
@@ -174,23 +176,37 @@ async function listTicketsForRange(env, from, to) {
 async function computeDay(env, from, to, filters, timezoneOffsetMinutes) {
   const tickets = await listTicketsForRange(env, from, to);
   const counts = new Map();
+  const counted = new Set();
 
   for (const ticket of tickets) {
     const teamIds = (ticket.teamIDs || ticket.teamIds || []).map(String);
-    const agentId = ticket.assigneeID || ticket.assignedTo || ticket.agentID || ticket.agent_id;
-    if (!agentId) continue;
-    if (!matchesFilters(agentId, teamIds, filters)) continue;
+    const ticketId = ticket.ID || ticket.id;
+    const events = Array.isArray(ticket.events) ? ticket.events : [];
 
-    const lastMsg = ticket.lastMessageAt || ticket.updatedAt || ticket.updated_at;
-    const date = lastMsg ? new Date(lastMsg) : null;
-    if (!date || !isValidDate(date)) continue;
+    for (const event of events) {
+      const isMessage = event.type === "message" || event.eventType === "message";
+      const author = event.author || event.createdBy || {};
+      const authorType = author.type || event.authorType || event.createdByType;
+      const agentId = author.ID || author.id || author.agentID || author.agentId || event.agentID || event.agentId;
+      const isPrivate = Boolean(event.isPrivate || event.private);
+      const value = event.createdAt || event.date || event.timestamp;
+      const date = value ? new Date(value) : null;
 
-    const localDay = dateKey(date, timezoneOffsetMinutes);
-    const rowKey = `${localDay}|${agentId}`;
-    if (!counts.has(rowKey)) {
-      counts.set(rowKey, { date: localDay, agent_id: String(agentId), handled_tickets: 0 });
+      if (!isMessage || authorType !== "agent" || isPrivate || !agentId || !date || !isValidDate(date)) continue;
+      if (date < from || date > to) continue;
+      if (!matchesFilters(agentId, teamIds, filters)) continue;
+
+      const localDay = dateKey(date, timezoneOffsetMinutes);
+      const countKey = `${localDay}|${agentId}|${ticketId || ""}`;
+      if (counted.has(countKey)) continue;
+      counted.add(countKey);
+
+      const rowKey = `${localDay}|${agentId}`;
+      if (!counts.has(rowKey)) {
+        counts.set(rowKey, { date: localDay, agent_id: String(agentId), handled_tickets: 0 });
+      }
+      counts.get(rowKey).handled_tickets += 1;
     }
-    counts.get(rowKey).handled_tickets += 1;
   }
 
   return Array.from(counts.values());
@@ -256,6 +272,7 @@ export async function onRequest(context) {
     const localDate = dateKey(from, timezoneOffsetMinutes);
     const today = dateKey(new Date(), timezoneOffsetMinutes);
     const fullDayCache = url.searchParams.get("cache_full_day") === "1";
+    const shouldImport = url.searchParams.get("import") === "1";
     const filters = {
       agentIds: splitParam(url.searchParams.get("agents")),
       excludeAgentIds: splitParam(url.searchParams.get("exclude_agents")),
@@ -275,13 +292,20 @@ export async function onRequest(context) {
       cacheable,
     };
 
-    if (!cachedRows) {
+    const shouldFetchHelpDesk = shouldImport || localDate === today;
+
+    if (!cachedRows && shouldFetchHelpDesk) {
       rows = await computeDay(context.env, from, to, filters, timezoneOffsetMinutes);
       if (cacheable) {
         await writeCachedDay(context.env, localDate, rows);
         cacheMeta.source = "helpdesk_saved";
         cacheMeta.saved = true;
+      } else {
+        cacheMeta.source = shouldImport ? "helpdesk_import" : "helpdesk_today";
       }
+    } else if (!cachedRows) {
+      cacheMeta.source = "d1_missing";
+      cacheMeta.missing = true;
     }
 
     return json(rowsToResponse(rows, from, to, agentDirectory, cacheMeta));

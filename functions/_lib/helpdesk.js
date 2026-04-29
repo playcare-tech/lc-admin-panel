@@ -46,6 +46,7 @@ export async function helpdeskRequest(env, path, options = {}) {
     headers: {
       Authorization: getAuthHeader(env),
       "Content-Type": "application/json",
+      "User-Agent": "livechat-admin/1.0",
       ...(options.headers || {}),
     },
     body: options.body ? JSON.stringify(options.body) : undefined,

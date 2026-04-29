@@ -1889,8 +1889,15 @@ function sleep(ms) {
 function mergeHelpdeskAnalyticsResponses(responses, filters) {
   const agentsById = new Map();
   const timelineByDate = new Map();
+  let missingDays = 0;
+  let importedDays = 0;
+  let cachedDays = 0;
 
   for (const response of responses) {
+    if (response.cache?.missing) missingDays += 1;
+    if (response.cache?.saved || response.cache?.source === "helpdesk_import") importedDays += 1;
+    if (response.cache?.hit) cachedDays += 1;
+
     for (const day of response.timeline || []) {
       if (!timelineByDate.has(day.date)) timelineByDate.set(day.date, { date: day.date, tickets: 0 });
       timelineByDate.get(day.date).tickets += Number(day.tickets || 0);
@@ -1925,11 +1932,12 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
     },
     agents,
     timeline: Array.from(timelineByDate.values()).sort((left, right) => left.date.localeCompare(right.date)),
+    cache: { missing_days: missingDays, imported_days: importedDays, cached_days: cachedDays },
     capabilities: responses[0]?.capabilities || {},
   };
 }
 
-async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0) {
+async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode = false) {
   const params = new URLSearchParams();
   params.append("from", range.from.toISOString());
   params.append("to", range.to.toISOString());
@@ -1937,10 +1945,13 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0) {
   if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
   if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
   if (range.cacheFullDay) params.append("cache_full_day", "1");
+  if (importMode) params.append("import", "1");
   params.append("tz_offset", String(new Date().getTimezoneOffset()));
 
   const dayLabel = range.from.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  state.helpdesk_analytics.loadStatus = range.cacheFullDay
+  state.helpdesk_analytics.loadStatus = importMode
+    ? `Importing HelpDesk data for ${dayLabel}...`
+    : range.cacheFullDay
     ? `Checking D1 cache for ${dayLabel}...`
     : `Loading HelpDesk data for ${dayLabel}...`;
   renderHelpdeskAnalytics();
@@ -1969,9 +1980,9 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0) {
     state.helpdesk_analytics.loadStatus = "HelpDesk request was too large. Loading smaller portions...";
     renderHelpdeskAnalytics();
     await sleep(500);
-    const first = await fetchHelpdeskAnalyticsRange({ from: range.from, to: middle, cacheFullDay: false }, filters, depth + 1);
+    const first = await fetchHelpdeskAnalyticsRange({ from: range.from, to: middle, cacheFullDay: false }, filters, depth + 1, importMode);
     await sleep(500);
-    const second = await fetchHelpdeskAnalyticsRange({ from: new Date(middle.getTime() + 1), to: range.to, cacheFullDay: false }, filters, depth + 1);
+    const second = await fetchHelpdeskAnalyticsRange({ from: new Date(middle.getTime() + 1), to: range.to, cacheFullDay: false }, filters, depth + 1, importMode);
     if (depth === 0 && state.helpdesk_analytics.loadProgress) {
       state.helpdesk_analytics.loadProgress.liveDays += 1;
     }
@@ -1979,7 +1990,7 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0) {
   }
 }
 
-async function fetchHelpdeskAnalyticsDayResponses(filters) {
+async function fetchHelpdeskAnalyticsDayResponses(filters, importMode = false) {
   const ranges = helpdeskAnalyticsDayRanges(filters.from, filters.to);
   const responses = [];
 
@@ -1993,10 +2004,12 @@ async function fetchHelpdeskAnalyticsDayResponses(filters) {
 
   for (const [index, range] of ranges.entries()) {
     state.helpdesk_analytics.loadProgress.current = index;
-    state.helpdesk_analytics.loadStatus = `Preparing day ${index + 1}/${ranges.length}...`;
+    state.helpdesk_analytics.loadStatus = importMode
+      ? `Preparing import ${index + 1}/${ranges.length}...`
+      : `Preparing day ${index + 1}/${ranges.length}...`;
     renderHelpdeskAnalytics();
 
-    const result = await fetchHelpdeskAnalyticsRange(range, filters);
+    const result = await fetchHelpdeskAnalyticsRange(range, filters, 0, importMode);
     responses.push(...result);
 
     state.helpdesk_analytics.loadProgress.current = index + 1;
@@ -2055,6 +2068,34 @@ async function fetchHelpdeskAnalytics() {
     renderHelpdeskAnalytics();
   } catch (error) {
     console.error("Fetch analytics error:", error);
+    state.helpdesk_analytics.error = error.message;
+    state.helpdesk_analytics.loadStatus = "";
+    state.helpdesk_analytics.loadProgress = null;
+    renderHelpdeskAnalytics();
+  } finally {
+    state.helpdesk_analytics.loading = false;
+    state.helpdesk_analytics.loadStatus = "";
+    state.helpdesk_analytics.loadProgress = null;
+    renderHelpdeskAnalytics();
+  }
+}
+
+async function importHelpdeskAnalytics() {
+  const filters = cloneHelpdeskAnalyticsFilters();
+  state.helpdesk_analytics.appliedFilters = filters;
+  state.helpdesk_analytics.loading = true;
+  state.helpdesk_analytics.error = null;
+  state.helpdesk_analytics.data = null;
+  state.helpdesk_analytics.loadStatus = "Starting HelpDesk import...";
+  state.helpdesk_analytics.loadProgress = null;
+  renderHelpdeskAnalytics();
+
+  try {
+    const responses = await fetchHelpdeskAnalyticsDayResponses(filters, true);
+    state.helpdesk_analytics.data = mergeHelpdeskAnalyticsResponses(responses, filters);
+    renderHelpdeskAnalytics();
+  } catch (error) {
+    console.error("Import analytics error:", error);
     state.helpdesk_analytics.error = error.message;
     state.helpdesk_analytics.loadStatus = "";
     state.helpdesk_analytics.loadProgress = null;
@@ -2195,6 +2236,7 @@ function renderHelpdeskAnalytics() {
   actionBar.className = "helpdesk-analytics-actions";
   actionBar.innerHTML = `
     <button id="helpdeskAnalyticsApplyBtn" class="btn btn-primary" type="button">Filter</button>
+    <button id="helpdeskAnalyticsImportBtn" class="btn btn-outline-primary" type="button">Import from HelpDesk</button>
     <button id="helpdeskAnalyticsResetBtn" class="btn btn-outline-secondary" type="button">Reset filters</button>
   `;
   filterBarContainer.appendChild(actionBar);
@@ -2235,6 +2277,9 @@ function renderHelpdeskAnalytics() {
   document.getElementById("helpdeskAnalyticsApplyBtn")?.addEventListener("click", () => {
     fetchHelpdeskAnalytics();
   });
+  document.getElementById("helpdeskAnalyticsImportBtn")?.addEventListener("click", () => {
+    importHelpdeskAnalytics();
+  });
   document.getElementById("helpdeskAnalyticsResetBtn")?.addEventListener("click", () => {
     resetHelpdeskAnalyticsFilters();
   });
@@ -2247,6 +2292,12 @@ function renderHelpdeskAnalytics() {
 
   // Render data sections if available
   if (data) {
+    if (data.cache?.missing_days) {
+      const missingDiv = document.createElement("div");
+      missingDiv.className = "alert alert-warning";
+      missingDiv.textContent = `${data.cache.missing_days} selected day(s) are not imported into D1 yet. Click "Import from HelpDesk" to load and save them.`;
+      container.appendChild(missingDiv);
+    }
     renderMetricsAndPanels();
     renderLeaderboard();
   } else if (loading) {
