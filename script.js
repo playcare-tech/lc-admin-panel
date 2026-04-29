@@ -46,6 +46,7 @@ const state = {
     loading: false,
     error: null,
     loadStatus: "",
+    loadProgress: null,
     filters: {
       preset: "last_7_days",
       from: null,
@@ -1919,8 +1920,25 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0) {
   if (range.cacheFullDay) params.append("cache_full_day", "1");
   params.append("tz_offset", String(new Date().getTimezoneOffset()));
 
+  const dayLabel = range.from.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  state.helpdesk_analytics.loadStatus = range.cacheFullDay
+    ? `Checking D1 cache for ${dayLabel}...`
+    : `Loading HelpDesk data for ${dayLabel}...`;
+  renderHelpdeskAnalytics();
+
   try {
-    return [await api(`/api/helpdesk/analytics?${params.toString()}`)];
+    const response = await api(`/api/helpdesk/analytics?${params.toString()}`);
+    const progress = state.helpdesk_analytics.loadProgress;
+    if (progress && depth === 0) {
+      if (response.cache?.hit) {
+        progress.cacheHits += 1;
+      } else if (response.cache?.saved) {
+        progress.savedDays += 1;
+      } else {
+        progress.liveDays += 1;
+      }
+    }
+    return [response];
   } catch (error) {
     const duration = range.to.getTime() - range.from.getTime();
     if (!/too many/i.test(error.message || "") || duration <= 30 * 60 * 1000 || depth >= 8) {
@@ -1934,19 +1952,58 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0) {
     const first = await fetchHelpdeskAnalyticsRange({ from: range.from, to: middle, cacheFullDay: false }, filters, depth + 1);
     await sleep(500);
     const second = await fetchHelpdeskAnalyticsRange({ from: new Date(middle.getTime() + 1), to: range.to, cacheFullDay: false }, filters, depth + 1);
+    if (depth === 0 && state.helpdesk_analytics.loadProgress) {
+      state.helpdesk_analytics.loadProgress.liveDays += 1;
+    }
     return [...first, ...second];
   }
 }
 
 async function fetchHelpdeskAnalyticsDayResponses(ranges, filters) {
   const responses = [];
+  state.helpdesk_analytics.loadProgress = {
+    current: 0,
+    total: ranges.length,
+    cacheHits: 0,
+    savedDays: 0,
+    liveDays: 0,
+  };
   for (let index = 0; index < ranges.length; index += 1) {
-    state.helpdesk_analytics.loadStatus = `Loading HelpDesk data ${index + 1}/${ranges.length} day${ranges.length === 1 ? "" : "s"}...`;
+    state.helpdesk_analytics.loadProgress.current = index + 1;
+    state.helpdesk_analytics.loadStatus = `Preparing day ${index + 1}/${ranges.length}...`;
     renderHelpdeskAnalytics();
     responses.push(...(await fetchHelpdeskAnalyticsRange(ranges[index], filters)));
     await sleep(250);
   }
   return responses;
+}
+
+function renderHelpdeskAnalyticsLoading(container) {
+  const { loadProgress, loadStatus } = state.helpdesk_analytics;
+  const total = loadProgress?.total || 0;
+  const current = loadProgress?.current || 0;
+  const percent = total ? Math.min(100, Math.round((current / total) * 100)) : 8;
+  const cacheHits = loadProgress?.cacheHits || 0;
+  const savedDays = loadProgress?.savedDays || 0;
+  const liveDays = loadProgress?.liveDays || 0;
+
+  const loadingDiv = document.createElement("div");
+  loadingDiv.className = "alert alert-info helpdesk-analytics-loading";
+  loadingDiv.innerHTML = `
+    <div class="helpdesk-analytics-loading-head">
+      <strong>${escapeHtml(loadStatus || "Loading HelpDesk data...")}</strong>
+      ${total ? `<span>${current}/${total} days</span>` : ""}
+    </div>
+    <div class="progress helpdesk-analytics-progress" role="progressbar" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100">
+      <div class="progress-bar" style="width: ${percent}%"></div>
+    </div>
+    <div class="helpdesk-analytics-loading-meta">
+      <span>D1 hits: ${cacheHits}</span>
+      <span>Fetched and saved: ${savedDays}</span>
+      <span>Live only: ${liveDays}</span>
+    </div>
+  `;
+  container.appendChild(loadingDiv);
 }
 
 // Task 8: Create fetchAnalytics Function for HelpDesk
@@ -1956,6 +2013,7 @@ async function fetchHelpdeskAnalytics() {
   state.helpdesk_analytics.loading = true;
   state.helpdesk_analytics.error = null;
   state.helpdesk_analytics.loadStatus = "";
+  state.helpdesk_analytics.loadProgress = null;
   renderHelpdeskAnalytics();
 
   try {
@@ -1966,10 +2024,12 @@ async function fetchHelpdeskAnalytics() {
     console.error("Fetch analytics error:", error);
     state.helpdesk_analytics.error = error.message;
     state.helpdesk_analytics.loadStatus = "";
+    state.helpdesk_analytics.loadProgress = null;
     renderHelpdeskAnalytics();
   } finally {
     state.helpdesk_analytics.loading = false;
     state.helpdesk_analytics.loadStatus = "";
+    state.helpdesk_analytics.loadProgress = null;
     renderHelpdeskAnalytics();
   }
 }
@@ -2148,15 +2208,15 @@ function renderHelpdeskAnalytics() {
 
   renderFiltersConditional();
 
+  if (loading) {
+    renderHelpdeskAnalyticsLoading(container);
+  }
+
   // Render data sections if available
   if (data) {
     renderMetricsAndPanels();
     renderLeaderboard();
   } else if (loading) {
-    const loadingDiv = document.createElement("div");
-    loadingDiv.className = "alert alert-info";
-    loadingDiv.textContent = state.helpdesk_analytics.loadStatus || "Loading HelpDesk data...";
-    container.appendChild(loadingDiv);
   } else if (error) {
     const errorDiv = document.createElement("div");
     errorDiv.className = "alert alert-danger";

@@ -208,7 +208,7 @@ async function computeDay(env, from, to, filters, timezoneOffsetMinutes) {
   return Array.from(counts.values());
 }
 
-function rowsToResponse(rows, from, to, agentDirectory) {
+function rowsToResponse(rows, from, to, agentDirectory, cache = {}) {
   const agents = rows
     .map((row) => {
       const profile = agentDirectory.get(String(row.agent_id)) || {};
@@ -239,6 +239,7 @@ function rowsToResponse(rows, from, to, agentDirectory) {
     },
     agents,
     timeline: Array.from(timelineByDate.values()).sort((left, right) => left.date.localeCompare(right.date)),
+    cache,
     capabilities: {
       per_agent_period_metrics: true,
       per_agent_daily_metrics: true,
@@ -278,13 +279,24 @@ export async function onRequest(context) {
     const cacheable = fullDayCache && localDate < today && !filters.groupIds.length;
     const cachedRows = cacheable ? await readCachedDay(context.env, localDate) : null;
     let rows = cachedRows ? filterCachedRows(cachedRows, filters) : [];
+    const cacheMeta = {
+      date: localDate,
+      checked: cacheable,
+      hit: Boolean(cachedRows),
+      source: cacheable ? (cachedRows ? "d1" : "helpdesk") : "helpdesk_live",
+      cacheable,
+    };
 
     if (!cachedRows) {
       rows = await computeDay(context.env, from, to, filters, timezoneOffsetMinutes);
-      if (cacheable) await writeCachedDay(context.env, localDate, rows);
+      if (cacheable) {
+        await writeCachedDay(context.env, localDate, rows);
+        cacheMeta.source = "helpdesk_saved";
+        cacheMeta.saved = true;
+      }
     }
 
-    return json(rowsToResponse(rows, from, to, agentDirectory));
+    return json(rowsToResponse(rows, from, to, agentDirectory, cacheMeta));
   } catch (error) {
     const message = error.message || "HelpDesk analytics failed.";
     const status = message.startsWith("Missing required param") || message.startsWith("Invalid date") ? 400 : 500;
