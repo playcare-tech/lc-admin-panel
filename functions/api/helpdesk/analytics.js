@@ -4,7 +4,7 @@ import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
 
 const STATUSES = ["open", "pending", "onhold", "solved", "closed"];
 const PAGE_SIZE = 100;
-const MAX_PAGES_PER_RANGE_STATUS = 8;
+const MAX_PAGES_PER_RANGE = 38;
 const DAILY_TABLE = "helpdesk_analytics_daily_v4";
 const DETAIL_TABLE = "helpdesk_analytics_handled_tickets_v4";
 const DAILY_FETCH_TABLE = "helpdesk_analytics_daily_fetches_v4";
@@ -414,8 +414,12 @@ function detailToResponse(row) {
 
 async function listTicketsForRange(env, from, to) {
   const ticketsById = new Map();
+  let pageBudget = MAX_PAGES_PER_RANGE;
 
   for (const status of STATUSES) {
+    if (pageBudget <= 0) {
+      throw new Error("Too many tickets for this time slice. Retry with a smaller range.");
+    }
     let nextCursor = null;
     let page = 0;
     do {
@@ -448,7 +452,8 @@ async function listTicketsForRange(env, from, to) {
       const lastValue = lastTicket?.updatedAt || lastTicket?.updated_at || lastTicket?.lastMessageAt;
       nextCursor = tickets.length === PAGE_SIZE && lastId && lastValue ? { id: lastId, value: lastValue } : null;
       page += 1;
-    } while (nextCursor && page < MAX_PAGES_PER_RANGE_STATUS);
+      pageBudget -= 1;
+    } while (nextCursor && pageBudget > 0);
 
     if (nextCursor) {
       throw new Error("Too many tickets for this time slice. Retry with a smaller range.");
@@ -636,7 +641,11 @@ export async function onRequest(context) {
     return json(rowsToResponse(rows, detailRows, from, to, agentDirectory, cacheMeta));
   } catch (error) {
     const message = error.message || "HelpDesk analytics failed.";
-    const status = message.startsWith("Missing required param") || message.startsWith("Invalid date") ? 400 : 500;
+    const status = message.startsWith("Missing required param") || message.startsWith("Invalid date")
+      ? 400
+      : /too many requests|rate limit/i.test(message)
+        ? 429
+        : 500;
     return errorResponse(message, status);
   }
 }

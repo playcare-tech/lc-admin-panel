@@ -1,4 +1,108 @@
 const APP_URL = "https://lc-admin.pages.dev/";
+const DEFAULT_HELPDESK_ANALYTICS_AGENT_NAMES = [
+  "Megan",
+  "Emma",
+  "Alice",
+  "Liliana",
+  "Nicole",
+  "Matt",
+  "Oliver",
+  "Nelly",
+  "Robert",
+  "Luke",
+  "Gary",
+  "Nate",
+  "Marcus",
+  "Litta",
+  "Aaron",
+  "Sarah",
+  "Lara",
+  "Celina",
+  "Rosa",
+  "Oscar",
+  "Melany",
+  "Beatrice",
+  "Mollie",
+  "Bob",
+  "Jasper",
+  "Leo",
+  "Noah",
+  "Billie",
+  "Sandra",
+  "Stella",
+  "Kyle",
+  "Layla",
+  "Hugo",
+  "Ian",
+  "Kirk",
+  "Nancy",
+  "Jennie",
+  "Otis",
+  "Benedict",
+  "Ben",
+  "Sabrina",
+  "Nicky",
+  "Douglas",
+  "Violet",
+  "Ada",
+  "Mia",
+  "Murphy",
+  "Zoe",
+  "Michael",
+  "Evelyn",
+  "Milky",
+  "Maryia Kavalchuk",
+  "Anna Makarova",
+  "Alesia Misura",
+  "Alina Savchuk",
+  "Kateryna Brezhneva",
+  "Matvey Ivanov",
+  "Oleg Fadeev",
+  "Naima Voloshina",
+  "Konstantin Dziamida",
+  "Valeriya Ilhan",
+  "Garnik Makvetsyan",
+  "Timur Hamidov",
+  "Aleksandr Lavrushkin",
+  "Daria Potapova",
+  "Andrey Solovyev",
+  "Bela Boyajyan",
+  "Victoria Namupala",
+  "Mariia Priakhina",
+  "Yehor Starchev",
+  "Mikhail Desiatov",
+  "Elgin Bakhishov",
+  "Yury Rybakov",
+  "Irada Mukhtarova",
+  "Oscar Tuleshov",
+  "Arslan Abubikirov",
+  "Zhomart Adanbekov",
+  "Artemiy Selyushkov",
+  "Maksim Yerdenov",
+  "Alexandra Mirzaliyeva",
+  "Elizaveta Kozlovskaya",
+  "Stepan Ptashnik",
+  "Nikolay Baranchuk",
+  "Arman Harutyunyan",
+  "Ilya Pantsiukhou",
+  "Alexander Shishkin",
+  "Hanna Mashchytskaya",
+  "Khushnur Turgunbaev",
+  "Ivan Sakovich",
+  "Igor Filonik",
+  "Vladislav Kholkin",
+  "Anastasiia Amelkina",
+  "Mikhail Kipel",
+  "Anatoliy Tolstov",
+  "Aldiyar Kadyrbekov",
+  "Anastasiia Kozlova",
+  "Alisa Maisiuk",
+  "Anastasiya Leonchikova",
+  "Nikita Tsyganov",
+  "Gurgen Abelyan",
+  "Sofia Kalinovskaya",
+  "Viktoria Zaitsava",
+];
 
 const state = {
   user: null,
@@ -61,6 +165,7 @@ const state = {
     appliedFilters: null,
     data: null,
     expandedAgents: new Set(),
+    defaultAgentsApplied: false,
     ticketModal: {
       loading: false,
       error: null,
@@ -1839,6 +1944,26 @@ function helpdeskFilterText(item) {
   return `${item.name || ""} ${item.email || ""} ${item.id || ""}`.toLowerCase();
 }
 
+function normalizeAgentName(value) {
+  return `${value || ""}`.trim().toLowerCase();
+}
+
+function defaultHelpdeskAnalyticsAgentIds() {
+  const allowed = new Set(DEFAULT_HELPDESK_ANALYTICS_AGENT_NAMES.map(normalizeAgentName));
+  return (state.helpdesk.agents || [])
+    .filter((agent) => allowed.has(normalizeAgentName(agent.name)))
+    .map((agent) => String(agent.id));
+}
+
+function applyDefaultHelpdeskAnalyticsAgents(force = false) {
+  if (!force && state.helpdesk_analytics.defaultAgentsApplied) return;
+  const ids = defaultHelpdeskAnalyticsAgentIds();
+  if (!ids.length) return;
+  state.helpdesk_analytics.filters.agents = ids;
+  state.helpdesk_analytics.appliedFilters = cloneHelpdeskAnalyticsFilters();
+  state.helpdesk_analytics.defaultAgentsApplied = true;
+}
+
 function helpdeskAnalyticsAgentDayMap(agent) {
   return new Map((agent.days || []).map((day) => [day.date, day]));
 }
@@ -1874,17 +1999,19 @@ function activeHelpdeskAnalyticsFilters() {
 
 function resetHelpdeskAnalyticsFilters() {
   const range = getDateRange("this_month");
+  const defaultAgents = defaultHelpdeskAnalyticsAgentIds();
   state.helpdesk_analytics.filters = {
     preset: "this_month",
     from: range.from,
     to: range.to,
-    agents: [],
+    agents: defaultAgents,
     excludeAgents: [],
     groups: [],
     agentSearch: "",
     excludeAgentSearch: "",
     groupSearch: "",
   };
+  state.helpdesk_analytics.defaultAgentsApplied = Boolean(defaultAgents.length);
   state.helpdesk_analytics.appliedFilters = cloneHelpdeskAnalyticsFilters();
   fetchHelpdeskAnalytics();
 }
@@ -1969,7 +2096,7 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
   };
 }
 
-async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode = false) {
+async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode = false, rateRetry = 0) {
   const params = new URLSearchParams();
   params.append("from", range.from.toISOString());
   params.append("to", range.to.toISOString());
@@ -2002,7 +2129,16 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
     return [response];
   } catch (error) {
     const duration = range.to.getTime() - range.from.getTime();
-    const canRetrySmaller = importMode && /too many|503|service unavailable/i.test(error.message || "");
+    const isRateLimited = /too many requests|rate limit|429/i.test(error.message || "");
+    if (importMode && isRateLimited && rateRetry < 4) {
+      const waitMs = 3500 * (rateRetry + 1);
+      state.helpdesk_analytics.loadStatus = `HelpDesk is rate limiting imports. Waiting ${Math.round(waitMs / 1000)}s before retry...`;
+      renderHelpdeskAnalytics();
+      await sleep(waitMs);
+      return fetchHelpdeskAnalyticsRange(range, filters, depth, importMode, rateRetry + 1);
+    }
+
+    const canRetrySmaller = importMode && /too many tickets|503|service unavailable/i.test(error.message || "");
     if (!canRetrySmaller || duration <= 60 * 1000 || depth >= 16) {
       throw error;
     }
@@ -2631,7 +2767,7 @@ function renderLeaderboard() {
     const tickets = days.reduce((sum, day) => sum + (day.tickets || 0), 0);
     return { tickets };
   };
-  const tableColumnCount = 3 + columnHeaders.length;
+  const tableColumnCount = 4 + columnHeaders.length;
 
   const wrapper = document.createElement("div");
   wrapper.className = "leaderboard-wrapper helpdesk-leaderboard-wrapper";
@@ -2642,6 +2778,10 @@ function renderLeaderboard() {
   const thead = document.createElement("thead");
   const headerRow = document.createElement("tr");
 
+  const th0 = document.createElement("th");
+  th0.className = "col-action sticky-left";
+  th0.rowSpan = 2;
+  th0.textContent = "Action";
   const th1 = document.createElement("th");
   th1.className = "col-rank sticky-left";
   th1.rowSpan = 2;
@@ -2655,6 +2795,7 @@ function renderLeaderboard() {
   th3.rowSpan = 2;
   th3.textContent = "Processed Tickets";
 
+  headerRow.appendChild(th0);
   headerRow.appendChild(th1);
   headerRow.appendChild(th2);
   headerRow.appendChild(th3);
@@ -2683,7 +2824,7 @@ function renderLeaderboard() {
   const summaryRow = document.createElement("tr");
   summaryRow.className = "summary-row";
   const summaryCell = document.createElement("td");
-  summaryCell.colSpan = 3;
+  summaryCell.colSpan = 4;
   summaryCell.style.fontWeight = "600";
   summaryCell.textContent = "Account Summary";
   summaryRow.appendChild(summaryCell);
@@ -2702,6 +2843,16 @@ function renderLeaderboard() {
     const rankLabel = rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : String(rank);
 
     const row = document.createElement("tr");
+    const expanded = state.helpdesk_analytics.expandedAgents.has(String(agent.agent_id || agent.id));
+
+    const actionCell = document.createElement("td");
+    actionCell.className = "col-action sticky-left";
+    actionCell.innerHTML = `
+      <button class="btn btn-sm btn-outline-secondary analytics-agent-toggle" type="button" data-helpdesk-agent-toggle="${escapeHtml(agent.agent_id || agent.id)}">
+        ${expanded ? "Hide" : "Open"}
+      </button>
+    `;
+    row.appendChild(actionCell);
 
     const rankCell = document.createElement("td");
     rankCell.className = "col-rank sticky-left";
@@ -2710,12 +2861,8 @@ function renderLeaderboard() {
 
     const agentCell = document.createElement("td");
     agentCell.className = "col-agent sticky-left";
-    const expanded = state.helpdesk_analytics.expandedAgents.has(String(agent.agent_id || agent.id));
     agentCell.innerHTML = `
       <div class="analytics-agent-cell">
-        <button class="btn btn-sm btn-outline-secondary analytics-agent-toggle" type="button" data-helpdesk-agent-toggle="${escapeHtml(agent.agent_id || agent.id)}">
-          ${expanded ? "Hide" : "Open"}
-        </button>
         <div class="analytics-agent-copy">
           <div class="analytics-agent-main">${escapeHtml(helpdeskAgentLabel(agent))}</div>
           ${helpdeskAgentSubLabel(agent) ? `<div class="analytics-agent-sub">${escapeHtml(helpdeskAgentSubLabel(agent))}</div>` : ""}
@@ -3198,6 +3345,7 @@ async function refreshData() {
   }
   if (helpdeskResult.status === "fulfilled") {
     state.helpdesk = helpdeskResult.value;
+    applyDefaultHelpdeskAnalyticsAgents();
   }
   if (adminUsersResult.status === "fulfilled") {
     state.adminUsers = adminUsersResult.value.adminUsers || [];
