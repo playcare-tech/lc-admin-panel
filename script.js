@@ -60,6 +60,12 @@ const state = {
     },
     appliedFilters: null,
     data: null,
+    expandedAgents: new Set(),
+    ticketModal: {
+      loading: false,
+      error: null,
+      ticket: null,
+    },
   },
 };
 
@@ -1837,6 +1843,17 @@ function helpdeskAnalyticsAgentDayMap(agent) {
   return new Map((agent.days || []).map((day) => [day.date, day]));
 }
 
+function formatHelpdeskDateTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleString();
+}
+
+function plainMessageText(value) {
+  return `${value || ""}`.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
 function cloneHelpdeskAnalyticsFilters(filters = state.helpdesk_analytics.filters) {
   return {
     preset: filters.preset,
@@ -1895,13 +1912,18 @@ function sleep(ms) {
 }
 
 function mergeHelpdeskAnalyticsResponses(responses, filters) {
+  const responseByDate = new Map();
+  for (const response of responses) {
+    responseByDate.set(response.cache?.date || response.period?.from || String(responseByDate.size), response);
+  }
+
   const agentsById = new Map();
   const timelineByDate = new Map();
   let missingDays = 0;
   let importedDays = 0;
   let cachedDays = 0;
 
-  for (const response of responses) {
+  for (const response of responseByDate.values()) {
     if (response.cache?.missing) missingDays += 1;
     if (response.cache?.saved || response.cache?.source === "helpdesk_import") importedDays += 1;
     if (response.cache?.hit) cachedDays += 1;
@@ -1918,6 +1940,7 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
           ...agent,
           total_tickets: 0,
           days: [],
+          tickets: [],
         });
       }
       const current = agentsById.get(key);
@@ -1925,6 +1948,7 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
       current.email = current.email || agent.email;
       current.total_tickets += Number(agent.total_tickets || 0);
       current.days.push(...(agent.days || []));
+      current.tickets.push(...(agent.tickets || []));
     }
   }
 
@@ -1979,7 +2003,7 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
   } catch (error) {
     const duration = range.to.getTime() - range.from.getTime();
     const canRetrySmaller = importMode && /too many|503|service unavailable/i.test(error.message || "");
-    if (!canRetrySmaller || duration <= 30 * 60 * 1000 || depth >= 8) {
+    if (!canRetrySmaller || duration <= 60 * 1000 || depth >= 16) {
       throw error;
     }
 
@@ -2127,6 +2151,22 @@ async function importHelpdeskAnalytics() {
     state.helpdesk_analytics.loadStatus = "";
     state.helpdesk_analytics.loadProgress = null;
     renderHelpdeskAnalytics();
+  }
+}
+
+async function openHelpdeskAnalyticsTicket(ticket) {
+  try {
+    setMessage(statusMessage, "Loading ticket conversation...");
+    const params = new URLSearchParams({
+      date: ticket.date,
+      agent_id: ticket.agent_id,
+      short_id: ticket.short_id,
+    });
+    const response = await api(`/api/helpdesk/analytics-ticket?${params.toString()}`);
+    openModal("helpdesk-ticket", response.ticket);
+    setMessage(statusMessage, "");
+  } catch (error) {
+    setMessage(statusMessage, error.message, "error");
   }
 }
 
@@ -2591,6 +2631,7 @@ function renderLeaderboard() {
     const tickets = days.reduce((sum, day) => sum + (day.tickets || 0), 0);
     return { tickets };
   };
+  const tableColumnCount = 3 + columnHeaders.length;
 
   const wrapper = document.createElement("div");
   wrapper.className = "leaderboard-wrapper helpdesk-leaderboard-wrapper";
@@ -2669,10 +2710,16 @@ function renderLeaderboard() {
 
     const agentCell = document.createElement("td");
     agentCell.className = "col-agent sticky-left";
+    const expanded = state.helpdesk_analytics.expandedAgents.has(String(agent.agent_id || agent.id));
     agentCell.innerHTML = `
-      <div class="analytics-agent-copy">
-        <div class="analytics-agent-main">${escapeHtml(helpdeskAgentLabel(agent))}</div>
-        ${helpdeskAgentSubLabel(agent) ? `<div class="analytics-agent-sub">${escapeHtml(helpdeskAgentSubLabel(agent))}</div>` : ""}
+      <div class="analytics-agent-cell">
+        <button class="btn btn-sm btn-outline-secondary analytics-agent-toggle" type="button" data-helpdesk-agent-toggle="${escapeHtml(agent.agent_id || agent.id)}">
+          ${expanded ? "Hide" : "Open"}
+        </button>
+        <div class="analytics-agent-copy">
+          <div class="analytics-agent-main">${escapeHtml(helpdeskAgentLabel(agent))}</div>
+          ${helpdeskAgentSubLabel(agent) ? `<div class="analytics-agent-sub">${escapeHtml(helpdeskAgentSubLabel(agent))}</div>` : ""}
+        </div>
       </div>
     `;
     row.appendChild(agentCell);
@@ -2695,6 +2742,16 @@ function renderLeaderboard() {
     });
 
     tbody.appendChild(row);
+
+    if (expanded) {
+      const detailRow = document.createElement("tr");
+      detailRow.className = "analytics-agent-detail-row";
+      const detailCell = document.createElement("td");
+      detailCell.colSpan = tableColumnCount;
+      detailCell.innerHTML = renderHelpdeskAgentTicketDetails(agent);
+      detailRow.appendChild(detailCell);
+      tbody.appendChild(detailRow);
+    }
   });
 
   table.appendChild(tbody);
@@ -2706,6 +2763,90 @@ function renderLeaderboard() {
     container.appendChild(leaderboardSection);
   }
   leaderboardSection.appendChild(wrapper);
+
+  leaderboardSection.querySelectorAll("[data-helpdesk-agent-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const agentId = String(button.dataset.helpdeskAgentToggle || "");
+      if (state.helpdesk_analytics.expandedAgents.has(agentId)) {
+        state.helpdesk_analytics.expandedAgents.delete(agentId);
+      } else {
+        state.helpdesk_analytics.expandedAgents.add(agentId);
+      }
+      renderHelpdeskAnalytics();
+    });
+  });
+
+  leaderboardSection.querySelectorAll("[data-helpdesk-ticket-open]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const agent = sortedAgents.find((item) => String(item.agent_id || item.id) === String(button.dataset.agentId));
+      const ticket = (agent?.tickets || []).find(
+        (item) => item.date === button.dataset.date && item.short_id === button.dataset.shortId,
+      );
+      if (ticket) openHelpdeskAnalyticsTicket(ticket);
+    });
+  });
+}
+
+function renderHelpdeskAgentTicketDetails(agent) {
+  const tickets = [...(agent.tickets || [])].sort((left, right) =>
+    (right.last_public_reply_at || "").localeCompare(left.last_public_reply_at || ""),
+  );
+
+  if (!tickets.length) {
+    return `<div class="empty-state">No cached ticket details for this agent. Import the selected period from HelpDesk to load evidence rows.</div>`;
+  }
+
+  return `
+    <div class="analytics-ticket-detail">
+      <div class="analytics-ticket-detail-title">${escapeHtml(helpdeskAgentLabel(agent))} handled tickets</div>
+      <div class="analytics-ticket-table-wrap">
+        <table class="analytics-ticket-table">
+          <thead>
+            <tr>
+              <th>Open</th>
+              <th>Ticket</th>
+              <th>Agent replies</th>
+              <th>Incoming messages</th>
+              <th>Created</th>
+              <th>Solved</th>
+              <th>Closed</th>
+              <th>Last agent reply</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${tickets
+              .map(
+                (ticket) => `
+                  <tr>
+                    <td>
+                      <button
+                        class="btn btn-sm btn-outline-primary"
+                        type="button"
+                        data-helpdesk-ticket-open="${escapeHtml(ticket.short_id)}"
+                        data-agent-id="${escapeHtml(ticket.agent_id)}"
+                        data-date="${escapeHtml(ticket.date)}"
+                        data-short-id="${escapeHtml(ticket.short_id)}"
+                      >Chat</button>
+                    </td>
+                    <td>
+                      <a href="${escapeHtml(ticket.ticket_link || "#")}" target="_blank" rel="noreferrer">${escapeHtml(ticket.short_id || ticket.ticket_id || "-")}</a>
+                      ${ticket.subject ? `<div class="analytics-agent-sub">${escapeHtml(ticket.subject)}</div>` : ""}
+                    </td>
+                    <td>${Number(ticket.agent_reply_count || 0)}</td>
+                    <td>${Number(ticket.incoming_message_count || 0)}</td>
+                    <td>${escapeHtml(formatHelpdeskDateTime(ticket.ticket_created_at))}</td>
+                    <td>${escapeHtml(formatHelpdeskDateTime(ticket.ticket_solved_at))}</td>
+                    <td>${escapeHtml(formatHelpdeskDateTime(ticket.ticket_closed_at))}</td>
+                    <td>${escapeHtml(formatHelpdeskDateTime(ticket.last_public_reply_at))}</td>
+                  </tr>
+                `,
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
 async function fetchAnalytics() {
@@ -2755,6 +2896,60 @@ function currentSectionTitle() {
 function renderModal() {
   if (!state.modalOpen || !state.modalAgent) {
     modalRoot.innerHTML = "";
+    return;
+  }
+
+  if (state.modalType === "helpdesk-ticket") {
+    const ticket = state.modalAgent;
+    const events = ticket.conversation || [];
+    modalRoot.innerHTML = `
+      <div class="modal-overlay">
+        <div class="modal-card helpdesk-chat-modal">
+          <div class="modal-head">
+            <div>
+              <div class="modal-title">Ticket ${escapeHtml(ticket.short_id || ticket.ticket_id || "")}</div>
+              <div class="subtle">
+                ${escapeHtml(ticket.subject || "Conversation evidence")}
+                ${ticket.ticket_link ? ` · <a href="${escapeHtml(ticket.ticket_link)}" target="_blank" rel="noreferrer">Open ticket</a>` : ""}
+              </div>
+            </div>
+            <button id="closeModalBtn" class="btn btn-sm btn-outline-secondary" type="button">Close</button>
+          </div>
+          <div class="helpdesk-ticket-summary">
+            <span>Agent replies: <strong>${Number(ticket.agent_reply_count || 0)}</strong></span>
+            <span>Incoming messages: <strong>${Number(ticket.incoming_message_count || 0)}</strong></span>
+            <span>Created: <strong>${escapeHtml(formatHelpdeskDateTime(ticket.ticket_created_at))}</strong></span>
+            <span>Solved: <strong>${escapeHtml(formatHelpdeskDateTime(ticket.ticket_solved_at))}</strong></span>
+            <span>Closed: <strong>${escapeHtml(formatHelpdeskDateTime(ticket.ticket_closed_at))}</strong></span>
+          </div>
+          <div class="helpdesk-chat-thread">
+            ${
+              events.length
+                ? events
+                    .map((event) => {
+                      const authorType = event.author_type || "system";
+                      const isAgent = authorType === "agent";
+                      const isPrivate = Boolean(event.is_private);
+                      const isSystem = authorType === "system" || (!event.text && !event.html);
+                      const message = plainMessageText(event.text || event.html) || event.status || event.type || "System event";
+                      return `
+                        <div class="helpdesk-chat-event ${isAgent ? "agent" : ""} ${isPrivate ? "private" : ""} ${isSystem ? "system" : ""}">
+                          <div class="helpdesk-chat-meta">
+                            <strong>${escapeHtml(event.author_name || authorType)}</strong>
+                            <span>${escapeHtml(authorType)}${isPrivate ? " · internal/private" : ""}</span>
+                            <span>${escapeHtml(formatHelpdeskDateTime(event.date))}</span>
+                          </div>
+                          <div class="helpdesk-chat-bubble">${escapeHtml(message)}</div>
+                        </div>
+                      `;
+                    })
+                    .join("")
+                : '<div class="empty-state">No conversation events were stored for this ticket.</div>'
+            }
+          </div>
+        </div>
+      </div>
+    `;
     return;
   }
 

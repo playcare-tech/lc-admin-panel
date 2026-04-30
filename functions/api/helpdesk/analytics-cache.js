@@ -11,6 +11,9 @@ const ANALYTICS_TABLES = [
   "helpdesk_analytics_daily_v3",
   "helpdesk_analytics_handled_tickets_v3",
   "helpdesk_analytics_daily_fetches_v3",
+  "helpdesk_analytics_daily_v4",
+  "helpdesk_analytics_handled_tickets_v4",
+  "helpdesk_analytics_daily_fetches_v4",
 ];
 
 export async function onRequest(context) {

@@ -269,6 +269,19 @@ body {
   font-size: 11px;
 }
 
+.analytics-agent-cell {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.analytics-agent-toggle {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
 .analytics-filter-empty {
   padding: 8px;
   font-size: 12px;
@@ -354,6 +367,48 @@ body {
 .helpdesk-leaderboard-table .summary-row td {
   background: rgba(109, 40, 217, 0.08);
   font-weight: 800;
+}
+
+.analytics-agent-detail-row td {
+  background: rgba(248, 251, 255, 0.96);
+  padding: 14px;
+}
+
+.analytics-ticket-detail {
+  display: grid;
+  gap: 10px;
+}
+
+.analytics-ticket-detail-title {
+  font-weight: 800;
+}
+
+.analytics-ticket-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.analytics-ticket-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.analytics-ticket-table th,
+.analytics-ticket-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.analytics-ticket-table th {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .leaderboard-section {
@@ -594,6 +649,10 @@ body {
   padding: 18px;
 }
 
+.helpdesk-chat-modal {
+  width: min(100%, 1120px);
+}
+
 .modal-head {
   display: flex;
   justify-content: space-between;
@@ -674,6 +733,72 @@ body {
   background: rgba(255, 255, 255, 0.8);
   font-size: 12px;
   white-space: pre-wrap;
+}
+
+.helpdesk-ticket-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.helpdesk-chat-thread {
+  display: grid;
+  gap: 10px;
+}
+
+.helpdesk-chat-event {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+}
+
+.helpdesk-chat-event.agent {
+  justify-items: end;
+}
+
+.helpdesk-chat-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.helpdesk-chat-bubble {
+  max-width: min(720px, 100%);
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  white-space: pre-wrap;
+}
+
+.helpdesk-chat-event.agent .helpdesk-chat-bubble {
+  background: #eef2ff;
+  border-color: rgba(37, 99, 235, 0.18);
+}
+
+.helpdesk-chat-event.private .helpdesk-chat-bubble {
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+
+.helpdesk-chat-event.system {
+  justify-items: center;
+}
+
+.helpdesk-chat-event.system .helpdesk-chat-bubble {
+  max-width: 760px;
+  background: #f8fafc;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .log-target,
