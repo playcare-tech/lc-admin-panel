@@ -276,7 +276,7 @@ body {
 
 .helpdesk-leaderboard-wrapper {
   width: 100%;
-  max-width: calc(100vw - 300px);
+  max-width: 100%;
   overflow-x: auto;
   padding: 0;
   border: 1px solid var(--line);
@@ -358,6 +358,8 @@ body {
 
 .leaderboard-section {
   width: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .workspace-content {

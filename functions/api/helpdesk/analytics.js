@@ -4,9 +4,10 @@ import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
 
 const STATUSES = ["open", "pending", "onhold", "solved", "closed"];
 const PAGE_SIZE = 100;
-const MAX_PAGES_PER_DAY_STATUS = 1000;
-const DAILY_TABLE = "helpdesk_analytics_daily_v2";
-const DAILY_FETCH_TABLE = "helpdesk_analytics_daily_fetches_v2";
+const MAX_PAGES_PER_RANGE_STATUS = 8;
+const DAILY_TABLE = "helpdesk_analytics_daily_v3";
+const DETAIL_TABLE = "helpdesk_analytics_handled_tickets_v3";
+const DAILY_FETCH_TABLE = "helpdesk_analytics_daily_fetches_v3";
 
 function isValidDate(value) {
   return value instanceof Date && !Number.isNaN(value.getTime());
@@ -30,9 +31,22 @@ function dateKey(date, timezoneOffsetMinutes = 0) {
   return new Date(date.getTime() - timezoneOffsetMinutes * 60000).toISOString().slice(0, 10);
 }
 
-
 function normalizeTicketList(payload) {
   return Array.isArray(payload) ? payload : payload?.tickets || payload?.data || payload?.items || [];
+}
+
+function normalizeTicketId(ticket) {
+  return String(ticket.ID || ticket.id || "");
+}
+
+function normalizeTicketShortId(ticket) {
+  return String(ticket.shortID || ticket.shortId || ticket.short_id || normalizeTicketId(ticket));
+}
+
+function normalizeEventDate(event) {
+  const value = event.date || event.createdAt || event.timestamp || event.created_at;
+  const date = value ? new Date(value) : null;
+  return isValidDate(date) ? date : null;
 }
 
 function buildAgentDirectory(dashboard) {
@@ -49,38 +63,65 @@ function buildAgentDirectory(dashboard) {
   );
 }
 
-function matchesFilters(agentId, teamIds, filters) {
-  if (filters.excludeAgentIds.includes(String(agentId))) return false;
-  if (filters.agentIds.length && !filters.agentIds.includes(String(agentId))) return false;
-  if (filters.groupIds.length && !teamIds.some((teamId) => filters.groupIds.includes(String(teamId)))) return false;
+function teamIdsForAgent(agentId, agentDirectory) {
+  return (agentDirectory.get(String(agentId))?.teamIDs || []).map(String);
+}
+
+function matchesFilters(agentId, filters, agentDirectory) {
+  const normalizedAgentId = String(agentId);
+  if (filters.excludeAgentIds.includes(normalizedAgentId)) return false;
+  if (filters.agentIds.length && !filters.agentIds.includes(normalizedAgentId)) return false;
+  if (filters.groupIds.length) {
+    const teamIds = teamIdsForAgent(normalizedAgentId, agentDirectory);
+    if (!teamIds.some((teamId) => filters.groupIds.includes(String(teamId)))) return false;
+  }
   return true;
+}
+
+function authorProfile(event, agentDirectory) {
+  const author = event.author || event.createdBy || {};
+  const id =
+    (typeof author === "string" ? author : author.ID || author.id || author.agentID || author.agentId) ||
+    event.agentID ||
+    event.agentId ||
+    event.authorID ||
+    event.authorId ||
+    event.createdByID ||
+    event.createdById ||
+    "";
+  const agentId = String(id || "");
+  const profile = agentDirectory.get(agentId) || {};
+  return {
+    id: agentId,
+    name: author.name || author.fullName || event.agentName || event.authorName || profile.name || agentId,
+    email: author.email || event.agentEmail || event.authorEmail || profile.email || "",
+  };
+}
+
+function eventAuthorType(event) {
+  const author = event.author || event.createdBy || {};
+  return `${author.type || event.authorType || event.createdByType || author.role || ""}`.toLowerCase();
+}
+
+function isPublicAgentMessageEvent(event) {
+  const type = `${event.type || event.eventType || ""}`.toLowerCase();
+  const hasMessagePayload = Boolean(event.message || event.text || event.content || event.richTextHtml || event.richTextObj);
+  const isMessage = type === "message" || type === "tickets.events.message" || hasMessagePayload;
+  return isMessage && !Boolean(event.isPrivate || event.private) && eventAuthorType(event) === "agent";
 }
 
 async function ensureHelpDeskAnalyticsCache(db) {
   if (!db) throw new Error("Missing DB binding.");
-  await db
-    .prepare(
-      `CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        date TEXT NOT NULL,
-        agent_id TEXT NOT NULL,
-        handled_tickets INTEGER NOT NULL DEFAULT 0,
-        avg_ftr_ms REAL NOT NULL DEFAULT 0,
-        avg_resolution_time_ms REAL NOT NULL DEFAULT 0,
-        cached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(date, agent_id)
-      )`,
-    )
-    .run();
+
   await db
     .prepare(
       `CREATE TABLE IF NOT EXISTS ${DAILY_TABLE} (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         date TEXT NOT NULL,
         agent_id TEXT NOT NULL,
+        agent_name TEXT,
+        agent_email TEXT,
         handled_tickets INTEGER NOT NULL DEFAULT 0,
-        avg_ftr_ms REAL NOT NULL DEFAULT 0,
-        avg_resolution_time_ms REAL NOT NULL DEFAULT 0,
         cached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(date, agent_id)
       )`,
@@ -88,16 +129,27 @@ async function ensureHelpDeskAnalyticsCache(db) {
     .run();
   await db.prepare(`CREATE INDEX IF NOT EXISTS idx_${DAILY_TABLE}_date ON ${DAILY_TABLE}(date)`).run();
   await db.prepare(`CREATE INDEX IF NOT EXISTS idx_${DAILY_TABLE}_agent ON ${DAILY_TABLE}(agent_id)`).run();
-  await db.prepare("CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_date ON helpdesk_analytics_daily(date)").run();
-  await db.prepare("CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_agent ON helpdesk_analytics_daily(agent_id)").run();
+
   await db
     .prepare(
-      `CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily_fetches (
-        date TEXT PRIMARY KEY,
-        cached_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      `CREATE TABLE IF NOT EXISTS ${DETAIL_TABLE} (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        agent_name TEXT,
+        agent_email TEXT,
+        ticket_id TEXT,
+        short_id TEXT NOT NULL,
+        last_public_reply_at TEXT NOT NULL,
+        cached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(date, agent_id, short_id)
       )`,
     )
     .run();
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_${DETAIL_TABLE}_date ON ${DETAIL_TABLE}(date)`).run();
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_${DETAIL_TABLE}_agent ON ${DETAIL_TABLE}(agent_id)`).run();
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_${DETAIL_TABLE}_short ON ${DETAIL_TABLE}(short_id)`).run();
+
   await db
     .prepare(
       `CREATE TABLE IF NOT EXISTS ${DAILY_FETCH_TABLE} (
@@ -111,7 +163,7 @@ async function ensureHelpDeskAnalyticsCache(db) {
 async function readCachedDay(env, date) {
   const fetchRecord = await env.DB.prepare(`SELECT date FROM ${DAILY_FETCH_TABLE} WHERE date = ?`).bind(date).first();
   const { results } = await env.DB.prepare(
-    `SELECT date, agent_id, handled_tickets
+    `SELECT date, agent_id, agent_name, agent_email, handled_tickets
      FROM ${DAILY_TABLE}
      WHERE date = ?
      ORDER BY handled_tickets DESC`,
@@ -122,66 +174,68 @@ async function readCachedDay(env, date) {
   return null;
 }
 
-async function hasCachedFullDay(env, date) {
+async function hasCachedDay(env, date) {
   return Boolean(await env.DB.prepare(`SELECT date FROM ${DAILY_FETCH_TABLE} WHERE date = ?`).bind(date).first());
 }
 
-async function writeCachedDay(env, date, rows) {
-  const statements = [
+async function resetCachedDay(env, date) {
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM ${DETAIL_TABLE} WHERE date = ?`).bind(date),
     env.DB.prepare(`DELETE FROM ${DAILY_TABLE} WHERE date = ?`).bind(date),
-    ...rows.map((row) =>
+    env.DB.prepare(`DELETE FROM ${DAILY_FETCH_TABLE} WHERE date = ?`).bind(date),
+  ]);
+}
+
+async function writeCachedDay(env, date, detailRows) {
+  const statements = [
+    ...detailRows.map((row) =>
       env.DB.prepare(
-        `INSERT INTO ${DAILY_TABLE}
-          (date, agent_id, handled_tickets, avg_ftr_ms, avg_resolution_time_ms, cached_at)
-         VALUES (?, ?, ?, 0, 0, CURRENT_TIMESTAMP)`,
-      ).bind(date, row.agent_id, row.handled_tickets),
+        `INSERT OR REPLACE INTO ${DETAIL_TABLE}
+          (date, agent_id, agent_name, agent_email, ticket_id, short_id, last_public_reply_at, cached_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      ).bind(
+        row.date,
+        row.agent_id,
+        row.agent_name,
+        row.agent_email,
+        row.ticket_id,
+        row.short_id,
+        row.last_public_reply_at,
+      ),
     ),
+    env.DB.prepare(`DELETE FROM ${DAILY_TABLE} WHERE date = ?`).bind(date),
     env.DB.prepare(
-      `INSERT OR REPLACE INTO ${DAILY_FETCH_TABLE} (date, cached_at) VALUES (?, CURRENT_TIMESTAMP)`,
+      `INSERT INTO ${DAILY_TABLE}
+        (date, agent_id, agent_name, agent_email, handled_tickets, cached_at)
+       SELECT
+        date,
+        agent_id,
+        COALESCE(MAX(NULLIF(agent_name, '')), agent_id),
+        COALESCE(MAX(NULLIF(agent_email, '')), ''),
+        COUNT(*),
+        CURRENT_TIMESTAMP
+       FROM ${DETAIL_TABLE}
+       WHERE date = ?
+       GROUP BY date, agent_id`,
     ).bind(date),
+    env.DB.prepare(`INSERT OR REPLACE INTO ${DAILY_FETCH_TABLE} (date, cached_at) VALUES (?, CURRENT_TIMESTAMP)`).bind(date),
   ];
+
   await env.DB.batch(statements);
+
+  const { results } = await env.DB.prepare(
+    `SELECT date, agent_id, agent_name, agent_email, handled_tickets
+     FROM ${DAILY_TABLE}
+     WHERE date = ?
+     ORDER BY handled_tickets DESC`,
+  )
+    .bind(date)
+    .all();
+  return results || [];
 }
 
-function filterCachedRows(rows, filters, agentDirectory = new Map()) {
-  return rows.filter((row) => {
-    const agentId = String(row.agent_id);
-    const agent = agentDirectory.get(agentId) || { teamIDs: [] };
-    if (filters.excludeAgentIds.includes(agentId)) return false;
-    if (filters.agentIds.length && !filters.agentIds.includes(agentId)) return false;
-    if (filters.groupIds.length && !agent.teamIDs.some((teamId) => filters.groupIds.includes(String(teamId)))) return false;
-    return true;
-  });
-}
-
-function eventAuthorAgentId(event) {
-  const author = event.author || event.createdBy || {};
-  if (typeof author === "string") return author;
-  return (
-    author.ID ||
-    author.id ||
-    author.agentID ||
-    author.agentId ||
-    event.agentID ||
-    event.agentId ||
-    event.authorID ||
-    event.authorId ||
-    event.createdByID ||
-    event.createdById ||
-    ""
-  );
-}
-
-function eventAuthorType(event) {
-  const author = event.author || event.createdBy || {};
-  return author.type || event.authorType || event.createdByType || event.author?.role || "";
-}
-
-function isPublicMessageEvent(event) {
-  const type = event.type || event.eventType || "";
-  const hasMessagePayload = Boolean(event.message || event.text || event.content);
-  const isMessage = type === "message" || type === "tickets.events.message" || hasMessagePayload;
-  return isMessage && !Boolean(event.isPrivate || event.private);
+function filterRows(rows, filters, agentDirectory = new Map()) {
+  return rows.filter((row) => matchesFilters(row.agent_id, filters, agentDirectory));
 }
 
 async function listTicketsForRange(env, from, to) {
@@ -210,57 +264,67 @@ async function listTicketsForRange(env, from, to) {
       for (const ticket of tickets) {
         const updatedValue = ticket.updatedAt || ticket.updated_at || ticket.lastMessageAt;
         const updatedDate = updatedValue ? new Date(updatedValue) : null;
-        if (!updatedDate || updatedDate < from || updatedDate > to) continue;
-        const id = ticket.ID || ticket.id;
-        if (id) ticketsById.set(String(id), ticket);
+        if (!updatedDate || updatedDate < from || updatedDate >= to) continue;
+        const id = normalizeTicketId(ticket);
+        if (id) ticketsById.set(id, ticket);
       }
 
       const lastTicket = tickets[tickets.length - 1];
-      const lastId = lastTicket?.ID || lastTicket?.id;
+      const lastId = lastTicket ? normalizeTicketId(lastTicket) : "";
       const lastValue = lastTicket?.updatedAt || lastTicket?.updated_at || lastTicket?.lastMessageAt;
-      nextCursor = tickets.length === PAGE_SIZE && lastId && lastValue ? { id: String(lastId), value: lastValue } : null;
+      nextCursor = tickets.length === PAGE_SIZE && lastId && lastValue ? { id: lastId, value: lastValue } : null;
       page += 1;
-    } while (nextCursor && page < MAX_PAGES_PER_DAY_STATUS);
+    } while (nextCursor && page < MAX_PAGES_PER_RANGE_STATUS);
+
+    if (nextCursor) {
+      throw new Error("Too many tickets for this time slice. Retry with a smaller range.");
+    }
   }
 
   return Array.from(ticketsById.values());
 }
 
-async function computeDay(env, from, to, filters, timezoneOffsetMinutes) {
+async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory) {
   const tickets = await listTicketsForRange(env, from, to);
-  const counts = new Map();
-  const counted = new Set();
+  const handled = new Map();
 
   for (const ticket of tickets) {
-    const teamIds = (ticket.teamIDs || ticket.teamIds || []).map(String);
-    const shortId = ticket.shortID || ticket.shortId || ticket.ID || ticket.id;
+    const ticketId = normalizeTicketId(ticket);
+    const shortId = normalizeTicketShortId(ticket);
     const events = Array.isArray(ticket.events) ? ticket.events : [];
 
     for (const event of events) {
-      const authorType = eventAuthorType(event);
-      const agentId = eventAuthorAgentId(event);
-      const value = event.createdAt || event.date || event.timestamp;
-      const date = value ? new Date(value) : null;
+      if (!isPublicAgentMessageEvent(event)) continue;
 
-      if (!isPublicMessageEvent(event) || !agentId || !date || !isValidDate(date)) continue;
-      if (authorType && authorType !== "agent") continue;
-      if (date < from || date > to) continue;
-      if (!matchesFilters(agentId, teamIds, filters)) continue;
+      const eventDate = normalizeEventDate(event);
+      if (!eventDate || eventDate < from || eventDate >= to) continue;
 
-      const localDay = dateKey(date, timezoneOffsetMinutes);
-      const countKey = `${localDay}|${agentId}|${shortId || ""}`;
-      if (counted.has(countKey)) continue;
-      counted.add(countKey);
+      const agent = authorProfile(event, agentDirectory);
+      if (!agent.id) continue;
 
-      const rowKey = `${localDay}|${agentId}`;
-      if (!counts.has(rowKey)) {
-        counts.set(rowKey, { date: localDay, agent_id: String(agentId), handled_tickets: 0 });
+      const localDay = dateKey(eventDate, timezoneOffsetMinutes);
+      const countKey = `${localDay}|${agent.id}|${shortId}`;
+      const existing = handled.get(countKey);
+      const replyAt = eventDate.toISOString();
+
+      if (!existing || replyAt > existing.last_public_reply_at) {
+        handled.set(countKey, {
+          date: localDay,
+          agent_id: agent.id,
+          agent_name: agent.name || agent.id,
+          agent_email: agent.email || "",
+          ticket_id: ticketId,
+          short_id: shortId,
+          last_public_reply_at: replyAt,
+        });
       }
-      counts.get(rowKey).handled_tickets += 1;
     }
   }
 
-  return Array.from(counts.values());
+  return Array.from(handled.values()).sort((left, right) => {
+    const agentOrder = left.agent_name.localeCompare(right.agent_name);
+    return agentOrder || left.short_id.localeCompare(right.short_id);
+  });
 }
 
 function rowsToResponse(rows, from, to, agentDirectory, cache = {}) {
@@ -270,8 +334,8 @@ function rowsToResponse(rows, from, to, agentDirectory, cache = {}) {
       return {
         agent_id: String(row.agent_id),
         id: String(row.agent_id),
-        name: profile.name || String(row.agent_id),
-        email: profile.email || String(row.agent_id),
+        name: row.agent_name || profile.name || String(row.agent_id),
+        email: row.agent_email || profile.email || String(row.agent_id),
         total_tickets: Number(row.handled_tickets || 0),
         days: [{ date: row.date, tickets: Number(row.handled_tickets || 0) }],
       };
@@ -300,7 +364,7 @@ function rowsToResponse(rows, from, to, agentDirectory, cache = {}) {
       per_agent_daily_metrics: true,
       account_daily_timeline: true,
       cached_past_days: true,
-      source: "ticket_public_message_events_by_short_id",
+      source: "ticket_public_agent_message_events_by_short_id",
     },
   };
 }
@@ -320,10 +384,11 @@ export async function onRequest(context) {
     if (to <= from) return errorResponse("to must be after from", 400);
 
     const timezoneOffsetMinutes = Number(url.searchParams.get("tz_offset") || 0);
+    if (!Number.isFinite(timezoneOffsetMinutes)) return errorResponse("Invalid timezone offset", 400);
+
     const localDate = dateKey(from, timezoneOffsetMinutes);
-    const today = dateKey(new Date(), timezoneOffsetMinutes);
-    const fullDayCache = url.searchParams.get("cache_full_day") === "1";
     const shouldImport = url.searchParams.get("import") === "1";
+    const shouldResetDate = url.searchParams.get("reset_date") === "1";
     const filters = {
       agentIds: splitParam(url.searchParams.get("agents")),
       excludeAgentIds: splitParam(url.searchParams.get("exclude_agents")),
@@ -332,33 +397,31 @@ export async function onRequest(context) {
 
     const dashboard = await getHelpDeskDashboard(context.env);
     const agentDirectory = buildAgentDirectory(dashboard);
-    const cacheable = fullDayCache && localDate < today;
-    const fullDayCached = cacheable ? await hasCachedFullDay(context.env, localDate) : false;
-    const cachedRows = cacheable ? await readCachedDay(context.env, localDate) : null;
-    let rows = cachedRows ? filterCachedRows(cachedRows, filters, agentDirectory) : [];
+    const cachedRows = await readCachedDay(context.env, localDate);
     const cacheMeta = {
       date: localDate,
-      checked: cacheable,
+      checked: true,
       hit: Boolean(cachedRows),
-      source: cacheable ? (cachedRows ? "d1" : "helpdesk") : "helpdesk_live",
-      cacheable,
-      missing: cacheable && !fullDayCached,
+      source: cachedRows ? "d1" : "d1_missing",
+      missing: !cachedRows,
+      saved: false,
     };
 
-    const shouldFetchHelpDesk = shouldImport || localDate === today;
+    let rows = cachedRows ? filterRows(cachedRows, filters, agentDirectory) : [];
 
-    if (!cachedRows && shouldFetchHelpDesk) {
-      rows = await computeDay(context.env, from, to, filters, timezoneOffsetMinutes);
-      if (cacheable) {
-        await writeCachedDay(context.env, localDate, rows);
-        cacheMeta.source = "helpdesk_saved";
-        cacheMeta.saved = true;
-      } else {
-        cacheMeta.source = shouldImport ? "helpdesk_import" : "helpdesk_today";
-      }
-    } else if (!cachedRows) {
-      cacheMeta.source = "d1_missing";
-      cacheMeta.missing = true;
+    if (shouldImport) {
+      if (shouldResetDate) await resetCachedDay(context.env, localDate);
+      const detailRows = await computeDay(context.env, from, to, timezoneOffsetMinutes, agentDirectory);
+      const summaryRows = await writeCachedDay(context.env, localDate, detailRows);
+      rows = filterRows(summaryRows, filters, agentDirectory);
+      cacheMeta.hit = false;
+      cacheMeta.missing = false;
+      cacheMeta.saved = true;
+      cacheMeta.source = "helpdesk_import_saved";
+    } else if (!cachedRows && (await hasCachedDay(context.env, localDate))) {
+      cacheMeta.hit = true;
+      cacheMeta.missing = false;
+      cacheMeta.source = "d1_empty";
     }
 
     return json(rowsToResponse(rows, from, to, agentDirectory, cacheMeta));

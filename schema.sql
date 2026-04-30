@@ -64,3 +64,39 @@ CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily_fetches (
   date TEXT PRIMARY KEY,
   cached_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily_v3 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  agent_name TEXT,
+  agent_email TEXT,
+  handled_tickets INTEGER NOT NULL DEFAULT 0,
+  cached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(date, agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_v3_date ON helpdesk_analytics_daily_v3(date);
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_v3_agent ON helpdesk_analytics_daily_v3(agent_id);
+
+CREATE TABLE IF NOT EXISTS helpdesk_analytics_handled_tickets_v3 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  agent_name TEXT,
+  agent_email TEXT,
+  ticket_id TEXT,
+  short_id TEXT NOT NULL,
+  last_public_reply_at TEXT NOT NULL,
+  cached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(date, agent_id, short_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_handled_tickets_v3_date ON helpdesk_analytics_handled_tickets_v3(date);
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_handled_tickets_v3_agent ON helpdesk_analytics_handled_tickets_v3(agent_id);
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_handled_tickets_v3_short ON helpdesk_analytics_handled_tickets_v3(short_id);
+
+CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily_fetches_v3 (
+  date TEXT PRIMARY KEY,
+  cached_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);

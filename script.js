@@ -139,6 +139,10 @@ function localDateValue(date) {
   return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`;
 }
 
+function localEndDateValue(date) {
+  return localDateValue(new Date(date.getTime() - 1));
+}
+
 function offsetForDate(date) {
   const offsetMinutes = -date.getTimezoneOffset();
   const sign = offsetMinutes >= 0 ? "+" : "-";
@@ -1030,6 +1034,11 @@ function renderAdminUsers() {
         </form>
         <div class="credentials-box mt-3">${escapeHtml(credentialsText || "Generated credentials will appear here for quick copy.")}</div>
       </div>
+      <div class="card-shell">
+        <div class="section-title">HelpDesk analytics cache</div>
+        <p class="subtle mb-3">Clear only the cached HelpDesk analytics tables in D1. Admin users, logs, agents, and teams are not touched.</p>
+        <button type="button" id="clearHelpdeskAnalyticsCacheBtn" class="btn btn-outline-danger">Clear HelpDesk analytics cache</button>
+      </div>
       <div class="table-shell">
         ${
           state.adminUsers.length
@@ -1729,7 +1738,7 @@ function renderAnalytics() {
 function getDateRange(preset) {
   const now = new Date();
   const startOfDay = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  const endOfDay = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+  const nextDayStart = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
   const startOfWeek = (date) => {
     const copy = startOfDay(date);
     const day = copy.getDay();
@@ -1746,7 +1755,7 @@ function getDateRange(preset) {
       break;
     case "yesterday":
       from = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
-      to = endOfDay(from);
+      to = nextDayStart(from);
       break;
     case "last_7_days":
       from = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6));
@@ -1764,7 +1773,7 @@ function getDateRange(preset) {
       const thisWeekStart = startOfWeek(now);
       from = new Date(thisWeekStart);
       from.setDate(from.getDate() - 7);
-      to = endOfDay(new Date(thisWeekStart.getFullYear(), thisWeekStart.getMonth(), thisWeekStart.getDate() - 1));
+      to = new Date(thisWeekStart);
       break;
     }
     case "this_month":
@@ -1773,7 +1782,7 @@ function getDateRange(preset) {
       break;
     case "last_month":
       from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      to = endOfDay(new Date(now.getFullYear(), now.getMonth(), 0));
+      to = new Date(now.getFullYear(), now.getMonth(), 1);
       break;
     default:
       from = startOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6));
@@ -1866,15 +1875,14 @@ function resetHelpdeskAnalyticsFilters() {
 function helpdeskAnalyticsDayRanges(from, to) {
   const ranges = [];
   const cursor = new Date(from.getFullYear(), from.getMonth(), from.getDate());
-  const end = new Date(to.getFullYear(), to.getMonth(), to.getDate());
 
-  while (cursor <= end) {
+  while (cursor < to) {
     const dayStart = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate(), 0, 0, 0);
-    const dayEnd = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate(), 23, 59, 59, 999);
+    const nextDayStart = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + 1, 0, 0, 0);
     ranges.push({
       from: new Date(Math.max(dayStart.getTime(), from.getTime())),
-      to: new Date(Math.min(dayEnd.getTime(), to.getTime())),
-      cacheFullDay: from <= dayStart && to >= dayEnd,
+      to: new Date(Math.min(nextDayStart.getTime(), to.getTime())),
+      cacheFullDay: from <= dayStart && to >= nextDayStart,
     });
     cursor.setDate(cursor.getDate() + 1);
   }
@@ -1946,15 +1954,14 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
   if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
   if (range.cacheFullDay) params.append("cache_full_day", "1");
   if (importMode) params.append("import", "1");
+  if (importMode && depth === 0) params.append("reset_date", "1");
   params.append("tz_offset", String(new Date().getTimezoneOffset()));
 
   const dayLabel = range.from.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  state.helpdesk_analytics.loadStatus = importMode
-    ? `Importing ${dayLabel}...`
-    : range.cacheFullDay
-    ? `Checking D1 cache for ${dayLabel}...`
-    : `Loading HelpDesk data for ${dayLabel}...`;
-  renderHelpdeskAnalytics();
+  if (importMode) {
+    state.helpdesk_analytics.loadStatus = `Importing ${dayLabel} from HelpDesk...`;
+    renderHelpdeskAnalytics();
+  }
 
   try {
     const response = await api(`/api/helpdesk/analytics?${params.toString()}`);
@@ -1971,13 +1978,13 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
     return [response];
   } catch (error) {
     const duration = range.to.getTime() - range.from.getTime();
-    const canRetrySmaller = /too many|503|service unavailable/i.test(error.message || "");
+    const canRetrySmaller = importMode && /too many|503|service unavailable/i.test(error.message || "");
     if (!canRetrySmaller || duration <= 30 * 60 * 1000 || depth >= 8) {
       throw error;
     }
 
     const middle = new Date(range.from.getTime() + Math.floor(duration / 2));
-    state.helpdesk_analytics.loadStatus = "HelpDesk request was too large. Loading smaller portions...";
+    state.helpdesk_analytics.loadStatus = "HelpDesk request was too large. Loading a smaller portion...";
     renderHelpdeskAnalytics();
     await sleep(500);
     const first = await fetchHelpdeskAnalyticsRange(
@@ -1988,7 +1995,7 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
     );
     await sleep(500);
     const second = await fetchHelpdeskAnalyticsRange(
-      { from: new Date(middle.getTime() + 1), to: range.to, cacheFullDay: false },
+      { from: middle, to: range.to, cacheFullDay: false },
       filters,
       depth + 1,
       importMode,
@@ -2004,28 +2011,32 @@ async function fetchHelpdeskAnalyticsDayResponses(filters, importMode = false) {
   const ranges = helpdeskAnalyticsDayRanges(filters.from, filters.to);
   const responses = [];
 
-  state.helpdesk_analytics.loadProgress = {
-    current: 0,
-    total: ranges.length,
-    cacheHits: 0,
-    savedDays: 0,
-    liveDays: 0,
-  };
+  if (importMode) {
+    state.helpdesk_analytics.loadProgress = {
+      current: 0,
+      total: ranges.length,
+      cacheHits: 0,
+      savedDays: 0,
+      liveDays: 0,
+    };
+  }
 
   for (const [index, range] of ranges.entries()) {
-    state.helpdesk_analytics.loadProgress.current = index;
-    state.helpdesk_analytics.loadStatus = importMode
-      ? `Preparing import ${index + 1}/${ranges.length}...`
-      : `Preparing day ${index + 1}/${ranges.length}...`;
-    renderHelpdeskAnalytics();
+    if (importMode) {
+      state.helpdesk_analytics.loadProgress.current = index;
+      state.helpdesk_analytics.loadStatus = `Preparing import ${index + 1}/${ranges.length}...`;
+      renderHelpdeskAnalytics();
+    }
 
     const result = await fetchHelpdeskAnalyticsRange(range, filters, 0, importMode);
     responses.push(...result);
 
-    state.helpdesk_analytics.loadProgress.current = index + 1;
-    renderHelpdeskAnalytics();
+    if (importMode) {
+      state.helpdesk_analytics.loadProgress.current = index + 1;
+      renderHelpdeskAnalytics();
+    }
 
-    if (index < ranges.length - 1) {
+    if (importMode && index < ranges.length - 1) {
       await sleep(250);
     }
   }
@@ -2194,7 +2205,7 @@ function renderHelpdeskAnalytics() {
   toInput.type = "date";
   toInput.id = "to-date";
   toInput.className = "form-control";
-  toInput.value = filters.to ? localDateValue(filters.to) : "";
+  toInput.value = filters.to ? localEndDateValue(filters.to) : "";
   customDatesToDiv.appendChild(toLabel);
   customDatesToDiv.appendChild(toInput);
   filterBar.appendChild(customDatesToDiv);
@@ -2276,7 +2287,13 @@ function renderHelpdeskAnalytics() {
   });
 
   document.getElementById("to-date")?.addEventListener("change", (e) => {
-    filters.to = e.target.value ? new Date(`${e.target.value}T23:59:59`) : null;
+    if (e.target.value) {
+      const selected = new Date(`${e.target.value}T00:00:00`);
+      selected.setDate(selected.getDate() + 1);
+      filters.to = selected;
+    } else {
+      filters.to = null;
+    }
     renderHelpdeskAnalytics();
   });
 
@@ -2298,7 +2315,9 @@ function renderHelpdeskAnalytics() {
   renderFiltersConditional();
 
   if (loading) {
-    renderHelpdeskAnalyticsLoading(container);
+    if (state.helpdesk_analytics.loadProgress) {
+      renderHelpdeskAnalyticsLoading(container);
+    }
   }
 
   // Render data sections if available
@@ -2537,9 +2556,8 @@ function renderLeaderboard() {
   const to = filters.to || new Date(analytics.period.to);
   const rangeDays = [];
   const cursor = new Date(from.getFullYear(), from.getMonth(), from.getDate());
-  const end = new Date(to.getFullYear(), to.getMonth(), to.getDate());
 
-  while (cursor <= end) {
+  while (cursor < to) {
     const key = localDateValue(cursor);
     rangeDays.push({
       date: key,
@@ -3587,6 +3605,18 @@ function bindAppEvents() {
     const password = document.getElementById("adminPassword")?.value || "";
     await navigator.clipboard.writeText(buildCopyCredentialsText(username, password));
     setMessage(statusMessage, "Credentials copied.", "success");
+  });
+
+  bindClick("clearHelpdeskAnalyticsCacheBtn", async () => {
+    const confirmed = window.confirm("Clear only the HelpDesk analytics cache from D1?");
+    if (!confirmed) return;
+    await withBusyState(async () => {
+      await api("/api/helpdesk/analytics-cache", { method: "DELETE" });
+      state.helpdesk_analytics.data = null;
+      state.helpdesk_analytics.error = null;
+      state.helpdesk_analytics.loadStatus = "";
+      state.helpdesk_analytics.loadProgress = null;
+    }, "HelpDesk analytics cache cleared.");
   });
 
   document.getElementById("createAdminUserForm")?.addEventListener("submit", async (event) => {
