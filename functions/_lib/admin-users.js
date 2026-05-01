@@ -1,5 +1,5 @@
 const CREATE_ADMIN_USERS_SQL =
-  "CREATE TABLE IF NOT EXISTS admin_users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT, totp_secret TEXT, totp_enabled INTEGER NOT NULL DEFAULT 0, totp_setup_required INTEGER NOT NULL DEFAULT 1, password_reset_required INTEGER NOT NULL DEFAULT 0, totp_reset_at TEXT, totp_reset_by TEXT, can_manage_users INTEGER NOT NULL DEFAULT 0, can_manage_admins INTEGER NOT NULL DEFAULT 0)";
+  "CREATE TABLE IF NOT EXISTS admin_users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT, totp_secret TEXT, totp_enabled INTEGER NOT NULL DEFAULT 0, totp_setup_required INTEGER NOT NULL DEFAULT 1, password_reset_required INTEGER NOT NULL DEFAULT 0, totp_reset_at TEXT, totp_reset_by TEXT, can_manage_users INTEGER NOT NULL DEFAULT 0, can_manage_admins INTEGER NOT NULL DEFAULT 0, disabled_at TEXT, disabled_by TEXT)";
 
 const CREATE_ADMIN_USERS_INDEX_SQL =
   "CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users (username)";
@@ -110,6 +110,8 @@ export async function ensureAdminUsersTable(db) {
   await ensureColumn(db, columns, "totp_reset_by", "TEXT");
   const addedCanManageUsers = await ensureColumn(db, columns, "can_manage_users", "INTEGER NOT NULL DEFAULT 0");
   const addedCanManageAdmins = await ensureColumn(db, columns, "can_manage_admins", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn(db, columns, "disabled_at", "TEXT");
+  await ensureColumn(db, columns, "disabled_by", "TEXT");
   if (addedCanManageUsers || addedCanManageAdmins) {
     await db.prepare("UPDATE admin_users SET can_manage_users = 1, can_manage_admins = 1").run();
   }
@@ -119,7 +121,7 @@ export async function listAdminUsers(env) {
   await ensureAdminUsersTable(env.DB);
   const { results } = await env.DB.prepare(
     `
-      SELECT id, username, created_at, created_by, totp_enabled, totp_setup_required, password_reset_required, totp_reset_at, totp_reset_by, can_manage_users, can_manage_admins
+      SELECT id, username, created_at, created_by, totp_enabled, totp_setup_required, password_reset_required, totp_reset_at, totp_reset_by, can_manage_users, can_manage_admins, disabled_at, disabled_by
       FROM admin_users
       ORDER BY username ASC
     `,
@@ -132,7 +134,7 @@ export async function findAdminUserByUsername(env, username) {
   await ensureAdminUsersTable(env.DB);
   const result = await env.DB.prepare(
     `
-      SELECT id, username, password_salt, password_hash, created_at, created_by, totp_secret, totp_enabled, totp_setup_required, password_reset_required, totp_reset_at, totp_reset_by, can_manage_users, can_manage_admins
+      SELECT id, username, password_salt, password_hash, created_at, created_by, totp_secret, totp_enabled, totp_setup_required, password_reset_required, totp_reset_at, totp_reset_by, can_manage_users, can_manage_admins, disabled_at, disabled_by
       FROM admin_users
       WHERE username = ?
       LIMIT 1
@@ -316,4 +318,26 @@ export async function updateAdminPermissions(env, username, { canManageUsers = f
     .bind(canManageUsers ? 1 : 0, canManageAdmins ? 1 : 0, username)
     .run();
   if (!result.meta?.changes) throw new Error("Admin user was not found.");
+}
+
+export async function setAdminDisabled(env, username, disabled, actor) {
+  await ensureAdminUsersTable(env.DB);
+  const existing = await findAdminUserByUsername(env, username);
+  if (!existing) throw new Error("Admin user was not found.");
+  await env.DB.prepare(
+    `
+      UPDATE admin_users
+      SET disabled_at = ?, disabled_by = ?
+      WHERE username = ?
+    `,
+  )
+    .bind(disabled ? new Date().toISOString() : null, disabled ? actor || null : null, username)
+    .run();
+}
+
+export async function deleteAdminUser(env, username) {
+  await ensureAdminUsersTable(env.DB);
+  const existing = await findAdminUserByUsername(env, username);
+  if (!existing) throw new Error("Admin user was not found.");
+  await env.DB.prepare("DELETE FROM admin_users WHERE username = ?").bind(username).run();
 }

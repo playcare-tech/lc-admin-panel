@@ -59,6 +59,17 @@ export async function onRequest(context) {
       return errorResponse("Invalid username or password.", 401);
     }
 
+    if (user.disabled_at) {
+      await writeLogSafely(context.env, {
+        actor: username,
+        area: "auth",
+        action: "login",
+        status: "error",
+        details: "Disabled admin account attempted to sign in.",
+      });
+      return errorResponse("This admin account is disabled.", 403);
+    }
+
     const needsPasswordChange = Boolean(user.password_reset_required);
     const needsTotpSetup = !Number(user.totp_enabled) || Boolean(user.totp_setup_required);
 

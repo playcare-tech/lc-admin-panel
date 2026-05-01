@@ -1,4 +1,11 @@
-import { createAdminUser, listAdminUsers, resetAdminTotp, updateAdminPermissions } from "../_lib/admin-users.js";
+import {
+  createAdminUser,
+  deleteAdminUser,
+  listAdminUsers,
+  resetAdminTotp,
+  setAdminDisabled,
+  updateAdminPermissions,
+} from "../_lib/admin-users.js";
 import { requireAuth } from "../_lib/auth.js";
 import { errorResponse, json, methodNotAllowed, readJson } from "../_lib/http.js";
 import { writeLogSafely } from "../_lib/logs.js";
@@ -65,6 +72,41 @@ export async function onRequest(context) {
           target: username,
           status: "success",
           details: `Updated admin permissions for ${username}.`,
+        });
+
+        return json({ ok: true });
+      }
+
+      if (action === "set_disabled") {
+        if (!auth.session.permissions?.canManageAdmins) return errorResponse("Forbidden.", 403);
+        if (username === auth.session.user) return errorResponse("You cannot deactivate your own admin account.", 400);
+        const disabled = Boolean(body.disabled);
+        await setAdminDisabled(context.env, username, disabled, auth.session.user);
+
+        await writeLogSafely(context.env, {
+          actor: auth.session.user,
+          area: "admin",
+          action: disabled ? "deactivate_admin_user" : "reactivate_admin_user",
+          target: username,
+          status: "success",
+          details: `${disabled ? "Deactivated" : "Reactivated"} admin user ${username}.`,
+        });
+
+        return json({ ok: true });
+      }
+
+      if (action === "delete_admin") {
+        if (!auth.session.permissions?.canManageAdmins) return errorResponse("Forbidden.", 403);
+        if (username === auth.session.user) return errorResponse("You cannot delete your own admin account.", 400);
+        await deleteAdminUser(context.env, username);
+
+        await writeLogSafely(context.env, {
+          actor: auth.session.user,
+          area: "admin",
+          action: "delete_admin_user",
+          target: username,
+          status: "success",
+          details: `Deleted admin user ${username}.`,
         });
 
         return json({ ok: true });

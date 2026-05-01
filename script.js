@@ -1243,13 +1243,14 @@ function renderAdminUsers() {
           state.adminUsers.length
             ? `<div class="table-responsive">
                 <table class="table admin-table">
-                  <thead><tr><th>Username</th><th>2FA</th><th>Login reset</th><th>Permissions</th><th>Created at</th><th>Created by</th><th></th></tr></thead>
+                  <thead><tr><th>Username</th><th>Status</th><th>2FA</th><th>Login reset</th><th>Permissions</th><th>Created at</th><th>Created by</th><th></th></tr></thead>
                   <tbody>
                     ${state.adminUsers
                       .map(
                         (user) => `
                           <tr>
                             <td>${escapeHtml(user.username)}</td>
+                            <td>${user.disabled_at ? '<span class="chip last">Disabled</span>' : '<span class="chip primary">Active</span>'}</td>
                             <td>${Number(user.totp_enabled) ? "Enabled" : "Setup required"}</td>
                             <td>${Number(user.password_reset_required) ? "Required" : "No"}</td>
                             <td>
@@ -1264,8 +1265,14 @@ function renderAdminUsers() {
                             </td>
                             <td>${new Date(user.created_at).toLocaleString()}</td>
                             <td>${escapeHtml(user.created_by || "-")}</td>
-                            <td>
+                            <td class="admin-actions-cell">
                               ${(canManageAdmins() || user.username === state.user) ? `<button class="btn btn-sm btn-outline-danger" type="button" data-reset-admin-2fa="${encodeURIComponent(user.username)}">Reset 2FA</button>` : ""}
+                              ${
+                                canManageAdmins() && user.username !== state.user
+                                  ? `<button class="btn btn-sm btn-outline-secondary" type="button" data-toggle-admin-disabled="${encodeURIComponent(user.username)}" data-disabled="${user.disabled_at ? "0" : "1"}">${user.disabled_at ? "Reactivate" : "Deactivate"}</button>
+                                     <button class="btn btn-sm btn-outline-danger" type="button" data-delete-admin-user="${encodeURIComponent(user.username)}">Delete</button>`
+                                  : ""
+                              }
                             </td>
                           </tr>
                         `,
@@ -4591,6 +4598,52 @@ document.addEventListener("click", async (event) => {
     });
     await refreshData();
     setMessage(statusMessage, `2FA reset for ${username}.`, "success");
+  } catch (error) {
+    button.disabled = false;
+    setMessage(statusMessage, error.message, "error");
+  }
+});
+
+document.addEventListener("click", async (event) => {
+  const toggleButton = event.target.closest("[data-toggle-admin-disabled]");
+  const deleteButton = event.target.closest("[data-delete-admin-user]");
+  const button = toggleButton || deleteButton;
+  if (!button || !document.body.contains(button)) return;
+  event.preventDefault();
+  event.stopPropagation();
+
+  const encodedUsername = button.getAttribute(toggleButton ? "data-toggle-admin-disabled" : "data-delete-admin-user") || "";
+  const username = encodedUsername
+    ? decodeURIComponent(encodedUsername)
+    : button.closest("tr")?.querySelector("td")?.textContent.trim() || "";
+  if (!username) {
+    setMessage(statusMessage, "Missing admin username.", "error");
+    return;
+  }
+
+  const isDelete = Boolean(deleteButton);
+  const disabled = toggleButton ? toggleButton.dataset.disabled === "1" : false;
+  const label = isDelete ? "delete" : disabled ? "deactivate" : "reactivate";
+  if (!window.confirm(`${label[0].toUpperCase()}${label.slice(1)} admin user ${username}?`)) return;
+
+  button.disabled = true;
+  try {
+    setMessage(statusMessage, `${label[0].toUpperCase()}${label.slice(1)}ing ${username}...`);
+    await api("/api/admin-users", {
+      method: "PATCH",
+      body: isDelete
+        ? {
+            action: "delete_admin",
+            username,
+          }
+        : {
+            action: "set_disabled",
+            username,
+            disabled,
+          },
+    });
+    await refreshData();
+    setMessage(statusMessage, `Admin user ${username} ${isDelete ? "deleted" : disabled ? "deactivated" : "reactivated"}.`, "success");
   } catch (error) {
     button.disabled = false;
     setMessage(statusMessage, error.message, "error");
