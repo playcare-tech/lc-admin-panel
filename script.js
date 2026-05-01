@@ -1,4 +1,7 @@
 const APP_URL = "https://lc-admin.pages.dev/";
+const DEFAULT_HELPDESK_ANALYTICS_AGENT_EMAILS = [
+  "aleksandr.lavrushkin@boomerang-partners.com",
+];
 const DEFAULT_HELPDESK_ANALYTICS_AGENT_NAMES = [
   "Megan",
   "Emma",
@@ -12,7 +15,6 @@ const DEFAULT_HELPDESK_ANALYTICS_AGENT_NAMES = [
   "Luke",
   "Gary",
   "Nate",
-  "Marcus",
   "Litta",
   "Aaron",
   "Sarah",
@@ -1963,8 +1965,9 @@ function normalizeAgentName(value) {
 
 function defaultHelpdeskAnalyticsAgentIds() {
   const allowed = new Set(DEFAULT_HELPDESK_ANALYTICS_AGENT_NAMES.map(normalizeAgentName));
+  const allowedEmails = new Set(DEFAULT_HELPDESK_ANALYTICS_AGENT_EMAILS.map(normalizeAgentName));
   return (state.helpdesk.agents || [])
-    .filter((agent) => allowed.has(normalizeAgentName(agent.name)))
+    .filter((agent) => allowed.has(normalizeAgentName(agent.name)) || allowedEmails.has(normalizeAgentName(agent.email)))
     .map((agent) => String(agent.id));
 }
 
