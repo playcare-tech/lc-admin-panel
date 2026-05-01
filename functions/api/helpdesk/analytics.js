@@ -4,7 +4,7 @@ import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
 
 const STATUSES = ["open", "pending", "onhold", "solved", "closed"];
 const PAGE_SIZE = 100;
-const MAX_PAGES_PER_RANGE = 38;
+const MAX_PAGES_PER_RANGE = 8;
 const DAILY_TABLE = "helpdesk_analytics_daily_v4";
 const DETAIL_TABLE = "helpdesk_analytics_handled_tickets_v4";
 const DAILY_FETCH_TABLE = "helpdesk_analytics_daily_fetches_v4";
@@ -260,6 +260,7 @@ async function ensureHelpDeskAnalyticsCache(db) {
 
 async function readCachedDay(env, date) {
   const fetchRecord = await env.DB.prepare(`SELECT date FROM ${DAILY_FETCH_TABLE} WHERE date = ?`).bind(date).first();
+  if (!fetchRecord) return null;
   const { results } = await env.DB.prepare(
     `SELECT date, agent_id, agent_name, agent_email, handled_tickets
      FROM ${DAILY_TABLE}
@@ -268,8 +269,7 @@ async function readCachedDay(env, date) {
   )
     .bind(date)
     .all();
-  if (fetchRecord || results?.length) return results || [];
-  return null;
+  return results || [];
 }
 
 async function readCachedDetails(env, date) {
@@ -316,7 +316,7 @@ async function runBatches(db, statements, size = 80) {
   }
 }
 
-async function writeCachedDay(env, date, detailRows) {
+async function writeCachedDay(env, date, detailRows, { markFetched = true } = {}) {
   await runBatches(
     env.DB,
     detailRows.map((row) =>
@@ -377,7 +377,9 @@ async function writeCachedDay(env, date, detailRows) {
        WHERE date = ?
        GROUP BY date, agent_id`,
     ).bind(date),
-    env.DB.prepare(`INSERT OR REPLACE INTO ${DAILY_FETCH_TABLE} (date, cached_at) VALUES (?, CURRENT_TIMESTAMP)`).bind(date),
+    ...(markFetched
+      ? [env.DB.prepare(`INSERT OR REPLACE INTO ${DAILY_FETCH_TABLE} (date, cached_at) VALUES (?, CURRENT_TIMESTAMP)`).bind(date)]
+      : []),
   ]);
 
   const { results } = await env.DB.prepare(
@@ -599,6 +601,8 @@ export async function onRequest(context) {
     const localDate = dateKey(from, timezoneOffsetMinutes);
     const shouldImport = url.searchParams.get("import") === "1";
     const shouldResetDate = url.searchParams.get("reset_date") === "1";
+    const shouldFinalizeDate = url.searchParams.get("finalize_date") === "1";
+    const isFullDayCacheWrite = url.searchParams.get("cache_full_day") === "1";
     const filters = {
       agentIds: splitParam(url.searchParams.get("agents")),
       excludeAgentIds: splitParam(url.searchParams.get("exclude_agents")),
@@ -621,17 +625,29 @@ export async function onRequest(context) {
     let rows = cachedRows ? filterRows(cachedRows, filters, agentDirectory) : [];
     let detailRows = cachedRows ? filterRows(cachedDetails, filters, agentDirectory) : [];
 
-    if (shouldImport) {
+    if (shouldFinalizeDate) {
+      await env.DB.prepare(`INSERT OR REPLACE INTO ${DAILY_FETCH_TABLE} (date, cached_at) VALUES (?, CURRENT_TIMESTAMP)`)
+        .bind(localDate)
+        .run();
+      const finalizedRows = await readCachedDay(context.env, localDate);
+      const finalizedDetails = await readCachedDetails(context.env, localDate);
+      rows = filterRows(finalizedRows || [], filters, agentDirectory);
+      detailRows = filterRows(finalizedDetails, filters, agentDirectory);
+      cacheMeta.hit = true;
+      cacheMeta.missing = false;
+      cacheMeta.saved = true;
+      cacheMeta.source = "helpdesk_import_finalized";
+    } else if (shouldImport) {
       if (shouldResetDate) await resetCachedDay(context.env, localDate);
       const importedDetails = await computeDay(context.env, from, to, timezoneOffsetMinutes, agentDirectory);
-      const summaryRows = await writeCachedDay(context.env, localDate, importedDetails);
+      const summaryRows = await writeCachedDay(context.env, localDate, importedDetails, { markFetched: isFullDayCacheWrite });
       const savedDetails = await readCachedDetails(context.env, localDate);
       rows = filterRows(summaryRows, filters, agentDirectory);
       detailRows = filterRows(savedDetails, filters, agentDirectory);
       cacheMeta.hit = false;
-      cacheMeta.missing = false;
+      cacheMeta.missing = !isFullDayCacheWrite;
       cacheMeta.saved = true;
-      cacheMeta.source = "helpdesk_import_saved";
+      cacheMeta.source = isFullDayCacheWrite ? "helpdesk_import_saved" : "helpdesk_import_partial_saved";
     } else if (!cachedRows && (await hasCachedDay(context.env, localDate))) {
       cacheMeta.hit = true;
       cacheMeta.missing = false;

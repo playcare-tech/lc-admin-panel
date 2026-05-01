@@ -1968,6 +1968,177 @@ function helpdeskAnalyticsAgentDayMap(agent) {
   return new Map((agent.days || []).map((day) => [day.date, day]));
 }
 
+function helpdeskAnalyticsPeriodLabel(filters = activeHelpdeskAnalyticsFilters()) {
+  if (!filters.from || !filters.to) return "Selected period";
+  return `${localDateValue(filters.from)} to ${localEndDateValue(filters.to)}`;
+}
+
+function helpdeskAnalyticsExportDays(filters = activeHelpdeskAnalyticsFilters()) {
+  if (!filters.from || !filters.to) return [];
+  const days = [];
+  const cursor = new Date(filters.from.getFullYear(), filters.from.getMonth(), filters.from.getDate());
+
+  while (cursor < filters.to) {
+    days.push(localDateValue(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return days;
+}
+
+function helpdeskAnalyticsExportRows() {
+  const analytics = state.helpdesk_analytics.data;
+  if (!analytics) return { days: [], rows: [], summary: [] };
+
+  const days = helpdeskAnalyticsExportDays();
+  const timelineByDate = new Map((analytics.timeline || []).map((day) => [day.date, Number(day.tickets || 0)]));
+  const rows = [...(analytics.agents || [])]
+    .sort((left, right) => Number(right.total_tickets || 0) - Number(left.total_tickets || 0))
+    .map((agent, index) => {
+      const dayMap = helpdeskAnalyticsAgentDayMap(agent);
+      return {
+        rank: index + 1,
+        agent: helpdeskAgentLabel(agent),
+        email: helpdeskAgentSubLabel(agent),
+        total: Number(agent.total_tickets || 0),
+        days: days.map((date) => Number(dayMap.get(date)?.tickets || 0)),
+      };
+    });
+  const summary = days.map((date) => Number(timelineByDate.get(date) || 0));
+
+  return { days, rows, summary };
+}
+
+function escapeSpreadsheetCell(value) {
+  const text = `${value ?? ""}`;
+  if (/^[=+\-@]/.test(text)) return `'${text}`;
+  return text;
+}
+
+function htmlTableForHelpdeskAnalyticsExport() {
+  const { days, rows, summary } = helpdeskAnalyticsExportRows();
+  const totalTickets = state.helpdesk_analytics.data?.summary?.total_tickets || 0;
+  const periodLabel = helpdeskAnalyticsPeriodLabel();
+  const headerCells = ["Rank", "Agent", "Email / ID", "Period tickets", ...days]
+    .map((value) => `<th>${escapeHtml(value)}</th>`)
+    .join("");
+  const summaryCells = [
+    `<td colspan="3"><strong>Account summary</strong></td>`,
+    `<td><strong>${Number(totalTickets || 0)}</strong></td>`,
+    ...summary.map((value) => `<td><strong>${value}</strong></td>`),
+  ].join("");
+  const rowMarkup = rows
+    .map((row) => {
+      const cells = [
+        row.rank,
+        escapeSpreadsheetCell(row.agent),
+        escapeSpreadsheetCell(row.email),
+        row.total,
+        ...row.days,
+      ];
+      return `<tr>${cells.map((value) => `<td>${escapeHtml(value)}</td>`).join("")}</tr>`;
+    })
+    .join("");
+
+  return `
+    <table>
+      <caption>HelpDesk Analytics - ${escapeHtml(periodLabel)}</caption>
+      <thead><tr>${headerCells}</tr></thead>
+      <tbody>
+        <tr>${summaryCells}</tr>
+        ${rowMarkup}
+      </tbody>
+    </table>
+  `;
+}
+
+function helpdeskAnalyticsExportFilename(extension) {
+  return `helpdesk-analytics-${helpdeskAnalyticsPeriodLabel().replaceAll(" ", "-")}.${extension}`;
+}
+
+function downloadTextFile(filename, content, type) {
+  const blob = new Blob([content], { type });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
+
+function exportHelpdeskAnalyticsExcel() {
+  if (!state.helpdesk_analytics.data) {
+    setMessage(statusMessage, "Load HelpDesk analytics before exporting.", "error");
+    return;
+  }
+
+  const html = `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      table { border-collapse: collapse; font-family: Arial, sans-serif; }
+      caption { font-size: 18px; font-weight: 700; padding: 12px; text-align: left; }
+      th, td { border: 1px solid #d7deea; padding: 8px 10px; white-space: nowrap; }
+      th { background: #eef3ff; font-weight: 700; }
+      tbody tr:first-child td { background: #f5f0ff; font-weight: 700; }
+    </style>
+  </head>
+  <body>${htmlTableForHelpdeskAnalyticsExport()}</body>
+</html>`;
+
+  downloadTextFile(
+    helpdeskAnalyticsExportFilename("xls"),
+    `\ufeff${html}`,
+    "application/vnd.ms-excel;charset=utf-8",
+  );
+  setMessage(statusMessage, "HelpDesk analytics Excel export downloaded.");
+}
+
+function exportHelpdeskAnalyticsPdf() {
+  if (!state.helpdesk_analytics.data) {
+    setMessage(statusMessage, "Load HelpDesk analytics before exporting.", "error");
+    return;
+  }
+
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    setMessage(statusMessage, "Allow pop-ups to export the HelpDesk analytics PDF.", "error");
+    return;
+  }
+
+  printWindow.document.write(`<!DOCTYPE html>
+<html>
+  <head>
+    <title>HelpDesk Analytics ${escapeHtml(helpdeskAnalyticsPeriodLabel())}</title>
+    <style>
+      @page { size: landscape; margin: 12mm; }
+      body { color: #172033; font-family: Arial, sans-serif; margin: 0; }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      .meta { color: #667085; font-size: 12px; margin-bottom: 14px; }
+      table { border-collapse: collapse; font-size: 10px; width: 100%; }
+      caption { display: none; }
+      th, td { border: 1px solid #d7deea; padding: 5px 6px; text-align: left; }
+      th { background: #eef3ff; font-weight: 700; }
+      tbody tr:first-child td { background: #f5f0ff; font-weight: 700; }
+    </style>
+  </head>
+  <body>
+    <h1>HelpDesk Analytics</h1>
+    <div class="meta">${escapeHtml(helpdeskAnalyticsPeriodLabel())}</div>
+    ${htmlTableForHelpdeskAnalyticsExport()}
+    <script>
+      window.addEventListener("load", () => {
+        window.print();
+      });
+    <\/script>
+  </body>
+</html>`);
+  printWindow.document.close();
+  setMessage(statusMessage, "HelpDesk analytics PDF export opened.");
+}
+
 function formatHelpdeskDateTime(value) {
   if (!value) return "-";
   const date = new Date(value);
@@ -2097,6 +2268,10 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
 }
 
 async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode = false, rateRetry = 0) {
+  if (importMode && depth === 0 && range.cacheFullDay) {
+    return importHelpdeskAnalyticsFullDay(range, filters);
+  }
+
   const params = new URLSearchParams();
   params.append("from", range.from.toISOString());
   params.append("to", range.to.toISOString());
@@ -2105,7 +2280,7 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
   if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
   if (range.cacheFullDay) params.append("cache_full_day", "1");
   if (importMode) params.append("import", "1");
-  if (importMode && depth === 0) params.append("reset_date", "1");
+  if (importMode && (range.resetDate || (depth === 0 && range.resetDate !== false))) params.append("reset_date", "1");
   params.append("tz_offset", String(new Date().getTimezoneOffset()));
 
   const dayLabel = range.from.toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -2165,6 +2340,44 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
     }
     return [...first, ...second];
   }
+}
+
+async function finalizeHelpdeskAnalyticsDay(range, filters) {
+  const params = new URLSearchParams();
+  params.append("from", range.from.toISOString());
+  params.append("to", range.to.toISOString());
+  if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
+  if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
+  if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
+  params.append("cache_full_day", "1");
+  params.append("finalize_date", "1");
+  params.append("tz_offset", String(new Date().getTimezoneOffset()));
+  return api(`/api/helpdesk/analytics?${params.toString()}`);
+}
+
+async function importHelpdeskAnalyticsFullDay(range, filters) {
+  const chunks = [];
+  const chunkMs = 60 * 60 * 1000;
+  for (let start = range.from.getTime(); start < range.to.getTime(); start += chunkMs) {
+    chunks.push({
+      from: new Date(start),
+      to: new Date(Math.min(start + chunkMs, range.to.getTime())),
+      cacheFullDay: false,
+      resetDate: chunks.length === 0,
+    });
+  }
+
+  const dayLabel = range.from.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  for (const [index, chunk] of chunks.entries()) {
+    state.helpdesk_analytics.loadStatus = `Importing ${dayLabel} from HelpDesk (${index + 1}/${chunks.length})...`;
+    renderHelpdeskAnalytics();
+    await fetchHelpdeskAnalyticsRange(chunk, filters, 0, true);
+    if (index < chunks.length - 1) await sleep(150);
+  }
+
+  state.helpdesk_analytics.loadStatus = `Saving ${dayLabel} analytics...`;
+  renderHelpdeskAnalytics();
+  return [await finalizeHelpdeskAnalyticsDay(range, filters)];
 }
 
 async function fetchHelpdeskAnalyticsDayResponses(filters, importMode = false) {
@@ -2435,6 +2648,8 @@ function renderHelpdeskAnalytics() {
   actionBar.innerHTML = `
     <button id="helpdeskAnalyticsApplyBtn" class="btn btn-primary" type="button">Filter</button>
     <button id="helpdeskAnalyticsImportBtn" class="btn btn-outline-primary" type="button">Import from HelpDesk</button>
+    <button id="helpdeskAnalyticsPdfBtn" class="btn btn-outline-secondary" type="button" ${data ? "" : "disabled"}>Export PDF</button>
+    <button id="helpdeskAnalyticsExcelBtn" class="btn btn-outline-secondary" type="button" ${data ? "" : "disabled"}>Export Excel</button>
     <button id="helpdeskAnalyticsResetBtn" class="btn btn-outline-secondary" type="button">Reset filters</button>
   `;
   filterBarContainer.appendChild(actionBar);
@@ -2483,6 +2698,12 @@ function renderHelpdeskAnalytics() {
   });
   document.getElementById("helpdeskAnalyticsImportBtn")?.addEventListener("click", () => {
     importHelpdeskAnalytics();
+  });
+  document.getElementById("helpdeskAnalyticsPdfBtn")?.addEventListener("click", () => {
+    exportHelpdeskAnalyticsPdf();
+  });
+  document.getElementById("helpdeskAnalyticsExcelBtn")?.addEventListener("click", () => {
+    exportHelpdeskAnalyticsExcel();
   });
   document.getElementById("helpdeskAnalyticsResetBtn")?.addEventListener("click", () => {
     resetHelpdeskAnalyticsFilters();
