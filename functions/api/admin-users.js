@@ -1,4 +1,4 @@
-import { createAdminUser, listAdminUsers, resetAdminTotp } from "../_lib/admin-users.js";
+import { createAdminUser, listAdminUsers, resetAdminTotp, updateAdminPermissions } from "../_lib/admin-users.js";
 import { requireAuth } from "../_lib/auth.js";
 import { errorResponse, json, methodNotAllowed, readJson } from "../_lib/http.js";
 import { writeLogSafely } from "../_lib/logs.js";
@@ -30,21 +30,47 @@ export async function onRequest(context) {
       const username = `${body.username || ""}`.trim();
       const action = `${body.action || ""}`;
 
-      if (action !== "reset_2fa") return errorResponse("Unsupported admin user action.", 400);
       if (!username) return errorResponse("Username is required.", 400);
 
-      await resetAdminTotp(context.env, username, auth.session.user);
+      if (!auth.session.permissions?.canManageAdmins && username !== auth.session.user) {
+        return errorResponse("Forbidden.", 403);
+      }
 
-      await writeLogSafely(context.env, {
-        actor: auth.session.user,
-        area: "admin",
-        action: "reset_admin_2fa",
-        target: username,
-        status: "success",
-        details: `Reset 2FA for admin user ${username}.`,
-      });
+      if (action === "reset_2fa") {
+        await resetAdminTotp(context.env, username, auth.session.user);
 
-      return json({ ok: true });
+        await writeLogSafely(context.env, {
+          actor: auth.session.user,
+          area: "admin",
+          action: "reset_admin_2fa",
+          target: username,
+          status: "success",
+          details: `Reset 2FA for admin user ${username}.`,
+        });
+
+        return json({ ok: true });
+      }
+
+      if (action === "update_permissions") {
+        if (!auth.session.permissions?.canManageAdmins) return errorResponse("Forbidden.", 403);
+        await updateAdminPermissions(context.env, username, {
+          canManageUsers: Boolean(body.canManageUsers),
+          canManageAdmins: Boolean(body.canManageAdmins),
+        });
+
+        await writeLogSafely(context.env, {
+          actor: auth.session.user,
+          area: "admin",
+          action: "update_admin_permissions",
+          target: username,
+          status: "success",
+          details: `Updated admin permissions for ${username}.`,
+        });
+
+        return json({ ok: true });
+      }
+
+      return errorResponse("Unsupported admin user action.", 400);
     } catch (error) {
       return errorResponse(error.message, 500);
     }
@@ -55,6 +81,7 @@ export async function onRequest(context) {
     if (auth.error) {
       return auth.error;
     }
+    if (!auth.session.permissions?.canManageAdmins) return errorResponse("Forbidden.", 403);
 
     try {
       const body = await readJson(context.request);
@@ -69,6 +96,8 @@ export async function onRequest(context) {
         username,
         password,
         createdBy: auth.session.user,
+        canManageUsers: Boolean(body.canManageUsers),
+        canManageAdmins: Boolean(body.canManageAdmins),
       });
 
       await writeLogSafely(context.env, {

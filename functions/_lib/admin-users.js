@@ -1,5 +1,5 @@
 const CREATE_ADMIN_USERS_SQL =
-  "CREATE TABLE IF NOT EXISTS admin_users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT, totp_secret TEXT, totp_enabled INTEGER NOT NULL DEFAULT 0, totp_setup_required INTEGER NOT NULL DEFAULT 1, password_reset_required INTEGER NOT NULL DEFAULT 0, totp_reset_at TEXT, totp_reset_by TEXT)";
+  "CREATE TABLE IF NOT EXISTS admin_users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT, totp_secret TEXT, totp_enabled INTEGER NOT NULL DEFAULT 0, totp_setup_required INTEGER NOT NULL DEFAULT 1, password_reset_required INTEGER NOT NULL DEFAULT 0, totp_reset_at TEXT, totp_reset_by TEXT, can_manage_users INTEGER NOT NULL DEFAULT 0, can_manage_admins INTEGER NOT NULL DEFAULT 0)";
 
 const CREATE_ADMIN_USERS_INDEX_SQL =
   "CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users (username)";
@@ -83,8 +83,9 @@ async function hashPassword(password, salt) {
 }
 
 async function ensureColumn(db, existingColumns, name, definition) {
-  if (existingColumns.has(name)) return;
+  if (existingColumns.has(name)) return false;
   await db.prepare(`ALTER TABLE admin_users ADD COLUMN ${name} ${definition}`).run();
+  return true;
 }
 
 function createSalt() {
@@ -107,13 +108,18 @@ export async function ensureAdminUsersTable(db) {
   await ensureColumn(db, columns, "password_reset_required", "INTEGER NOT NULL DEFAULT 0");
   await ensureColumn(db, columns, "totp_reset_at", "TEXT");
   await ensureColumn(db, columns, "totp_reset_by", "TEXT");
+  const addedCanManageUsers = await ensureColumn(db, columns, "can_manage_users", "INTEGER NOT NULL DEFAULT 0");
+  const addedCanManageAdmins = await ensureColumn(db, columns, "can_manage_admins", "INTEGER NOT NULL DEFAULT 0");
+  if (addedCanManageUsers || addedCanManageAdmins) {
+    await db.prepare("UPDATE admin_users SET can_manage_users = 1, can_manage_admins = 1").run();
+  }
 }
 
 export async function listAdminUsers(env) {
   await ensureAdminUsersTable(env.DB);
   const { results } = await env.DB.prepare(
     `
-      SELECT id, username, created_at, created_by, totp_enabled, totp_setup_required, password_reset_required, totp_reset_at, totp_reset_by
+      SELECT id, username, created_at, created_by, totp_enabled, totp_setup_required, password_reset_required, totp_reset_at, totp_reset_by, can_manage_users, can_manage_admins
       FROM admin_users
       ORDER BY username ASC
     `,
@@ -126,7 +132,7 @@ export async function findAdminUserByUsername(env, username) {
   await ensureAdminUsersTable(env.DB);
   const result = await env.DB.prepare(
     `
-      SELECT id, username, password_salt, password_hash, created_at, created_by, totp_secret, totp_enabled, totp_setup_required, password_reset_required, totp_reset_at, totp_reset_by
+      SELECT id, username, password_salt, password_hash, created_at, created_by, totp_secret, totp_enabled, totp_setup_required, password_reset_required, totp_reset_at, totp_reset_by, can_manage_users, can_manage_admins
       FROM admin_users
       WHERE username = ?
       LIMIT 1
@@ -138,7 +144,7 @@ export async function findAdminUserByUsername(env, username) {
   return result || null;
 }
 
-export async function createAdminUser(env, { username, password, createdBy }) {
+export async function createAdminUser(env, { username, password, createdBy, canManageUsers = false, canManageAdmins = false }) {
   await ensureAdminUsersTable(env.DB);
 
   const existing = await findAdminUserByUsername(env, username);
@@ -151,11 +157,11 @@ export async function createAdminUser(env, { username, password, createdBy }) {
 
   await env.DB.prepare(
     `
-      INSERT INTO admin_users (username, password_salt, password_hash, created_at, created_by, password_reset_required, totp_setup_required)
-      VALUES (?, ?, ?, ?, ?, 1, 1)
+      INSERT INTO admin_users (username, password_salt, password_hash, created_at, created_by, password_reset_required, totp_setup_required, can_manage_users, can_manage_admins)
+      VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)
     `,
   )
-    .bind(username, salt, hash, new Date().toISOString(), createdBy || null)
+    .bind(username, salt, hash, new Date().toISOString(), createdBy || null, canManageUsers ? 1 : 0, canManageAdmins ? 1 : 0)
     .run();
 }
 
@@ -167,6 +173,32 @@ export async function verifyAdminCredentials(env, username, password) {
 
   const hash = await hashPassword(password, user.password_salt);
   return hash === user.password_hash ? user : null;
+}
+
+export function adminPermissions(user) {
+  return {
+    canManageUsers: Boolean(user?.can_manage_users),
+    canManageAdmins: Boolean(user?.can_manage_admins),
+  };
+}
+
+export async function createOrUpdateFallbackAdminUser(env, { username, password }) {
+  await ensureAdminUsersTable(env.DB);
+  const existing = await findAdminUserByUsername(env, username);
+  if (existing) return existing;
+
+  const salt = createSalt();
+  const hash = await hashPassword(password, salt);
+  await env.DB.prepare(
+    `
+      INSERT INTO admin_users
+        (username, password_salt, password_hash, created_at, created_by, password_reset_required, totp_setup_required, can_manage_users, can_manage_admins)
+      VALUES (?, ?, ?, ?, ?, 0, 1, 1, 1)
+    `,
+  )
+    .bind(username, salt, hash, new Date().toISOString(), "env-fallback")
+    .run();
+  return findAdminUserByUsername(env, username);
 }
 
 export function generateTotpSecret() {
@@ -266,6 +298,20 @@ export async function resetAdminTotp(env, username, resetBy) {
     `,
   )
     .bind(new Date().toISOString(), resetBy || null, username)
+    .run();
+  if (!result.meta?.changes) throw new Error("Admin user was not found.");
+}
+
+export async function updateAdminPermissions(env, username, { canManageUsers = false, canManageAdmins = false } = {}) {
+  await ensureAdminUsersTable(env.DB);
+  const result = await env.DB.prepare(
+    `
+      UPDATE admin_users
+      SET can_manage_users = ?, can_manage_admins = ?
+      WHERE username = ?
+    `,
+  )
+    .bind(canManageUsers ? 1 : 0, canManageAdmins ? 1 : 0, username)
     .run();
   if (!result.meta?.changes) throw new Error("Admin user was not found.");
 }

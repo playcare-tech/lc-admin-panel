@@ -651,6 +651,23 @@ body {
   gap: 8px;
 }
 
+.totp-qr {
+  width: 184px;
+  height: 184px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+}
+
+.permission-check {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  margin-right: 10px;
+  white-space: nowrap;
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;

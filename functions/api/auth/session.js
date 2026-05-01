@@ -14,5 +14,6 @@ export async function onRequest(context) {
   return json({
     authenticated: true,
     user: session.user,
+    permissions: session.permissions || {},
   });
 }

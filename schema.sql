@@ -24,7 +24,9 @@ CREATE TABLE IF NOT EXISTS admin_users (
   totp_setup_required INTEGER NOT NULL DEFAULT 1,
   password_reset_required INTEGER NOT NULL DEFAULT 0,
   totp_reset_at TEXT,
-  totp_reset_by TEXT
+  totp_reset_by TEXT,
+  can_manage_users INTEGER NOT NULL DEFAULT 0,
+  can_manage_admins INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users (username);

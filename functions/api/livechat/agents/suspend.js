@@ -1,4 +1,4 @@
-import { requireAuth } from "../../../_lib/auth.js";
+import { requirePermission } from "../../../_lib/auth.js";
 import { errorResponse, json, methodNotAllowed, readJson } from "../../../_lib/http.js";
 import { livechatRequest } from "../../../_lib/livechat.js";
 import { writeLog } from "../../../_lib/logs.js";
@@ -8,7 +8,7 @@ export async function onRequest(context) {
     return methodNotAllowed(["POST"]);
   }
 
-  const auth = await requireAuth(context);
+  const auth = await requirePermission(context, "canManageUsers");
   if (auth.error) {
     return auth.error;
   }

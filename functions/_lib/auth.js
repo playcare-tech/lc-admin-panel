@@ -51,7 +51,7 @@ function getCookie(request, name) {
   return null;
 }
 
-export async function createSessionCookie(env, username) {
+export async function createSessionCookie(env, username, extra = {}) {
   if (!env.SESSION_SECRET) {
     throw new Error("Missing SESSION_SECRET environment variable.");
   }
@@ -59,6 +59,7 @@ export async function createSessionCookie(env, username) {
   const payload = {
     user: username,
     exp: Date.now() + SESSION_TTL_SECONDS * 1000,
+    permissions: extra.permissions || {},
   };
   const token = toBase64Url(JSON.stringify(payload));
   const signature = await sign(token, env.SESSION_SECRET);
@@ -124,4 +125,13 @@ export async function requireAuth(context) {
   }
 
   return { session };
+}
+
+export async function requirePermission(context, permission) {
+  const auth = await requireAuth(context);
+  if (auth.error) return auth;
+  if (!auth.session.permissions?.[permission]) {
+    return { error: errorResponse("Forbidden.", 403) };
+  }
+  return auth;
 }

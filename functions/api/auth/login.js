@@ -1,7 +1,10 @@
 import { createSessionCookie } from "../../_lib/auth.js";
 import {
+  adminPermissions,
   buildTotpUri,
+  createOrUpdateFallbackAdminUser,
   enableAdminTotp,
+  findAdminUserByUsername,
   generateTotpSecret,
   updateAdminPassword,
   verifyAdminCredentials,
@@ -24,6 +27,7 @@ export async function onRequest(context) {
     const setupSecret = `${body.setupSecret || ""}`.replace(/\s+/g, "").toUpperCase();
 
     let user = null;
+    const existingUser = username ? await findAdminUserByUsername(context.env, username) : null;
     let authenticated = false;
     try {
       user = await verifyAdminCredentials(context.env, username, password);
@@ -33,13 +37,15 @@ export async function onRequest(context) {
     }
 
     if (
+      !existingUser &&
       !authenticated &&
       context.env.ADMIN_USERNAME &&
       context.env.ADMIN_PASSWORD &&
       username === context.env.ADMIN_USERNAME &&
       password === context.env.ADMIN_PASSWORD
     ) {
-      authenticated = true;
+      user = await createOrUpdateFallbackAdminUser(context.env, { username, password });
+      authenticated = Boolean(user);
     }
 
     if (!authenticated) {
@@ -51,29 +57,6 @@ export async function onRequest(context) {
         details: "Invalid admin credentials.",
       });
       return errorResponse("Invalid username or password.", 401);
-    }
-
-    if (!user) {
-      const sessionCookie = await createSessionCookie(context.env, username);
-      await writeLogSafely(context.env, {
-        actor: username,
-        area: "auth",
-        action: "login",
-        status: "success",
-        details: "Fallback admin signed in.",
-      });
-
-      return json(
-        {
-          ok: true,
-          user: username,
-        },
-        {
-          headers: {
-            "Set-Cookie": sessionCookie,
-          },
-        },
-      );
     }
 
     const needsPasswordChange = Boolean(user.password_reset_required);
@@ -111,7 +94,9 @@ export async function onRequest(context) {
       });
     }
 
-    const sessionCookie = await createSessionCookie(context.env, username);
+    const sessionCookie = await createSessionCookie(context.env, username, {
+      permissions: adminPermissions(user),
+    });
     await writeLogSafely(context.env, {
       actor: username,
       area: "auth",
@@ -124,6 +109,7 @@ export async function onRequest(context) {
       {
         ok: true,
         user: username,
+        permissions: adminPermissions(user),
       },
       {
         headers: {

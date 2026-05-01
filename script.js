@@ -111,6 +111,7 @@ const DEFAULT_HELPDESK_ANALYTICS_AGENT_NAMES = [
 
 const state = {
   user: null,
+  permissions: {},
   loginChallenge: null,
   section: "livechat-users",
   livechat: { agents: [], groups: [] },
@@ -270,7 +271,8 @@ function renderLoginChallenge() {
     ${
       challenge.requiresTotpSetup
         ? `<div class="totp-setup-box">
-            <div class="subtle">Add this account in Google Authenticator using the setup key, then enter the 6-digit code.</div>
+            <div class="subtle">Scan the QR code in Google Authenticator, or use the setup key, then enter the 6-digit code.</div>
+            <canvas id="totpQrCanvas" class="totp-qr" aria-label="Google Authenticator QR code"></canvas>
             <div class="credentials-box">${escapeHtml(challenge.setupSecret || "")}</div>
             <input type="hidden" name="setupSecret" value="${escapeHtml(challenge.setupSecret || "")}" />
           </div>`
@@ -282,6 +284,29 @@ function renderLoginChallenge() {
         : ""
     }
   `;
+  renderTotpQr();
+}
+
+function canManageUsers() {
+  return Boolean(state.permissions?.canManageUsers);
+}
+
+function canManageAdmins() {
+  return Boolean(state.permissions?.canManageAdmins);
+}
+
+function renderTotpQr() {
+  const canvas = document.getElementById("totpQrCanvas");
+  const uri = state.loginChallenge?.otpauthUri;
+  if (!canvas || !uri) return;
+  if (!window.QRCode?.toCanvas) {
+    canvas.replaceWith(Object.assign(document.createElement("div"), {
+      className: "empty-state",
+      textContent: "QR library did not load. Use the setup key below.",
+    }));
+    return;
+  }
+  window.QRCode.toCanvas(canvas, uri, { width: 184, margin: 1 }, () => {});
 }
 
 function escapeHtml(value) {
@@ -912,7 +937,7 @@ function renderLiveChatUsers() {
                             <td class="text-end">
                               <div class="d-flex gap-2 justify-content-end">
                                 <button class="btn btn-sm btn-outline-secondary" type="button" data-open-livechat="${agent.id}">Open</button>
-                                <button class="btn btn-sm btn-outline-danger" type="button" data-livechat-suspend="${agent.id}">Deactivate</button>
+                                ${canManageUsers() ? `<button class="btn btn-sm btn-outline-danger" type="button" data-livechat-suspend="${agent.id}">Deactivate</button>` : ""}
                               </div>
                             </td>
                           </tr>
@@ -999,7 +1024,7 @@ function renderHelpDeskUsers() {
                             <td class="text-end">
                               <div class="d-flex gap-2 justify-content-end">
                                 <button class="btn btn-sm btn-outline-secondary" type="button" data-open-helpdesk="${agent.id}">Open</button>
-                                <button class="btn btn-sm btn-outline-danger" type="button" data-helpdesk-deactivate="${agent.id}">Deactivate</button>
+                                ${canManageUsers() ? `<button class="btn btn-sm btn-outline-danger" type="button" data-helpdesk-deactivate="${agent.id}">Deactivate</button>` : ""}
                               </div>
                             </td>
                           </tr>
@@ -1190,6 +1215,18 @@ function renderAdminUsers() {
             <button type="button" id="generateAdminPasswordBtn" class="btn btn-outline-secondary">Generate password</button>
             <button type="button" id="copyAdminCredentialsBtn" class="btn btn-outline-secondary">Copy credentials</button>
           </div>
+          <div class="col-12">
+            <label class="analytics-check-option">
+              <input id="adminCanManageUsers" class="form-check-input" type="checkbox" />
+              <span><strong>Can delete/deactivate users</strong><small>Allows LiveChat suspend and HelpDesk delete actions</small></span>
+            </label>
+          </div>
+          <div class="col-12">
+            <label class="analytics-check-option">
+              <input id="adminCanManageAdmins" class="form-check-input" type="checkbox" />
+              <span><strong>Can manage admin accounts</strong><small>Allows permission changes and 2FA resets for others</small></span>
+            </label>
+          </div>
           <div class="col-12 d-grid">
             <button type="submit" class="btn btn-primary">Create admin</button>
           </div>
@@ -1206,7 +1243,7 @@ function renderAdminUsers() {
           state.adminUsers.length
             ? `<div class="table-responsive">
                 <table class="table admin-table">
-                  <thead><tr><th>Username</th><th>2FA</th><th>Login reset</th><th>Created at</th><th>Created by</th><th></th></tr></thead>
+                  <thead><tr><th>Username</th><th>2FA</th><th>Login reset</th><th>Permissions</th><th>Created at</th><th>Created by</th><th></th></tr></thead>
                   <tbody>
                     ${state.adminUsers
                       .map(
@@ -1215,10 +1252,20 @@ function renderAdminUsers() {
                             <td>${escapeHtml(user.username)}</td>
                             <td>${Number(user.totp_enabled) ? "Enabled" : "Setup required"}</td>
                             <td>${Number(user.password_reset_required) ? "Required" : "No"}</td>
+                            <td>
+                              <label class="permission-check">
+                                <input class="form-check-input" type="checkbox" data-admin-permission="canManageUsers" data-admin-username="${escapeHtml(user.username)}" ${Number(user.can_manage_users) ? "checked" : ""} ${canManageAdmins() ? "" : "disabled"} />
+                                Users
+                              </label>
+                              <label class="permission-check">
+                                <input class="form-check-input" type="checkbox" data-admin-permission="canManageAdmins" data-admin-username="${escapeHtml(user.username)}" ${Number(user.can_manage_admins) ? "checked" : ""} ${canManageAdmins() ? "" : "disabled"} />
+                                Admins
+                              </label>
+                            </td>
                             <td>${new Date(user.created_at).toLocaleString()}</td>
                             <td>${escapeHtml(user.created_by || "-")}</td>
                             <td>
-                              <button class="btn btn-sm btn-outline-danger" type="button" data-reset-admin-2fa="${escapeHtml(user.username)}">Reset 2FA</button>
+                              ${(canManageAdmins() || user.username === state.user) ? `<button class="btn btn-sm btn-outline-danger" type="button" data-reset-admin-2fa="${escapeHtml(user.username)}">Reset 2FA</button>` : ""}
                             </td>
                           </tr>
                         `,
@@ -1338,7 +1385,7 @@ function renderLiveChatProfileCard(agent, currentMembershipMarkup) {
           </div>
           <div class="profile-actions">
             <button class="btn btn-primary" type="submit">Save profile</button>
-            <button id="suspendModalLiveChatBtn" class="btn btn-outline-danger" type="button" ${agent.suspended ? "disabled" : ""}>Suspend user</button>
+            ${canManageUsers() ? `<button id="suspendModalLiveChatBtn" class="btn btn-outline-danger" type="button" ${agent.suspended ? "disabled" : ""}>Suspend user</button>` : ""}
           </div>
         </form>
       </div>
@@ -4026,6 +4073,7 @@ function bindAppEvents() {
       await api("/api/auth/logout", { method: "POST" });
     } finally {
       state.user = null;
+      state.permissions = {};
       showLogin();
     }
   };
@@ -4379,10 +4427,36 @@ function bindAppEvents() {
         body: {
           username: document.getElementById("adminUsername").value.trim(),
           password: document.getElementById("adminPassword").value,
+          canManageUsers: document.getElementById("adminCanManageUsers")?.checked || false,
+          canManageAdmins: document.getElementById("adminCanManageAdmins")?.checked || false,
         },
       });
       state.generatedAdminPassword = document.getElementById("adminPassword").value;
     }, "Admin user created.");
+  });
+  document.querySelectorAll("[data-admin-permission]").forEach((input) => {
+    input.onchange = async () => {
+      const username = input.dataset.adminUsername;
+      const user = state.adminUsers.find((item) => item.username === username);
+      if (!username || !user) return;
+      await withBusyState(async () => {
+        await api("/api/admin-users", {
+          method: "PATCH",
+          body: {
+            action: "update_permissions",
+            username,
+            canManageUsers:
+              input.dataset.adminPermission === "canManageUsers"
+                ? input.checked
+                : Boolean(Number(user.can_manage_users)),
+            canManageAdmins:
+              input.dataset.adminPermission === "canManageAdmins"
+                ? input.checked
+                : Boolean(Number(user.can_manage_admins)),
+          },
+        });
+      }, `Permissions updated for ${username}.`);
+    };
   });
 
   bindClick("closeModalBtn", () => {
@@ -4534,6 +4608,7 @@ loginForm?.addEventListener("submit", async (event) => {
     state.loginChallenge = null;
     renderLoginChallenge();
     state.user = result.user;
+    state.permissions = result.permissions || {};
     showApp();
     await refreshData();
     runHelpdeskAutoSync();
@@ -4551,6 +4626,7 @@ async function bootstrap() {
     }
 
     state.user = session.user;
+    state.permissions = session.permissions || {};
     showApp();
     await refreshData();
     runHelpdeskAutoSync();
