@@ -2273,8 +2273,8 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
   }
 
   const params = new URLSearchParams();
-  params.append("from", range.from.toISOString());
-  params.append("to", range.to.toISOString());
+  params.append("from", dateWithOffset(range.from));
+  params.append("to", dateWithOffset(range.to));
   if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
   if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
   if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
@@ -2314,7 +2314,7 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
     }
 
     const canRetrySmaller = importMode && /too many tickets|503|service unavailable/i.test(error.message || "");
-    if (!canRetrySmaller || duration <= 60 * 1000 || depth >= 16) {
+    if (!canRetrySmaller || duration <= 5 * 1000 || depth >= 20) {
       throw error;
     }
 
@@ -2344,8 +2344,8 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
 
 async function finalizeHelpdeskAnalyticsDay(range, filters) {
   const params = new URLSearchParams();
-  params.append("from", range.from.toISOString());
-  params.append("to", range.to.toISOString());
+  params.append("from", dateWithOffset(range.from));
+  params.append("to", dateWithOffset(range.to));
   if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
   if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
   if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
@@ -2357,7 +2357,7 @@ async function finalizeHelpdeskAnalyticsDay(range, filters) {
 
 async function importHelpdeskAnalyticsFullDay(range, filters) {
   const chunks = [];
-  const chunkMs = 60 * 60 * 1000;
+  const chunkMs = 10 * 60 * 1000;
   for (let start = range.from.getTime(); start < range.to.getTime(); start += chunkMs) {
     chunks.push({
       from: new Date(start),
