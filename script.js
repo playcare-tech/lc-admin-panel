@@ -4570,7 +4570,10 @@ document.addEventListener("click", async (event) => {
   event.preventDefault();
   event.stopPropagation();
 
-  const username = decodeURIComponent(button.dataset.resetAdmin2fa || "");
+  const encodedUsername = button.getAttribute("data-reset-admin-2fa") || "";
+  const username = encodedUsername
+    ? decodeURIComponent(encodedUsername)
+    : button.closest("tr")?.querySelector("td")?.textContent.trim() || "";
   setMessage(statusMessage, username ? `Preparing 2FA reset for ${username}...` : "Missing admin username.", username ? "info" : "error");
   if (!username || !window.confirm(`Reset 2FA for ${username}? They will need to set a new password and Google Authenticator on next login.`)) {
     return;
