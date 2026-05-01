@@ -628,9 +628,24 @@ export async function onRequest(context) {
     let detailRows = cachedRows ? filterRows(cachedDetails, filters, agentDirectory) : [];
 
     if (shouldFinalizeDate) {
-      await context.env.DB.prepare(`INSERT OR REPLACE INTO ${DAILY_FETCH_TABLE} (date, cached_at) VALUES (?, CURRENT_TIMESTAMP)`)
-        .bind(localDate)
-        .run();
+      await context.env.DB.batch([
+        context.env.DB.prepare(`DELETE FROM ${DAILY_TABLE} WHERE date = ?`).bind(localDate),
+        context.env.DB.prepare(
+          `INSERT INTO ${DAILY_TABLE}
+            (date, agent_id, agent_name, agent_email, handled_tickets, cached_at)
+           SELECT
+            date,
+            agent_id,
+            COALESCE(MAX(NULLIF(agent_name, '')), agent_id),
+            COALESCE(MAX(NULLIF(agent_email, '')), ''),
+            COUNT(*),
+            CURRENT_TIMESTAMP
+           FROM ${DETAIL_TABLE}
+           WHERE date = ?
+           GROUP BY date, agent_id`,
+        ).bind(localDate),
+        context.env.DB.prepare(`INSERT OR REPLACE INTO ${DAILY_FETCH_TABLE} (date, cached_at) VALUES (?, CURRENT_TIMESTAMP)`).bind(localDate),
+      ]);
       const finalizedRows = await readCachedDay(context.env, localDate);
       const finalizedDetails = await readCachedDetails(context.env, localDate);
       rows = filterRows(finalizedRows || [], filters, agentDirectory);

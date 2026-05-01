@@ -163,6 +163,10 @@ const state = {
       groupSearch: "",
     },
     appliedFilters: null,
+    importOptions: {
+      sliceMinutes: 10,
+      concurrency: 1,
+    },
     data: null,
     expandedAgents: new Set(),
     defaultAgentsApplied: false,
@@ -2355,9 +2359,32 @@ async function finalizeHelpdeskAnalyticsDay(range, filters) {
   return api(`/api/helpdesk/analytics?${params.toString()}`);
 }
 
+function helpdeskImportSliceMs() {
+  const minutes = Number(state.helpdesk_analytics.importOptions.sliceMinutes || 10);
+  const safeMinutes = [1, 5, 10, 15, 30, 60].includes(minutes) ? minutes : 10;
+  return safeMinutes * 60 * 1000;
+}
+
+function helpdeskImportConcurrency() {
+  const concurrency = Number(state.helpdesk_analytics.importOptions.concurrency || 1);
+  return Math.min(6, Math.max(1, Number.isFinite(concurrency) ? Math.floor(concurrency) : 1));
+}
+
+async function runHelpdeskImportChunkBatch(chunks, filters, dayLabel, completedOffset = 0) {
+  const concurrency = helpdeskImportConcurrency();
+  for (let index = 0; index < chunks.length; index += concurrency) {
+    const batch = chunks.slice(index, index + concurrency);
+    const completed = completedOffset + index;
+    state.helpdesk_analytics.loadStatus = `Importing ${dayLabel} from HelpDesk (${completed + 1}-${completed + batch.length}/${completedOffset + chunks.length})...`;
+    renderHelpdeskAnalytics();
+    await Promise.all(batch.map((chunk) => fetchHelpdeskAnalyticsRange(chunk, filters, 0, true)));
+    if (index + concurrency < chunks.length) await sleep(150);
+  }
+}
+
 async function importHelpdeskAnalyticsFullDay(range, filters) {
   const chunks = [];
-  const chunkMs = 10 * 60 * 1000;
+  const chunkMs = helpdeskImportSliceMs();
   for (let start = range.from.getTime(); start < range.to.getTime(); start += chunkMs) {
     chunks.push({
       from: new Date(start),
@@ -2368,12 +2395,13 @@ async function importHelpdeskAnalyticsFullDay(range, filters) {
   }
 
   const dayLabel = range.from.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  for (const [index, chunk] of chunks.entries()) {
-    state.helpdesk_analytics.loadStatus = `Importing ${dayLabel} from HelpDesk (${index + 1}/${chunks.length})...`;
+  const firstChunk = chunks.shift();
+  if (firstChunk) {
+    state.helpdesk_analytics.loadStatus = `Importing ${dayLabel} from HelpDesk (1/${chunks.length + 1})...`;
     renderHelpdeskAnalytics();
-    await fetchHelpdeskAnalyticsRange(chunk, filters, 0, true);
-    if (index < chunks.length - 1) await sleep(150);
+    await fetchHelpdeskAnalyticsRange(firstChunk, filters, 0, true);
   }
+  await runHelpdeskImportChunkBatch(chunks, filters, dayLabel, firstChunk ? 1 : 0);
 
   state.helpdesk_analytics.loadStatus = `Saving ${dayLabel} analytics...`;
   renderHelpdeskAnalytics();
@@ -2645,9 +2673,26 @@ function renderHelpdeskAnalytics() {
 
   const actionBar = document.createElement("div");
   actionBar.className = "helpdesk-analytics-actions";
+  const importOptions = state.helpdesk_analytics.importOptions;
   actionBar.innerHTML = `
     <button id="helpdeskAnalyticsApplyBtn" class="btn btn-primary" type="button">Filter</button>
     <button id="helpdeskAnalyticsImportBtn" class="btn btn-outline-primary" type="button">Import from HelpDesk</button>
+    <label class="helpdesk-import-option">
+      <span>Slice</span>
+      <select id="helpdeskImportSlice" class="form-select form-select-sm">
+        ${[1, 5, 10, 15, 30, 60]
+          .map((minutes) => `<option value="${minutes}" ${Number(importOptions.sliceMinutes) === minutes ? "selected" : ""}>${minutes} min</option>`)
+          .join("")}
+      </select>
+    </label>
+    <label class="helpdesk-import-option">
+      <span>At once</span>
+      <select id="helpdeskImportConcurrency" class="form-select form-select-sm">
+        ${[1, 2, 3, 4, 5, 6]
+          .map((count) => `<option value="${count}" ${Number(importOptions.concurrency) === count ? "selected" : ""}>${count}</option>`)
+          .join("")}
+      </select>
+    </label>
     <button id="helpdeskAnalyticsPdfBtn" class="btn btn-outline-secondary" type="button" ${data ? "" : "disabled"}>Export PDF</button>
     <button id="helpdeskAnalyticsExcelBtn" class="btn btn-outline-secondary" type="button" ${data ? "" : "disabled"}>Export Excel</button>
     <button id="helpdeskAnalyticsResetBtn" class="btn btn-outline-secondary" type="button">Reset filters</button>
@@ -2698,6 +2743,12 @@ function renderHelpdeskAnalytics() {
   });
   document.getElementById("helpdeskAnalyticsImportBtn")?.addEventListener("click", () => {
     importHelpdeskAnalytics();
+  });
+  document.getElementById("helpdeskImportSlice")?.addEventListener("change", (event) => {
+    state.helpdesk_analytics.importOptions.sliceMinutes = Number(event.target.value || 10);
+  });
+  document.getElementById("helpdeskImportConcurrency")?.addEventListener("change", (event) => {
+    state.helpdesk_analytics.importOptions.concurrency = Number(event.target.value || 1);
   });
   document.getElementById("helpdeskAnalyticsPdfBtn")?.addEventListener("click", () => {
     exportHelpdeskAnalyticsPdf();
