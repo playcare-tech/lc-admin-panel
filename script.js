@@ -1265,7 +1265,7 @@ function renderAdminUsers() {
                             <td>${new Date(user.created_at).toLocaleString()}</td>
                             <td>${escapeHtml(user.created_by || "-")}</td>
                             <td>
-                              ${(canManageAdmins() || user.username === state.user) ? `<button class="btn btn-sm btn-outline-danger" type="button" data-reset-admin-2fa="${escapeHtml(user.username)}">Reset 2FA</button>` : ""}
+                              ${(canManageAdmins() || user.username === state.user) ? `<button class="btn btn-sm btn-outline-danger" type="button" data-reset-admin-2fa="${encodeURIComponent(user.username)}">Reset 2FA</button>` : ""}
                             </td>
                           </tr>
                         `,
@@ -4570,7 +4570,7 @@ document.addEventListener("click", async (event) => {
   event.preventDefault();
   event.stopPropagation();
 
-  const username = button.dataset.resetAdmin2fa;
+  const username = decodeURIComponent(button.dataset.resetAdmin2fa || "");
   setMessage(statusMessage, username ? `Preparing 2FA reset for ${username}...` : "Missing admin username.", username ? "info" : "error");
   if (!username || !window.confirm(`Reset 2FA for ${username}? They will need to set a new password and Google Authenticator on next login.`)) {
     return;
