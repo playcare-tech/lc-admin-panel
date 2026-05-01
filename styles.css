@@ -466,6 +466,14 @@ body {
   gap: 14px;
 }
 
+.admin-users-grid {
+  grid-template-columns: minmax(360px, 440px) minmax(0, 1fr);
+}
+
+.admin-users-table-shell {
+  grid-column: 1 / -1;
+}
+
 .card-shell,
 .table-shell,
 .editor-shell {
@@ -666,6 +674,45 @@ body {
   align-items: center;
   margin-right: 10px;
   white-space: nowrap;
+}
+
+.admin-users-table-shell .admin-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.admin-users-table-shell .admin-table th:nth-child(1),
+.admin-users-table-shell .admin-table td:nth-child(1) {
+  width: 26%;
+  overflow-wrap: anywhere;
+}
+
+.admin-users-table-shell .admin-table th:nth-child(2),
+.admin-users-table-shell .admin-table td:nth-child(2),
+.admin-users-table-shell .admin-table th:nth-child(3),
+.admin-users-table-shell .admin-table td:nth-child(3) {
+  width: 10%;
+}
+
+.admin-users-table-shell .admin-table th:nth-child(4),
+.admin-users-table-shell .admin-table td:nth-child(4) {
+  width: 20%;
+}
+
+.admin-users-table-shell .admin-table th:nth-child(5),
+.admin-users-table-shell .admin-table td:nth-child(5) {
+  width: 16%;
+}
+
+.admin-users-table-shell .admin-table th:nth-child(6),
+.admin-users-table-shell .admin-table td:nth-child(6) {
+  width: 12%;
+  overflow-wrap: anywhere;
+}
+
+.admin-users-table-shell .admin-table th:nth-child(7),
+.admin-users-table-shell .admin-table td:nth-child(7) {
+  width: 110px;
 }
 
 .modal-overlay {

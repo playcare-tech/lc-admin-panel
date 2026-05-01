@@ -1201,7 +1201,7 @@ function renderAdminUsers() {
       { label: "App URL", value: "LC", meta: APP_URL },
       { label: "Mode", value: "D1", meta: "Managed in database" },
     ])}
-    <div class="section-grid">
+    <div class="section-grid admin-users-grid">
       <div class="card-shell">
         <div class="section-title">Create admin user</div>
         <form id="createAdminUserForm" class="row g-2">
@@ -1238,7 +1238,7 @@ function renderAdminUsers() {
         <p class="subtle mb-3">Clear only the cached HelpDesk analytics tables in D1. Admin users, logs, agents, and teams are not touched.</p>
         <button type="button" id="clearHelpdeskAnalyticsCacheBtn" class="btn btn-outline-danger">Clear HelpDesk analytics cache</button>
       </div>
-      <div class="table-shell">
+      <div class="table-shell admin-users-table-shell">
         ${
           state.adminUsers.length
             ? `<div class="table-responsive">
