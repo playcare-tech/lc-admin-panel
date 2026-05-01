@@ -452,7 +452,9 @@ async function listTicketsForRange(env, from, to) {
       const lastTicket = tickets[tickets.length - 1];
       const lastId = lastTicket ? normalizeTicketId(lastTicket) : "";
       const lastValue = lastTicket?.updatedAt || lastTicket?.updated_at || lastTicket?.lastMessageAt;
-      nextCursor = tickets.length === PAGE_SIZE && lastId && lastValue ? { id: lastId, value: lastValue } : null;
+      const lastDate = lastValue ? new Date(lastValue) : null;
+      const rangeComplete = lastDate && isValidDate(lastDate) && lastDate >= to;
+      nextCursor = !rangeComplete && tickets.length === PAGE_SIZE && lastId && lastValue ? { id: lastId, value: lastValue } : null;
       page += 1;
       pageBudget -= 1;
     } while (nextCursor && pageBudget > 0);
