@@ -626,7 +626,7 @@ export async function onRequest(context) {
     let detailRows = cachedRows ? filterRows(cachedDetails, filters, agentDirectory) : [];
 
     if (shouldFinalizeDate) {
-      await env.DB.prepare(`INSERT OR REPLACE INTO ${DAILY_FETCH_TABLE} (date, cached_at) VALUES (?, CURRENT_TIMESTAMP)`)
+      await context.env.DB.prepare(`INSERT OR REPLACE INTO ${DAILY_FETCH_TABLE} (date, cached_at) VALUES (?, CURRENT_TIMESTAMP)`)
         .bind(localDate)
         .run();
       const finalizedRows = await readCachedDay(context.env, localDate);
