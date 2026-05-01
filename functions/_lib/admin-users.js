@@ -285,7 +285,10 @@ export async function enableAdminTotp(env, username, secret) {
 
 export async function resetAdminTotp(env, username, resetBy) {
   await ensureAdminUsersTable(env.DB);
-  const result = await env.DB.prepare(
+  const existing = await findAdminUserByUsername(env, username);
+  if (!existing) throw new Error("Admin user was not found.");
+
+  await env.DB.prepare(
     `
       UPDATE admin_users
       SET totp_secret = NULL,
@@ -299,7 +302,6 @@ export async function resetAdminTotp(env, username, resetBy) {
   )
     .bind(new Date().toISOString(), resetBy || null, username)
     .run();
-  if (!result.meta?.changes) throw new Error("Admin user was not found.");
 }
 
 export async function updateAdminPermissions(env, username, { canManageUsers = false, canManageAdmins = false } = {}) {

@@ -4401,22 +4401,31 @@ function bindAppEvents() {
       state.helpdesk_analytics.loadProgress = null;
     }, "HelpDesk analytics cache cleared.");
   });
-  document.querySelectorAll("[data-reset-admin-2fa]").forEach((button) => {
-    button.onclick = async () => {
-      const username = button.dataset.resetAdmin2fa;
-      if (!username || !window.confirm(`Reset 2FA for ${username}? They will need to set a new password and Google Authenticator on next login.`)) {
-        return;
-      }
-      await withBusyState(async () => {
-        await api("/api/admin-users", {
-          method: "PATCH",
-          body: {
-            action: "reset_2fa",
-            username,
-          },
-        });
-      }, `2FA reset for ${username}.`);
-    };
+  document.querySelector(".admin-users-table-shell")?.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-reset-admin-2fa]");
+    if (!button) return;
+
+    const username = button.dataset.resetAdmin2fa;
+    if (!username || !window.confirm(`Reset 2FA for ${username}? They will need to set a new password and Google Authenticator on next login.`)) {
+      return;
+    }
+
+    button.disabled = true;
+    try {
+      setMessage(statusMessage, `Resetting 2FA for ${username}...`);
+      await api("/api/admin-users", {
+        method: "PATCH",
+        body: {
+          action: "reset_2fa",
+          username,
+        },
+      });
+      await refreshData();
+      setMessage(statusMessage, `2FA reset for ${username}.`, "success");
+    } catch (error) {
+      button.disabled = false;
+      setMessage(statusMessage, error.message, "error");
+    }
   });
 
   document.getElementById("createAdminUserForm")?.addEventListener("submit", async (event) => {

@@ -48,7 +48,7 @@ export async function onRequest(context) {
           details: `Reset 2FA for admin user ${username}.`,
         });
 
-        return json({ ok: true });
+        return json({ ok: true, username, action });
       }
 
       if (action === "update_permissions") {
