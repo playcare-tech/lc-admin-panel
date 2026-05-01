@@ -393,6 +393,27 @@ async function writeCachedDay(env, date, detailRows, { markFetched = true } = {}
   return results || [];
 }
 
+async function finalizeCachedDay(env, date) {
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM ${DAILY_TABLE} WHERE date = ?`).bind(date),
+    env.DB.prepare(
+      `INSERT INTO ${DAILY_TABLE}
+        (date, agent_id, agent_name, agent_email, handled_tickets, cached_at)
+       SELECT
+        date,
+        agent_id,
+        COALESCE(MAX(NULLIF(agent_name, '')), agent_id),
+        COALESCE(MAX(NULLIF(agent_email, '')), ''),
+        COUNT(*),
+        CURRENT_TIMESTAMP
+       FROM ${DETAIL_TABLE}
+       WHERE date = ?
+       GROUP BY date, agent_id`,
+    ).bind(date),
+    env.DB.prepare(`INSERT OR REPLACE INTO ${DAILY_FETCH_TABLE} (date, cached_at) VALUES (?, CURRENT_TIMESTAMP)`).bind(date),
+  ]);
+}
+
 function filterRows(rows, filters, agentDirectory = new Map()) {
   return rows.filter((row) => matchesFilters(row.agent_id, filters, agentDirectory));
 }
@@ -583,6 +604,52 @@ function rowsToResponse(rows, detailRows, from, to, agentDirectory, cache = {}) 
   };
 }
 
+function splitRangeByLocalDay(from, to, timezoneOffsetMinutes) {
+  const ranges = [];
+  let cursor = new Date(from);
+
+  while (cursor < to) {
+    const localDate = dateKey(cursor, timezoneOffsetMinutes);
+    const nextLocalMidnight = new Date(`${localDate}T00:00:00.000Z`);
+    nextLocalMidnight.setUTCDate(nextLocalMidnight.getUTCDate() + 1);
+    const nextBoundary = new Date(nextLocalMidnight.getTime() + timezoneOffsetMinutes * 60000);
+    const rangeTo = new Date(Math.min(nextBoundary.getTime(), to.getTime()));
+    ranges.push({ from: cursor, to: rangeTo, date: localDate });
+    cursor = rangeTo;
+  }
+
+  return ranges;
+}
+
+export async function syncHelpDeskAnalyticsWindow(env, { from, to, timezoneOffsetMinutes = 0 } = {}) {
+  if (!env?.DB) throw new Error("Missing DB binding.");
+  if (!isValidDate(from) || !isValidDate(to) || to <= from) throw new Error("Invalid sync window.");
+
+  await ensureHelpDeskAnalyticsCache(env.DB);
+  const dashboard = await getHelpDeskDashboard(env);
+  const agentDirectory = buildAgentDirectory(dashboard);
+  const affectedDates = new Set();
+  let detailRows = 0;
+
+  for (const range of splitRangeByLocalDay(from, to, timezoneOffsetMinutes)) {
+    const importedDetails = await computeDay(env, range.from, range.to, timezoneOffsetMinutes, agentDirectory);
+    await writeCachedDay(env, range.date, importedDetails, { markFetched: false });
+    affectedDates.add(range.date);
+    detailRows += importedDetails.length;
+  }
+
+  for (const date of affectedDates) {
+    await finalizeCachedDay(env, date);
+  }
+
+  return {
+    from: from.toISOString(),
+    to: to.toISOString(),
+    dates: Array.from(affectedDates),
+    detail_rows: detailRows,
+  };
+}
+
 export async function onRequest(context) {
   if (context.request.method !== "GET") return methodNotAllowed(["GET"]);
 
@@ -628,24 +695,7 @@ export async function onRequest(context) {
     let detailRows = cachedRows ? filterRows(cachedDetails, filters, agentDirectory) : [];
 
     if (shouldFinalizeDate) {
-      await context.env.DB.batch([
-        context.env.DB.prepare(`DELETE FROM ${DAILY_TABLE} WHERE date = ?`).bind(localDate),
-        context.env.DB.prepare(
-          `INSERT INTO ${DAILY_TABLE}
-            (date, agent_id, agent_name, agent_email, handled_tickets, cached_at)
-           SELECT
-            date,
-            agent_id,
-            COALESCE(MAX(NULLIF(agent_name, '')), agent_id),
-            COALESCE(MAX(NULLIF(agent_email, '')), ''),
-            COUNT(*),
-            CURRENT_TIMESTAMP
-           FROM ${DETAIL_TABLE}
-           WHERE date = ?
-           GROUP BY date, agent_id`,
-        ).bind(localDate),
-        context.env.DB.prepare(`INSERT OR REPLACE INTO ${DAILY_FETCH_TABLE} (date, cached_at) VALUES (?, CURRENT_TIMESTAMP)`).bind(localDate),
-      ]);
+      await finalizeCachedDay(context.env, localDate);
       const finalizedRows = await readCachedDay(context.env, localDate);
       const finalizedDetails = await readCachedDetails(context.env, localDate);
       rows = filterRows(finalizedRows || [], filters, agentDirectory);

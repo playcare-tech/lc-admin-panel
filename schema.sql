@@ -144,3 +144,9 @@ CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily_fetches_v4 (
   date TEXT PRIMARY KEY,
   cached_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS helpdesk_analytics_sync_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);

@@ -5,6 +5,7 @@ pages_build_output_dir = "."
 
 [vars]
 LIVECHAT_API_VERSION = "v3.6"
+HELPDESK_ANALYTICS_TZ_OFFSET = "-120"
 
 [[d1_databases]]
 binding = "DB"

@@ -114,6 +114,9 @@ const state = {
   logsWarning: "",
   livechatSearch: "",
   helpdeskSearch: "",
+  helpdeskSync: null,
+  helpdeskSyncTimer: null,
+  helpdeskSyncInFlight: false,
   livechatGroupSearch: "",
   livechatGroupQuickFilter: "",
   livechatGroupPriorityFilter: "",
@@ -183,6 +186,7 @@ const appView = document.getElementById("appView");
 const loginForm = document.getElementById("loginForm");
 const loginMessage = document.getElementById("loginMessage");
 const statusMessage = document.getElementById("statusMessage");
+const syncStatusMessage = document.getElementById("syncStatusMessage");
 const sessionBadge = document.getElementById("sessionBadge");
 const pageTitle = document.getElementById("pageTitle");
 const appContent = document.getElementById("appContent");
@@ -230,11 +234,16 @@ function showApp() {
   loginView.classList.add("d-none");
   appView.classList.remove("d-none");
   sessionBadge.textContent = `Signed in as ${state.user}`;
+  startHelpdeskAutoSync();
 }
 
 function showLogin() {
   appView.classList.add("d-none");
   loginView.classList.remove("d-none");
+  if (state.helpdeskSyncTimer) {
+    clearInterval(state.helpdeskSyncTimer);
+    state.helpdeskSyncTimer = null;
+  }
 }
 
 function escapeHtml(value) {
@@ -2150,6 +2159,23 @@ function formatHelpdeskDateTime(value) {
   return date.toLocaleString();
 }
 
+function formatHelpdeskSyncStatus(sync = state.helpdeskSync) {
+  if (!sync) return "HelpDesk auto sync: loading...";
+  const lastRun = sync.last_success_at || sync.last_finished_at || sync.last_started_at;
+  if (!lastRun) return "HelpDesk auto sync: not run yet";
+  const date = new Date(lastRun);
+  const label = Number.isNaN(date.getTime()) ? lastRun : date.toLocaleString();
+  const status = sync.last_status === "error" ? `failed: ${sync.last_error || "unknown error"}` : sync.last_status || "unknown";
+  const rows = Number(sync.last_detail_rows || 0);
+  return `HelpDesk auto sync: ${label} (${status}, ${rows} ticket rows)`;
+}
+
+function renderHelpdeskSyncStatus() {
+  if (!syncStatusMessage) return;
+  syncStatusMessage.textContent = formatHelpdeskSyncStatus();
+  syncStatusMessage.dataset.tone = state.helpdeskSync?.last_status === "error" ? "error" : "info";
+}
+
 function plainMessageText(value) {
   return `${value || ""}`.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -3296,6 +3322,50 @@ async function fetchAnalytics() {
   }
 }
 
+async function fetchHelpdeskSyncStatus() {
+  const response = await api("/api/helpdesk/analytics-sync");
+  state.helpdeskSync = response.sync || null;
+  renderHelpdeskSyncStatus();
+}
+
+async function runHelpdeskAutoSync({ force = false } = {}) {
+  if (state.helpdeskSyncInFlight) return;
+  const lastRun = state.helpdeskSync?.last_started_at || state.helpdeskSync?.last_finished_at || state.helpdeskSync?.last_success_at;
+  const lastRunDate = lastRun ? new Date(lastRun) : null;
+  const isDue = force || !lastRunDate || Number.isNaN(lastRunDate.getTime()) || Date.now() - lastRunDate.getTime() >= 30 * 60 * 1000;
+  if (!isDue) return;
+
+  state.helpdeskSyncInFlight = true;
+  try {
+    const response = await api("/api/helpdesk/analytics-sync", {
+      method: "POST",
+      body: {
+        windowMinutes: 35,
+        overlapMinutes: 5,
+        tzOffset: new Date().getTimezoneOffset(),
+      },
+    });
+    state.helpdeskSync = response.sync || null;
+  } catch (error) {
+    state.helpdeskSync = {
+      ...(state.helpdeskSync || {}),
+      last_status: "error",
+      last_error: error.message,
+      last_finished_at: new Date().toISOString(),
+    };
+  } finally {
+    state.helpdeskSyncInFlight = false;
+    renderHelpdeskSyncStatus();
+  }
+}
+
+function startHelpdeskAutoSync() {
+  if (state.helpdeskSyncTimer) return;
+  state.helpdeskSyncTimer = setInterval(() => {
+    runHelpdeskAutoSync();
+  }, 30 * 60 * 1000);
+}
+
 function currentSectionTitle() {
   const titles = {
     "livechat-users": "LiveChat Users",
@@ -3605,11 +3675,12 @@ function renderApp() {
 async function refreshData() {
   setMessage(statusMessage, "Refreshing...");
 
-  const [livechatResult, helpdeskResult, adminUsersResult, logsResult] = await Promise.allSettled([
+  const [livechatResult, helpdeskResult, adminUsersResult, logsResult, syncResult] = await Promise.allSettled([
     api("/api/livechat/dashboard"),
     api("/api/helpdesk/dashboard"),
     api("/api/admin-users"),
     api("/api/logs"),
+    fetchHelpdeskSyncStatus(),
   ]);
 
   if (livechatResult.status === "fulfilled") {
@@ -3632,6 +3703,7 @@ async function refreshData() {
     helpdeskResult.status !== "fulfilled" ? `HelpDesk: ${helpdeskResult.reason.message}` : "",
     adminUsersResult.status !== "fulfilled" ? `Admin users: ${adminUsersResult.reason.message}` : "",
     state.logsWarning,
+    syncResult.status !== "fulfilled" ? `HelpDesk sync: ${syncResult.reason.message}` : "",
   ].filter(Boolean);
 
   setMessage(
@@ -4387,6 +4459,7 @@ loginForm?.addEventListener("submit", async (event) => {
     state.user = result.user;
     showApp();
     await refreshData();
+    runHelpdeskAutoSync();
   } catch (error) {
     setMessage(loginMessage, error.message, "error");
   }
@@ -4403,6 +4476,7 @@ async function bootstrap() {
     state.user = session.user;
     showApp();
     await refreshData();
+    runHelpdeskAutoSync();
   } catch {
     showLogin();
   }
