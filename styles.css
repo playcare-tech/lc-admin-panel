@@ -646,6 +646,11 @@ body {
   color: var(--danger);
 }
 
+.totp-setup-box {
+  display: grid;
+  gap: 8px;
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;

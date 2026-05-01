@@ -18,7 +18,13 @@ CREATE TABLE IF NOT EXISTS admin_users (
   password_salt TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  created_by TEXT
+  created_by TEXT,
+  totp_secret TEXT,
+  totp_enabled INTEGER NOT NULL DEFAULT 0,
+  totp_setup_required INTEGER NOT NULL DEFAULT 1,
+  password_reset_required INTEGER NOT NULL DEFAULT 0,
+  totp_reset_at TEXT,
+  totp_reset_by TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users (username);

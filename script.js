@@ -111,6 +111,7 @@ const DEFAULT_HELPDESK_ANALYTICS_AGENT_NAMES = [
 
 const state = {
   user: null,
+  loginChallenge: null,
   section: "livechat-users",
   livechat: { agents: [], groups: [] },
   helpdesk: { agents: [], teams: [] },
@@ -189,6 +190,7 @@ const state = {
 const loginView = document.getElementById("loginView");
 const appView = document.getElementById("appView");
 const loginForm = document.getElementById("loginForm");
+const loginChallengeFields = document.getElementById("loginChallengeFields");
 const loginMessage = document.getElementById("loginMessage");
 const statusMessage = document.getElementById("statusMessage");
 const syncStatusMessage = document.getElementById("syncStatusMessage");
@@ -249,6 +251,37 @@ function showLogin() {
     clearInterval(state.helpdeskSyncTimer);
     state.helpdeskSyncTimer = null;
   }
+}
+
+function renderLoginChallenge() {
+  if (!loginChallengeFields) return;
+  const challenge = state.loginChallenge;
+  if (!challenge) {
+    loginChallengeFields.innerHTML = "";
+    return;
+  }
+
+  loginChallengeFields.innerHTML = `
+    ${
+      challenge.requiresPasswordChange
+        ? `<input id="newPassword" name="newPassword" type="password" class="form-control" placeholder="New password (12+ characters)" autocomplete="new-password" required />`
+        : ""
+    }
+    ${
+      challenge.requiresTotpSetup
+        ? `<div class="totp-setup-box">
+            <div class="subtle">Add this account in Google Authenticator using the setup key, then enter the 6-digit code.</div>
+            <div class="credentials-box">${escapeHtml(challenge.setupSecret || "")}</div>
+            <input type="hidden" name="setupSecret" value="${escapeHtml(challenge.setupSecret || "")}" />
+          </div>`
+        : ""
+    }
+    ${
+      challenge.requiresOtp || challenge.requiresTotpSetup
+        ? `<input id="otp" name="otp" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" class="form-control" placeholder="Google Authenticator code" autocomplete="one-time-code" required />`
+        : ""
+    }
+  `;
 }
 
 function escapeHtml(value) {
@@ -1173,15 +1206,20 @@ function renderAdminUsers() {
           state.adminUsers.length
             ? `<div class="table-responsive">
                 <table class="table admin-table">
-                  <thead><tr><th>Username</th><th>Created at</th><th>Created by</th></tr></thead>
+                  <thead><tr><th>Username</th><th>2FA</th><th>Login reset</th><th>Created at</th><th>Created by</th><th></th></tr></thead>
                   <tbody>
                     ${state.adminUsers
                       .map(
                         (user) => `
                           <tr>
                             <td>${escapeHtml(user.username)}</td>
+                            <td>${Number(user.totp_enabled) ? "Enabled" : "Setup required"}</td>
+                            <td>${Number(user.password_reset_required) ? "Required" : "No"}</td>
                             <td>${new Date(user.created_at).toLocaleString()}</td>
                             <td>${escapeHtml(user.created_by || "-")}</td>
+                            <td>
+                              <button class="btn btn-sm btn-outline-danger" type="button" data-reset-admin-2fa="${escapeHtml(user.username)}">Reset 2FA</button>
+                            </td>
                           </tr>
                         `,
                       )
@@ -4315,6 +4353,23 @@ function bindAppEvents() {
       state.helpdesk_analytics.loadProgress = null;
     }, "HelpDesk analytics cache cleared.");
   });
+  document.querySelectorAll("[data-reset-admin-2fa]").forEach((button) => {
+    button.onclick = async () => {
+      const username = button.dataset.resetAdmin2fa;
+      if (!username || !window.confirm(`Reset 2FA for ${username}? They will need to set a new password and Google Authenticator on next login.`)) {
+        return;
+      }
+      await withBusyState(async () => {
+        await api("/api/admin-users", {
+          method: "PATCH",
+          body: {
+            action: "reset_2fa",
+            username,
+          },
+        });
+      }, `2FA reset for ${username}.`);
+    };
+  });
 
   document.getElementById("createAdminUserForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -4463,9 +4518,21 @@ loginForm?.addEventListener("submit", async (event) => {
       body: {
         username: `${formData.get("username") || ""}`.trim(),
         password: `${formData.get("password") || ""}`,
+        newPassword: `${formData.get("newPassword") || ""}`,
+        otp: `${formData.get("otp") || ""}`,
+        setupSecret: `${formData.get("setupSecret") || ""}`,
       },
     });
 
+    if (!result.ok && (result.requiresOtp || result.requiresTotpSetup || result.requiresPasswordChange)) {
+      state.loginChallenge = result;
+      renderLoginChallenge();
+      setMessage(loginMessage, result.message || "Continue sign in.", "info");
+      return;
+    }
+
+    state.loginChallenge = null;
+    renderLoginChallenge();
     state.user = result.user;
     showApp();
     await refreshData();
