@@ -109,6 +109,31 @@ const DEFAULT_HELPDESK_ANALYTICS_AGENT_NAMES = [
   "Viktoria Zaitsava",
 ];
 
+const HELPDESK_TICKET_STATUSES = [
+  { id: "open", label: "Open" },
+  { id: "pending", label: "Pending" },
+  { id: "onhold", label: "On hold" },
+  { id: "solved", label: "Solved" },
+  { id: "closed", label: "Closed" },
+];
+const HELPDESK_TICKET_FOLDERS = [
+  { id: "archive", label: "Archive" },
+  { id: "spam", label: "Spam" },
+  { id: "trash", label: "Trash" },
+];
+const HELPDESK_TICKET_PRIORITIES = [
+  { value: "", label: "Any priority" },
+  { value: "-10", label: "Low" },
+  { value: "0", label: "Medium" },
+  { value: "10", label: "High" },
+  { value: "20", label: "Urgent" },
+];
+const HELPDESK_TICKET_SORTS = [
+  { value: "createdAt", label: "Creation date" },
+  { value: "updatedAt", label: "Last activity" },
+  { value: "lastMessageAt", label: "Last message" },
+];
+
 const state = {
   user: null,
   permissions: {},
@@ -129,10 +154,37 @@ const state = {
     loading: false,
     error: null,
     inFlight: false,
+    queuedRefresh: null,
     tickets: [],
-    statuses: [],
+    counts: { statuses: {} },
+    tags: [],
+    filters: {
+      status: "open",
+      silo: "tickets",
+      pageSize: 40,
+      sortBy: "lastMessageAt",
+      order: "desc",
+      createdDateFrom: "",
+      createdDateTo: "",
+      updatedDateFrom: "",
+      updatedDateTo: "",
+      lastMessageFrom: "",
+      lastMessageTo: "",
+      priority: "",
+      tagId: "",
+    },
+    page: {
+      pageIndex: 0,
+      totalResults: 0,
+      totalPages: 0,
+      nextCursor: null,
+      prevCursor: null,
+      cursorPagination: true,
+      cursorStack: [],
+    },
     updatedAt: "",
     timer: null,
+    sidebarCollapsed: false,
   },
   livechatGroupSearch: "",
   livechatGroupQuickFilter: "",
@@ -2346,6 +2398,187 @@ function helpdeskTicketAgentMarkup(ticket) {
   `;
 }
 
+function helpdeskTicketPriorityLabel(value) {
+  return HELPDESK_TICKET_PRIORITIES.find((priority) => priority.value === `${value}`)?.label || "Medium";
+}
+
+function helpdeskTicketTagsMarkup(ticket) {
+  const tagMap = new Map((state.helpdeskTickets.tags || []).map((tag) => [String(tag.id), tag.name]));
+  const tags = (ticket.tagIDs || []).map((tagId) => tagMap.get(String(tagId))).filter(Boolean);
+  if (!tags.length) return "";
+  return `
+    <div class="ticket-tag-list">
+      ${tags.map((tag) => `<span class="chip ticket-tag">${escapeHtml(tag)}</span>`).join("")}
+    </div>
+  `;
+}
+
+function ticketCountLabel(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? String(number) : "0";
+}
+
+function activeHelpdeskTicketViewLabel() {
+  const filters = state.helpdeskTickets.filters;
+  if (filters.silo !== "tickets") {
+    return HELPDESK_TICKET_FOLDERS.find((folder) => folder.id === filters.silo)?.label || "Tickets";
+  }
+  return HELPDESK_TICKET_STATUSES.find((status) => status.id === filters.status)?.label || "Open";
+}
+
+function resetHelpdeskTicketPagination() {
+  state.helpdeskTickets.page.pageIndex = 0;
+  state.helpdeskTickets.page.nextCursor = null;
+  state.helpdeskTickets.page.prevCursor = null;
+  state.helpdeskTickets.page.cursorStack = [];
+}
+
+function renderHelpdeskTicketsSidebar() {
+  const { counts, filters, sidebarCollapsed } = state.helpdeskTickets;
+  return `
+    <aside class="tickets-left-rail ${sidebarCollapsed ? "collapsed" : ""}">
+      <div class="tickets-left-rail-head">
+        <span>${sidebarCollapsed ? "" : "Queues"}</span>
+        <button
+          id="helpdeskTicketsSidebarToggle"
+          class="tickets-rail-toggle"
+          type="button"
+          aria-label="${sidebarCollapsed ? "Expand ticket menu" : "Collapse ticket menu"}"
+        >
+          <i class="bi ${sidebarCollapsed ? "bi-chevron-right" : "bi-chevron-left"}"></i>
+        </button>
+      </div>
+      ${
+        sidebarCollapsed
+          ? ""
+          : `
+            <div class="tickets-rail-section">
+              <div class="tickets-rail-label">Statuses</div>
+              ${HELPDESK_TICKET_STATUSES.map(
+                (status) => `
+                  <button
+                    class="tickets-rail-item ${filters.silo === "tickets" && filters.status === status.id ? "active" : ""}"
+                    type="button"
+                    data-helpdesk-ticket-status="${status.id}"
+                  >
+                    <span>${escapeHtml(status.label)}</span>
+                    <span class="tickets-rail-count">${ticketCountLabel(counts.statuses?.[status.id])}</span>
+                  </button>
+                `,
+              ).join("")}
+            </div>
+            <div class="tickets-rail-section">
+              <div class="tickets-rail-label">Folders</div>
+              ${HELPDESK_TICKET_FOLDERS.map(
+                (folder) => `
+                  <button
+                    class="tickets-rail-item ${filters.silo === folder.id ? "active" : ""}"
+                    type="button"
+                    data-helpdesk-ticket-folder="${folder.id}"
+                  >
+                    <span>${escapeHtml(folder.label)}</span>
+                  </button>
+                `,
+              ).join("")}
+            </div>
+          `
+      }
+    </aside>
+  `;
+}
+
+function renderHelpdeskTicketsFilterBar() {
+  const { filters, tags } = state.helpdeskTickets;
+  return `
+    <div class="tickets-filter-bar">
+      <label class="tickets-filter-group">
+        <span>Creation date</span>
+        <div class="tickets-date-pair">
+          <input id="helpdeskTicketCreatedFrom" class="form-control" type="date" value="${escapeHtml(filters.createdDateFrom)}" />
+          <input id="helpdeskTicketCreatedTo" class="form-control" type="date" value="${escapeHtml(filters.createdDateTo)}" />
+        </div>
+      </label>
+      <label class="tickets-filter-group">
+        <span>Last activity</span>
+        <div class="tickets-date-pair">
+          <input id="helpdeskTicketUpdatedFrom" class="form-control" type="date" value="${escapeHtml(filters.updatedDateFrom)}" />
+          <input id="helpdeskTicketUpdatedTo" class="form-control" type="date" value="${escapeHtml(filters.updatedDateTo)}" />
+        </div>
+      </label>
+      <label class="tickets-filter-group">
+        <span>Last message</span>
+        <div class="tickets-date-pair">
+          <input id="helpdeskTicketLastMessageFrom" class="form-control" type="date" value="${escapeHtml(filters.lastMessageFrom)}" />
+          <input id="helpdeskTicketLastMessageTo" class="form-control" type="date" value="${escapeHtml(filters.lastMessageTo)}" />
+        </div>
+      </label>
+      <label class="tickets-filter-group">
+        <span>Priority</span>
+        <select id="helpdeskTicketPriority" class="form-select">
+          ${HELPDESK_TICKET_PRIORITIES.map(
+            (priority) =>
+              `<option value="${escapeHtml(priority.value)}" ${filters.priority === priority.value ? "selected" : ""}>${escapeHtml(priority.label)}</option>`,
+          ).join("")}
+        </select>
+      </label>
+      <label class="tickets-filter-group">
+        <span>Tag</span>
+        <select id="helpdeskTicketTag" class="form-select">
+          <option value="" ${filters.tagId ? "" : "selected"}>Any tag</option>
+          ${tags
+            .map(
+              (tag) =>
+                `<option value="${escapeHtml(tag.id)}" ${filters.tagId === tag.id ? "selected" : ""}>${escapeHtml(tag.name)} (${ticketCountLabel(tag.count)})</option>`,
+            )
+            .join("")}
+        </select>
+      </label>
+      <label class="tickets-filter-group">
+        <span>Sort</span>
+        <select id="helpdeskTicketSortBy" class="form-select">
+          ${HELPDESK_TICKET_SORTS.map(
+            (sort) =>
+              `<option value="${escapeHtml(sort.value)}" ${filters.sortBy === sort.value ? "selected" : ""}>${escapeHtml(sort.label)}</option>`,
+          ).join("")}
+        </select>
+      </label>
+      <div class="tickets-filter-actions">
+        <button id="helpdeskTicketsFilterBtn" class="btn btn-primary" type="button">Filter</button>
+        <button id="helpdeskTicketsResetFiltersBtn" class="btn btn-outline-secondary" type="button">Reset</button>
+        <button id="helpdeskTicketsReloadBtn" class="btn btn-outline-secondary" type="button">
+          ${state.helpdeskTickets.loading ? "Loading..." : "Reload"}
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function renderHelpdeskTicketsPager() {
+  const { page, tickets } = state.helpdeskTickets;
+  const pageSize = Number(state.helpdeskTickets.filters.pageSize || 40);
+  const pageIndex = Number(page.pageIndex || 0);
+  const totalResults = Number(page.totalResults || tickets.length || 0);
+  const from = totalResults && tickets.length ? pageIndex * pageSize + 1 : 0;
+  const to = totalResults && tickets.length ? Math.min(totalResults, pageIndex * pageSize + tickets.length) : 0;
+  const hasPrev = page.cursorPagination && page.cursorStack.length > 0;
+  const hasNext = page.cursorPagination
+    ? page.nextCursor && (!totalResults || pageIndex * pageSize + tickets.length < totalResults)
+    : false;
+
+  return `
+    <div class="tickets-pager">
+      <div class="subtle">
+        ${totalResults ? `${from}-${to} of ${ticketCountLabel(totalResults)}` : "No matching tickets"}
+      </div>
+      <div class="tickets-pager-actions">
+        <button class="btn btn-sm btn-outline-secondary" type="button" data-helpdesk-ticket-page="prev" ${hasPrev ? "" : "disabled"}>Previous</button>
+        <span class="tickets-page-chip">Page ${pageIndex + 1}${page.totalPages ? ` of ${page.totalPages}` : ""}</span>
+        <button class="btn btn-sm btn-outline-secondary" type="button" data-helpdesk-ticket-page="next" ${hasNext ? "" : "disabled"}>Next</button>
+      </div>
+    </div>
+  `;
+}
+
 function helpdeskTicketReceivedDate(ticket) {
   const date = new Date(ticket.createdAt || ticket.ticket_created_at || "");
   return Number.isNaN(date.getTime()) ? null : date;
@@ -2483,77 +2716,85 @@ function renderHelpdeskRequesterTicketSidebar(ticket) {
 }
 
 function renderHelpdeskTickets() {
-  const { tickets, loading, error, updatedAt } = state.helpdeskTickets;
-  const openCount = tickets.filter((ticket) => ticket.status === "open").length;
-  const pendingCount = tickets.filter((ticket) => ticket.status === "pending").length;
-  const onholdCount = tickets.filter((ticket) => ticket.status === "onhold").length;
+  const { tickets, loading, error, updatedAt, counts } = state.helpdeskTickets;
+  const currentLabel = activeHelpdeskTicketViewLabel();
 
   return `
-    ${renderStats([
-      { label: "Tickets", value: tickets.length, meta: "Recent HelpDesk rows" },
-      { label: "Open", value: openCount, meta: "Waiting in HelpDesk" },
-      { label: "Pending", value: pendingCount, meta: "Pending requester or team" },
-      { label: "On hold", value: onholdCount, meta: updatedAt ? `Updated ${formatHelpdeskDateTime(updatedAt)}` : "Auto-refreshing" },
-    ])}
-    <div class="table-shell tickets-table-shell">
-      <div class="tickets-toolbar">
-        <div>
-          <div class="section-title">Tickets</div>
-          <div class="subtle">Live table refreshes every 15 seconds.</div>
+    <div class="tickets-workspace ${state.helpdeskTickets.sidebarCollapsed ? "tickets-workspace-collapsed" : ""}">
+      ${renderHelpdeskTicketsSidebar()}
+      <section class="tickets-main">
+        ${renderStats([
+          { label: currentLabel, value: state.helpdeskTickets.page.totalResults || tickets.length, meta: "Matching tickets" },
+          { label: "Open", value: ticketCountLabel(counts.statuses?.open), meta: "Open queue total" },
+          { label: "Pending", value: ticketCountLabel(counts.statuses?.pending), meta: "Pending queue total" },
+          { label: "On hold", value: ticketCountLabel(counts.statuses?.onhold), meta: updatedAt ? `Updated ${formatHelpdeskDateTime(updatedAt)}` : "Auto-refreshing" },
+        ])}
+        ${renderHelpdeskTicketsFilterBar()}
+        <div class="table-shell tickets-table-shell">
+          <div class="tickets-toolbar">
+            <div>
+              <div class="section-title">${escapeHtml(currentLabel)} tickets</div>
+              <div class="subtle">40 tickets per page. Live table refreshes every 30 seconds.</div>
+            </div>
+            ${renderHelpdeskTicketsPager()}
+          </div>
+          ${
+            error
+              ? `<div class="empty-state analytics-error">${escapeHtml(error)}</div>`
+              : tickets.length
+                ? `<div class="table-responsive">
+                    <table class="table admin-table tickets-table">
+                      <thead>
+                        <tr>
+                          <th>Open</th>
+                          <th>Requester (email)</th>
+                          <th>Subject</th>
+                          <th>Assigned agent (name and email)</th>
+                          <th>Priority</th>
+                          <th>Last activity</th>
+                          <th>Last message (at)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${tickets
+                          .map(
+                            (ticket) => `
+                              <tr>
+                                <td>
+                                  <button
+                                    class="btn btn-sm btn-outline-primary"
+                                    type="button"
+                                    data-helpdesk-ticket-open-live="${escapeHtml(ticket.id)}"
+                                  >Open</button>
+                                </td>
+                                <td>
+                                  <strong>${escapeHtml(helpdeskTicketRequesterLabel(ticket))}</strong>
+                                  ${ticket.requesterName ? `<div class="analytics-agent-sub">${escapeHtml(ticket.requesterName)}</div>` : ""}
+                                </td>
+                                <td>
+                                  <div class="ticket-subject-cell">
+                                    <strong>${escapeHtml(ticket.subject || "No subject")}</strong>
+                                    <span class="chip">${escapeHtml(ticket.status || "unknown")}</span>
+                                    ${ticket.short_id ? `<small>${escapeHtml(ticket.short_id)}</small>` : ""}
+                                    ${helpdeskTicketTagsMarkup(ticket)}
+                                  </div>
+                                </td>
+                                <td>${helpdeskTicketAgentMarkup(ticket)}</td>
+                                <td>${escapeHtml(helpdeskTicketPriorityLabel(ticket.priority))}</td>
+                                <td>${escapeHtml(formatHelpdeskDateTime(ticket.updatedAt))}</td>
+                                <td>${escapeHtml(formatHelpdeskDateTime(ticket.lastMessageAt))}</td>
+                              </tr>
+                            `,
+                          )
+                          .join("")}
+                      </tbody>
+                    </table>
+                  </div>`
+                : `<div class="empty-state">${loading ? "Loading HelpDesk tickets..." : "No HelpDesk tickets returned."}</div>`
+          }
+          ${renderHelpdeskTicketsPager()}
         </div>
-        <button id="helpdeskTicketsReloadBtn" class="btn btn-outline-secondary" type="button">
-          ${loading ? "Loading..." : "Reload tickets"}
-        </button>
-      </div>
-      ${
-        error
-          ? `<div class="empty-state analytics-error">${escapeHtml(error)}</div>`
-          : tickets.length
-            ? `<div class="table-responsive">
-                <table class="table admin-table tickets-table">
-                  <thead>
-                    <tr>
-                      <th>Open</th>
-                      <th>Requester (email)</th>
-                      <th>Subject</th>
-                      <th>Assigned agent (name and email)</th>
-                      <th>Last message (at)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${tickets
-                      .map(
-                        (ticket) => `
-                          <tr>
-                            <td>
-                              <button
-                                class="btn btn-sm btn-outline-primary"
-                                type="button"
-                                data-helpdesk-ticket-open-live="${escapeHtml(ticket.id)}"
-                              >Open</button>
-                            </td>
-                            <td>
-                              <strong>${escapeHtml(helpdeskTicketRequesterLabel(ticket))}</strong>
-                              ${ticket.requesterName ? `<div class="analytics-agent-sub">${escapeHtml(ticket.requesterName)}</div>` : ""}
-                            </td>
-                            <td>
-                              <div class="ticket-subject-cell">
-                                <strong>${escapeHtml(ticket.subject || "No subject")}</strong>
-                                <span class="chip">${escapeHtml(ticket.status || "unknown")}</span>
-                                ${ticket.short_id ? `<small>${escapeHtml(ticket.short_id)}</small>` : ""}
-                              </div>
-                            </td>
-                            <td>${helpdeskTicketAgentMarkup(ticket)}</td>
-                            <td>${escapeHtml(formatHelpdeskDateTime(ticket.lastMessageAt))}</td>
-                          </tr>
-                        `,
-                      )
-                      .join("")}
-                  </tbody>
-                </table>
-              </div>`
-            : `<div class="empty-state">${loading ? "Loading HelpDesk tickets..." : "No HelpDesk tickets returned."}</div>`
-      }
+      </section>
     </div>
   `;
 }
@@ -3777,27 +4018,144 @@ function startHelpdeskTicketsRealtime() {
     if (state.section === "helpdesk-tickets") {
       fetchHelpdeskTickets({ silent: true });
     }
-  }, 15 * 1000);
+  }, 30 * 1000);
+}
+
+function helpdeskTicketsCurrentCursor() {
+  return state.helpdeskTickets.page.cursorStack.at(-1) || null;
+}
+
+function helpdeskTicketsQueryParams({ includeCounts = true } = {}) {
+  const { filters } = state.helpdeskTickets;
+  const params = new URLSearchParams({
+    pageSize: String(filters.pageSize || 40),
+    status: filters.silo === "tickets" ? filters.status || "open" : "all",
+    silo: filters.silo || "tickets",
+    sortBy: filters.sortBy || "lastMessageAt",
+    order: filters.order || "desc",
+    includeCounts: includeCounts ? "1" : "0",
+  });
+  const cursor = helpdeskTicketsCurrentCursor();
+  if (cursor) {
+    params.set("cursorDirection", cursor.direction);
+    params.set("cursorValue", cursor.value);
+    params.set("cursorId", cursor.id);
+  }
+  [
+    "createdDateFrom",
+    "createdDateTo",
+    "updatedDateFrom",
+    "updatedDateTo",
+    "lastMessageFrom",
+    "lastMessageTo",
+    "priority",
+    "tagId",
+  ].forEach((key) => {
+    if (filters[key]) params.set(key, filters[key]);
+  });
+  return params;
 }
 
 async function fetchHelpdeskTickets({ silent = false } = {}) {
-  if (state.helpdeskTickets.inFlight) return;
+  if (state.helpdeskTickets.inFlight) {
+    state.helpdeskTickets.queuedRefresh = {
+      silent: state.helpdeskTickets.queuedRefresh ? state.helpdeskTickets.queuedRefresh.silent && silent : silent,
+    };
+    return;
+  }
   state.helpdeskTickets.inFlight = true;
+  state.helpdeskTickets.queuedRefresh = null;
   state.helpdeskTickets.loading = !silent || !state.helpdeskTickets.tickets.length;
   state.helpdeskTickets.error = null;
   if (state.section === "helpdesk-tickets") renderApp();
 
   try {
-    const response = await api("/api/helpdesk/tickets?pageSize=80&status=all");
+    const response = await api(`/api/helpdesk/tickets?${helpdeskTicketsQueryParams({ includeCounts: !silent }).toString()}`);
     state.helpdeskTickets.tickets = response.tickets || [];
-    state.helpdeskTickets.statuses = response.statuses || [];
+    if (response.counts) {
+      state.helpdeskTickets.counts = response.counts;
+    }
+    if (response.tags) {
+      state.helpdeskTickets.tags = response.tags;
+    }
+    state.helpdeskTickets.page = {
+      ...state.helpdeskTickets.page,
+      ...(response.page || {}),
+      pageIndex: state.helpdeskTickets.page.cursorStack.length,
+    };
     state.helpdeskTickets.updatedAt = response.updatedAt || new Date().toISOString();
   } catch (error) {
     state.helpdeskTickets.error = error.message;
   } finally {
     state.helpdeskTickets.loading = false;
     state.helpdeskTickets.inFlight = false;
-    if (state.section === "helpdesk-tickets") renderApp();
+    if (state.helpdeskTickets.queuedRefresh) {
+      const queuedRefresh = state.helpdeskTickets.queuedRefresh;
+      state.helpdeskTickets.queuedRefresh = null;
+      fetchHelpdeskTickets({ silent: queuedRefresh.silent });
+    } else if (state.section === "helpdesk-tickets") {
+      renderApp();
+    }
+  }
+}
+
+function selectHelpdeskTicketStatus(status) {
+  state.helpdeskTickets.filters.silo = "tickets";
+  state.helpdeskTickets.filters.status = status;
+  resetHelpdeskTicketPagination();
+  fetchHelpdeskTickets();
+}
+
+function selectHelpdeskTicketFolder(silo) {
+  state.helpdeskTickets.filters.silo = silo;
+  state.helpdeskTickets.filters.status = "all";
+  resetHelpdeskTicketPagination();
+  fetchHelpdeskTickets();
+}
+
+function applyHelpdeskTicketFiltersFromDom() {
+  const filters = state.helpdeskTickets.filters;
+  filters.createdDateFrom = document.getElementById("helpdeskTicketCreatedFrom")?.value || "";
+  filters.createdDateTo = document.getElementById("helpdeskTicketCreatedTo")?.value || "";
+  filters.updatedDateFrom = document.getElementById("helpdeskTicketUpdatedFrom")?.value || "";
+  filters.updatedDateTo = document.getElementById("helpdeskTicketUpdatedTo")?.value || "";
+  filters.lastMessageFrom = document.getElementById("helpdeskTicketLastMessageFrom")?.value || "";
+  filters.lastMessageTo = document.getElementById("helpdeskTicketLastMessageTo")?.value || "";
+  filters.priority = document.getElementById("helpdeskTicketPriority")?.value || "";
+  filters.tagId = document.getElementById("helpdeskTicketTag")?.value || "";
+  filters.sortBy = document.getElementById("helpdeskTicketSortBy")?.value || "lastMessageAt";
+  resetHelpdeskTicketPagination();
+  fetchHelpdeskTickets();
+}
+
+function resetHelpdeskTicketFilters() {
+  state.helpdeskTickets.filters = {
+    status: "open",
+    silo: "tickets",
+    pageSize: 40,
+    sortBy: "lastMessageAt",
+    order: "desc",
+    createdDateFrom: "",
+    createdDateTo: "",
+    updatedDateFrom: "",
+    updatedDateTo: "",
+    lastMessageFrom: "",
+    lastMessageTo: "",
+    priority: "",
+    tagId: "",
+  };
+  resetHelpdeskTicketPagination();
+  fetchHelpdeskTickets();
+}
+
+function goHelpdeskTicketPage(direction) {
+  const page = state.helpdeskTickets.page;
+  if (direction === "next" && page.nextCursor) {
+    page.cursorStack.push({ direction: "next", ...page.nextCursor });
+    fetchHelpdeskTickets();
+  } else if (direction === "prev" && page.cursorStack.length) {
+    page.cursorStack.pop();
+    fetchHelpdeskTickets();
   }
 }
 
@@ -4662,6 +5020,25 @@ function bindAppEvents() {
   });
   bindClick("helpdeskTicketsReloadBtn", () => {
     fetchHelpdeskTickets();
+  });
+  bindClick("helpdeskTicketsFilterBtn", () => {
+    applyHelpdeskTicketFiltersFromDom();
+  });
+  bindClick("helpdeskTicketsResetFiltersBtn", () => {
+    resetHelpdeskTicketFilters();
+  });
+  document.querySelectorAll("[data-helpdesk-ticket-page]").forEach((button) => {
+    button.onclick = () => goHelpdeskTicketPage(button.dataset.helpdeskTicketPage);
+  });
+  bindClick("helpdeskTicketsSidebarToggle", () => {
+    state.helpdeskTickets.sidebarCollapsed = !state.helpdeskTickets.sidebarCollapsed;
+    renderApp();
+  });
+  document.querySelectorAll("[data-helpdesk-ticket-status]").forEach((button) => {
+    button.onclick = () => selectHelpdeskTicketStatus(button.dataset.helpdeskTicketStatus);
+  });
+  document.querySelectorAll("[data-helpdesk-ticket-folder]").forEach((button) => {
+    button.onclick = () => selectHelpdeskTicketFolder(button.dataset.helpdeskTicketFolder);
   });
   document.querySelectorAll("[data-helpdesk-ticket-open-live]").forEach((button) => {
     button.onclick = () => openHelpdeskTicket(button.dataset.helpdeskTicketOpenLive);

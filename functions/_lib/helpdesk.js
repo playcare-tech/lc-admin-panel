@@ -40,7 +40,7 @@ function extractErrorMessage(payload, fallback) {
   return details ? `${message}: ${details}` : message;
 }
 
-export async function helpdeskRequest(env, path, options = {}) {
+export async function helpdeskRequestWithMeta(env, path, options = {}) {
   const response = await fetch(`https://api.helpdesk.com/v1${path}`, {
     method: options.method || "GET",
     headers: {
@@ -59,6 +59,15 @@ export async function helpdeskRequest(env, path, options = {}) {
     throw new Error(extractErrorMessage(payload, `HelpDesk ${path} failed.`));
   }
 
+  return {
+    payload,
+    headers: response.headers,
+    status: response.status,
+  };
+}
+
+export async function helpdeskRequest(env, path, options = {}) {
+  const { payload } = await helpdeskRequestWithMeta(env, path, options);
   return payload;
 }
 
@@ -245,6 +254,8 @@ export function normalizeHelpDeskTicketSummary(ticket, agentDirectory = new Map(
     status: ticket?.status || "",
     priority: ticket?.priority ?? 0,
     subject: ticket?.subject || "",
+    tagIDs: Array.isArray(ticket?.tagIDs) ? ticket.tagIDs.map(String) : [],
+    silo: ticket?.silo || "tickets",
     requester,
     requesterEmail: requester.email,
     requesterName: requester.name,
