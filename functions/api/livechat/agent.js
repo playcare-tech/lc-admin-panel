@@ -1,5 +1,5 @@
 import { requireAuth } from "../../_lib/auth.js";
-import { errorResponse, json, methodNotAllowed } from "../../_lib/http.js";
+import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 import { getLiveChatAgent } from "../../_lib/livechat.js";
 
 export async function onRequest(context) {
@@ -24,6 +24,6 @@ export async function onRequest(context) {
       agent: await getLiveChatAgent(context.env, agentId),
     });
   } catch (error) {
-    return errorResponse(error.message, 500);
+    return serverErrorResponse(error, "Failed to load LiveChat agent.");
   }
 }

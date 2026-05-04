@@ -1,5 +1,5 @@
 import { requireAuth } from "../../_lib/auth.js";
-import { errorResponse, json, methodNotAllowed } from "../../_lib/http.js";
+import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 import { getLiveChatDashboard, livechatReportsRequest } from "../../_lib/livechat.js";
 
 function isValidDate(value) {
@@ -469,6 +469,6 @@ export async function onRequest(context) {
       },
     });
   } catch (error) {
-    return errorResponse(error.message, 500);
+    return serverErrorResponse(error, "Failed to load LiveChat analytics.");
   }
 }

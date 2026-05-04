@@ -1,5 +1,5 @@
 const CREATE_ADMIN_USERS_SQL =
-  "CREATE TABLE IF NOT EXISTS admin_users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT, totp_secret TEXT, totp_enabled INTEGER NOT NULL DEFAULT 0, totp_setup_required INTEGER NOT NULL DEFAULT 1, password_reset_required INTEGER NOT NULL DEFAULT 0, totp_reset_at TEXT, totp_reset_by TEXT, can_manage_users INTEGER NOT NULL DEFAULT 0, can_manage_admins INTEGER NOT NULL DEFAULT 0, disabled_at TEXT, disabled_by TEXT)";
+  "CREATE TABLE IF NOT EXISTS admin_users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT, totp_secret TEXT, totp_enabled INTEGER NOT NULL DEFAULT 0, totp_setup_required INTEGER NOT NULL DEFAULT 1, password_reset_required INTEGER NOT NULL DEFAULT 0, totp_reset_at TEXT, totp_reset_by TEXT, totp_failed_attempts INTEGER NOT NULL DEFAULT 0, totp_first_failed_at TEXT, totp_locked_until TEXT, can_manage_users INTEGER NOT NULL DEFAULT 0, can_manage_admins INTEGER NOT NULL DEFAULT 0, disabled_at TEXT, disabled_by TEXT)";
 
 const CREATE_ADMIN_USERS_INDEX_SQL =
   "CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users (username)";
@@ -7,6 +7,9 @@ const CREATE_ADMIN_USERS_INDEX_SQL =
 const PBKDF2_ITERATIONS = 100000;
 const TOTP_STEP_SECONDS = 30;
 const TOTP_DIGITS = 6;
+const TOTP_RATE_LIMIT_MAX_ATTEMPTS = 5;
+const TOTP_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const TOTP_RATE_LIMIT_LOCK_MS = 15 * 60 * 1000;
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 function bytesToBase64(bytes) {
@@ -15,6 +18,28 @@ function bytesToBase64(bytes) {
     binary += String.fromCharCode(byte);
   }
   return btoa(binary);
+}
+
+function base64ToBytes(value) {
+  const binary = atob(value);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+function safeEqualBase64(left, right) {
+  let leftBytes;
+  let rightBytes;
+  try {
+    leftBytes = base64ToBytes(left);
+    rightBytes = base64ToBytes(right);
+  } catch {
+    return false;
+  }
+
+  if (leftBytes.byteLength !== rightBytes.byteLength) {
+    return false;
+  }
+
+  return crypto.subtle.timingSafeEqual(leftBytes, rightBytes);
 }
 
 function bytesToBase32(bytes) {
@@ -93,6 +118,25 @@ function createSalt() {
   return bytesToBase64(bytes);
 }
 
+export function validateAdminPassword(password) {
+  const value = `${password || ""}`;
+  if (value.length < 12) {
+    throw new Error("Password must be at least 12 characters long.");
+  }
+  if (!/[a-z]/.test(value)) {
+    throw new Error("Password must include a lowercase letter.");
+  }
+  if (!/[A-Z]/.test(value)) {
+    throw new Error("Password must include an uppercase letter.");
+  }
+  if (!/\d/.test(value)) {
+    throw new Error("Password must include a number.");
+  }
+  if (!/[^A-Za-z0-9]/.test(value)) {
+    throw new Error("Password must include a special character.");
+  }
+}
+
 export async function ensureAdminUsersTable(db) {
   if (!db) {
     throw new Error("Missing DB binding.");
@@ -108,6 +152,9 @@ export async function ensureAdminUsersTable(db) {
   await ensureColumn(db, columns, "password_reset_required", "INTEGER NOT NULL DEFAULT 0");
   await ensureColumn(db, columns, "totp_reset_at", "TEXT");
   await ensureColumn(db, columns, "totp_reset_by", "TEXT");
+  await ensureColumn(db, columns, "totp_failed_attempts", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn(db, columns, "totp_first_failed_at", "TEXT");
+  await ensureColumn(db, columns, "totp_locked_until", "TEXT");
   const addedCanManageUsers = await ensureColumn(db, columns, "can_manage_users", "INTEGER NOT NULL DEFAULT 0");
   const addedCanManageAdmins = await ensureColumn(db, columns, "can_manage_admins", "INTEGER NOT NULL DEFAULT 0");
   await ensureColumn(db, columns, "disabled_at", "TEXT");
@@ -121,7 +168,7 @@ export async function listAdminUsers(env) {
   await ensureAdminUsersTable(env.DB);
   const { results } = await env.DB.prepare(
     `
-      SELECT id, username, created_at, created_by, totp_enabled, totp_setup_required, password_reset_required, totp_reset_at, totp_reset_by, can_manage_users, can_manage_admins, disabled_at, disabled_by
+      SELECT id, username, created_at, created_by, totp_enabled, totp_setup_required, password_reset_required, totp_reset_at, totp_reset_by, totp_failed_attempts, totp_first_failed_at, totp_locked_until, can_manage_users, can_manage_admins, disabled_at, disabled_by
       FROM admin_users
       ORDER BY username ASC
     `,
@@ -134,7 +181,7 @@ export async function findAdminUserByUsername(env, username) {
   await ensureAdminUsersTable(env.DB);
   const result = await env.DB.prepare(
     `
-      SELECT id, username, password_salt, password_hash, created_at, created_by, totp_secret, totp_enabled, totp_setup_required, password_reset_required, totp_reset_at, totp_reset_by, can_manage_users, can_manage_admins, disabled_at, disabled_by
+      SELECT id, username, password_salt, password_hash, created_at, created_by, totp_secret, totp_enabled, totp_setup_required, password_reset_required, totp_reset_at, totp_reset_by, totp_failed_attempts, totp_first_failed_at, totp_locked_until, can_manage_users, can_manage_admins, disabled_at, disabled_by
       FROM admin_users
       WHERE username = ?
       LIMIT 1
@@ -148,6 +195,7 @@ export async function findAdminUserByUsername(env, username) {
 
 export async function createAdminUser(env, { username, password, createdBy, canManageUsers = false, canManageAdmins = false }) {
   await ensureAdminUsersTable(env.DB);
+  validateAdminPassword(password);
 
   const existing = await findAdminUserByUsername(env, username);
   if (existing) {
@@ -174,7 +222,20 @@ export async function verifyAdminCredentials(env, username, password) {
   }
 
   const hash = await hashPassword(password, user.password_salt);
-  return hash === user.password_hash ? user : null;
+  return safeEqualBase64(hash, user.password_hash) ? user : null;
+}
+
+export async function verifyFallbackAdminCredentials(env, username, password) {
+  if (!env.ADMIN_USERNAME || username !== env.ADMIN_USERNAME) {
+    return false;
+  }
+
+  if (env.ADMIN_PASSWORD_HASH && env.ADMIN_PASSWORD_SALT) {
+    const hash = await hashPassword(password, env.ADMIN_PASSWORD_SALT);
+    return safeEqualBase64(hash, env.ADMIN_PASSWORD_HASH);
+  }
+
+  return Boolean(env.ADMIN_PASSWORD && password === env.ADMIN_PASSWORD);
 }
 
 export function adminPermissions(user) {
@@ -257,8 +318,71 @@ export async function verifyTotpCode(secret, code, timestamp = Date.now()) {
   return false;
 }
 
+export function getTotpRateLimitState(user, timestamp = Date.now()) {
+  const lockedUntilMs = user?.totp_locked_until ? Date.parse(user.totp_locked_until) : 0;
+  if (Number.isFinite(lockedUntilMs) && lockedUntilMs > timestamp) {
+    return {
+      locked: true,
+      retryAfterSeconds: Math.ceil((lockedUntilMs - timestamp) / 1000),
+      lockedUntil: new Date(lockedUntilMs).toISOString(),
+    };
+  }
+
+  return { locked: false, retryAfterSeconds: 0, lockedUntil: "" };
+}
+
+export async function recordTotpFailure(env, username, timestamp = Date.now()) {
+  await ensureAdminUsersTable(env.DB);
+  const user = await findAdminUserByUsername(env, username);
+  if (!user) {
+    return { locked: false, retryAfterSeconds: 0, lockedUntil: "" };
+  }
+
+  const firstFailedMs = user.totp_first_failed_at ? Date.parse(user.totp_first_failed_at) : 0;
+  const withinWindow = Number.isFinite(firstFailedMs) && firstFailedMs > 0 && timestamp - firstFailedMs < TOTP_RATE_LIMIT_WINDOW_MS;
+  const attempts = withinWindow ? Number(user.totp_failed_attempts || 0) + 1 : 1;
+  const firstFailedAt = withinWindow ? user.totp_first_failed_at : new Date(timestamp).toISOString();
+  const lockedUntil = attempts >= TOTP_RATE_LIMIT_MAX_ATTEMPTS ? new Date(timestamp + TOTP_RATE_LIMIT_LOCK_MS).toISOString() : null;
+
+  await env.DB.prepare(
+    `
+      UPDATE admin_users
+      SET totp_failed_attempts = ?,
+          totp_first_failed_at = ?,
+          totp_locked_until = ?
+      WHERE username = ?
+    `,
+  )
+    .bind(attempts, firstFailedAt, lockedUntil, username)
+    .run();
+
+  return lockedUntil
+    ? {
+        locked: true,
+        retryAfterSeconds: Math.ceil(TOTP_RATE_LIMIT_LOCK_MS / 1000),
+        lockedUntil,
+      }
+    : { locked: false, retryAfterSeconds: 0, lockedUntil: "" };
+}
+
+export async function clearTotpRateLimit(env, username) {
+  await ensureAdminUsersTable(env.DB);
+  await env.DB.prepare(
+    `
+      UPDATE admin_users
+      SET totp_failed_attempts = 0,
+          totp_first_failed_at = NULL,
+          totp_locked_until = NULL
+      WHERE username = ?
+    `,
+  )
+    .bind(username)
+    .run();
+}
+
 export async function updateAdminPassword(env, username, password) {
   await ensureAdminUsersTable(env.DB);
+  validateAdminPassword(password);
   const salt = createSalt();
   const hash = await hashPassword(password, salt);
   await env.DB.prepare(
@@ -277,7 +401,12 @@ export async function enableAdminTotp(env, username, secret) {
   await env.DB.prepare(
     `
       UPDATE admin_users
-      SET totp_secret = ?, totp_enabled = 1, totp_setup_required = 0
+      SET totp_secret = ?,
+          totp_enabled = 1,
+          totp_setup_required = 0,
+          totp_failed_attempts = 0,
+          totp_first_failed_at = NULL,
+          totp_locked_until = NULL
       WHERE username = ?
     `,
   )
@@ -298,7 +427,10 @@ export async function resetAdminTotp(env, username, resetBy) {
           totp_setup_required = 1,
           password_reset_required = 1,
           totp_reset_at = ?,
-          totp_reset_by = ?
+          totp_reset_by = ?,
+          totp_failed_attempts = 0,
+          totp_first_failed_at = NULL,
+          totp_locked_until = NULL
       WHERE username = ?
     `,
   )

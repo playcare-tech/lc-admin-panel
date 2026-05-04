@@ -1,5 +1,5 @@
 import { requireAuth } from "../../_lib/auth.js";
-import { errorResponse, json, methodNotAllowed } from "../../_lib/http.js";
+import { json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 import { getLiveChatDashboard } from "../../_lib/livechat.js";
 
 export async function onRequest(context) {
@@ -15,6 +15,6 @@ export async function onRequest(context) {
   try {
     return json(await getLiveChatDashboard(context.env));
   } catch (error) {
-    return errorResponse(error.message, 500);
+    return serverErrorResponse(error, "Failed to load LiveChat dashboard.");
   }
 }

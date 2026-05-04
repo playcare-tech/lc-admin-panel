@@ -1,5 +1,5 @@
 import { requireAuth } from "../../_lib/auth.js";
-import { errorResponse, json, methodNotAllowed } from "../../_lib/http.js";
+import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 
 const DETAIL_TABLE = "helpdesk_analytics_handled_tickets_v4";
 
@@ -55,6 +55,6 @@ export async function onRequest(context) {
       },
     });
   } catch (error) {
-    return errorResponse(error.message || "Failed to load HelpDesk analytics ticket.", 500);
+    return serverErrorResponse(error, "Failed to load HelpDesk analytics ticket.");
   }
 }

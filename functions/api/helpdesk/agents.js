@@ -1,6 +1,6 @@
 import { requireAuth } from "../../_lib/auth.js";
 import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
-import { errorResponse, json, methodNotAllowed, readJson } from "../../_lib/http.js";
+import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import { writeLog } from "../../_lib/logs.js";
 
 export async function onRequest(context) {
@@ -77,8 +77,8 @@ export async function onRequest(context) {
       action: "create_agent",
       target: "unknown",
       status: "error",
-      details: error.message,
+      details: "Failed to create HelpDesk agent.",
     });
-    return errorResponse(error.message, 500);
+    return serverErrorResponse(error, "Failed to create HelpDesk agent.");
   }
 }

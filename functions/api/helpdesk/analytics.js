@@ -1,5 +1,5 @@
 import { requireAuth } from "../../_lib/auth.js";
-import { errorResponse, json, methodNotAllowed } from "../../_lib/http.js";
+import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
 
 const STATUSES = ["open", "pending", "onhold", "solved", "closed"];
@@ -723,12 +723,12 @@ export async function onRequest(context) {
 
     return json(rowsToResponse(rows, detailRows, from, to, agentDirectory, cacheMeta));
   } catch (error) {
-    const message = error.message || "HelpDesk analytics failed.";
-    const status = message.startsWith("Missing required param") || message.startsWith("Invalid date")
-      ? 400
-      : /too many requests|rate limit/i.test(message)
-        ? 429
-        : 500;
-    return errorResponse(message, status);
+    const message = error.message || "";
+    if (/too many requests|rate limit/i.test(message)) {
+      console.error("HelpDesk analytics rate limited.", error);
+      return errorResponse("HelpDesk analytics is rate limited. Try again later.", 429);
+    }
+
+    return serverErrorResponse(error, "Failed to load HelpDesk analytics.");
   }
 }

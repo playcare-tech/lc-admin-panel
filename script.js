@@ -112,6 +112,7 @@ const DEFAULT_HELPDESK_ANALYTICS_AGENT_NAMES = [
 const state = {
   user: null,
   permissions: {},
+  csrfToken: "",
   loginChallenge: null,
   section: "livechat-users",
   livechat: { agents: [], groups: [] },
@@ -208,12 +209,18 @@ function setMessage(element, message, tone = "info") {
 }
 
 async function api(path, options = {}) {
+  const method = (options.method || "GET").toUpperCase();
+  const headers = {
+    ...(options.body ? { "Content-Type": "application/json" } : {}),
+    ...(options.headers || {}),
+  };
+  if (state.csrfToken && !["GET", "HEAD", "OPTIONS"].includes(method)) {
+    headers["X-CSRF-Token"] = state.csrfToken;
+  }
+
   const response = await fetch(path, {
-    method: options.method || "GET",
-    headers: {
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...(options.headers || {}),
-    },
+    method,
+    headers,
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
 
@@ -246,6 +253,9 @@ function showApp() {
 }
 
 function showLogin() {
+  state.user = null;
+  state.permissions = {};
+  state.csrfToken = "";
   appView.classList.add("d-none");
   loginView.classList.remove("d-none");
   if (state.helpdeskSyncTimer) {
@@ -265,7 +275,7 @@ function renderLoginChallenge() {
   loginChallengeFields.innerHTML = `
     ${
       challenge.requiresPasswordChange
-        ? `<input id="newPassword" name="newPassword" type="password" class="form-control" placeholder="New password (12+ characters)" autocomplete="new-password" required />`
+        ? `<input id="newPassword" name="newPassword" type="password" class="form-control" placeholder="New password (12+ chars, Aa1!)" autocomplete="new-password" required />`
         : ""
     }
     ${
@@ -577,10 +587,15 @@ function ensureSelection(values, label) {
   }
 }
 
-function generatePassword(length = 14) {
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
+function generatePassword(length = 16) {
+  const groups = ["ABCDEFGHJKLMNPQRSTUVWXYZ", "abcdefghijkmnopqrstuvwxyz", "23456789", "!@#$%"];
+  const alphabet = groups.join("");
   const bytes = crypto.getRandomValues(new Uint8Array(length));
-  return Array.from(bytes, (value) => alphabet[value % alphabet.length]).join("");
+  const chars = Array.from(bytes, (value) => alphabet[value % alphabet.length]);
+  groups.forEach((group, index) => {
+    chars[index] = group[bytes[index] % group.length];
+  });
+  return chars.join("");
 }
 
 function priorityLabel(priority) {
@@ -1209,7 +1224,7 @@ function renderAdminUsers() {
             <input id="adminUsername" class="form-control" type="text" placeholder="Username" required />
           </div>
           <div class="col-12">
-            <input id="adminPassword" class="form-control" type="text" placeholder="Password" required value="${escapeHtml(state.generatedAdminPassword)}" />
+            <input id="adminPassword" class="form-control" type="text" placeholder="Password (12+ chars, Aa1!)" required value="${escapeHtml(state.generatedAdminPassword)}" />
           </div>
           <div class="col-12 d-flex gap-2 flex-wrap">
             <button type="button" id="generateAdminPasswordBtn" class="btn btn-outline-secondary">Generate password</button>
@@ -4678,6 +4693,7 @@ loginForm?.addEventListener("submit", async (event) => {
     renderLoginChallenge();
     state.user = result.user;
     state.permissions = result.permissions || {};
+    state.csrfToken = result.csrfToken || "";
     showApp();
     await refreshData();
     runHelpdeskAutoSync();
@@ -4696,6 +4712,7 @@ async function bootstrap() {
 
     state.user = session.user;
     state.permissions = session.permissions || {};
+    state.csrfToken = session.csrfToken || "";
     showApp();
     await refreshData();
     runHelpdeskAutoSync();

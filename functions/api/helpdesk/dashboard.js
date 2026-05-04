@@ -1,6 +1,6 @@
 import { requireAuth } from "../../_lib/auth.js";
 import { getHelpDeskDashboard } from "../../_lib/helpdesk.js";
-import { errorResponse, json, methodNotAllowed } from "../../_lib/http.js";
+import { json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 
 export async function onRequest(context) {
   if (context.request.method !== "GET") {
@@ -15,6 +15,6 @@ export async function onRequest(context) {
   try {
     return json(await getHelpDeskDashboard(context.env));
   } catch (error) {
-    return errorResponse(error.message, 500);
+    return serverErrorResponse(error, "Failed to load HelpDesk dashboard.");
   }
 }

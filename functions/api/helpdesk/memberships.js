@@ -1,6 +1,6 @@
 import { requireAuth } from "../../_lib/auth.js";
 import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
-import { errorResponse, json, methodNotAllowed, readJson } from "../../_lib/http.js";
+import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import { writeLog } from "../../_lib/logs.js";
 
 export async function onRequest(context) {
@@ -92,8 +92,8 @@ export async function onRequest(context) {
       action: "update_memberships",
       target: "bulk",
       status: "error",
-      details: error.message,
+      details: "Failed to update HelpDesk memberships.",
     });
-    return errorResponse(error.message, 500);
+    return serverErrorResponse(error, "Failed to update HelpDesk memberships.");
   }
 }

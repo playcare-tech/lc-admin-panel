@@ -9,7 +9,7 @@
     "cf-typegen": "wrangler types"
   },
   "devDependencies": {
-    "wrangler": "^4.84.1"
+    "wrangler": "^4.87.0"
   },
   "dependencies": {
     "qrcode": "^1.5.4"

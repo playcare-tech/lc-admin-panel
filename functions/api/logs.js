@@ -20,7 +20,7 @@ export async function onRequest(context) {
     console.error("Failed to load logs.", error);
     return json({
       logs: [],
-      warning: error.message,
+      warning: "Failed to load logs.",
     });
   }
 }

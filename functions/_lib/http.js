@@ -1,3 +1,10 @@
+const SECURITY_HEADERS = {
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "same-origin",
+  "X-Frame-Options": "DENY",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+};
+
 export function json(data, init = {}) {
   const responseInit =
     typeof init === "number"
@@ -6,14 +13,18 @@ export function json(data, init = {}) {
           status: init.status ?? 200,
           headers: init.headers ?? {},
         };
+  const headers = new Headers(responseInit.headers);
+  headers.set("Content-Type", "application/json; charset=utf-8");
+  headers.set("Cache-Control", "no-store");
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    if (!headers.has(name)) {
+      headers.set(name, value);
+    }
+  }
 
   return new Response(JSON.stringify(data), {
     ...responseInit,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store",
-      ...responseInit.headers,
-    },
+    headers,
   });
 }
 
@@ -25,6 +36,11 @@ export function errorResponse(message, status = 400, extra = {}) {
     },
     status,
   );
+}
+
+export function serverErrorResponse(error, message = "Request failed.") {
+  console.error(message, error);
+  return errorResponse(message, 500);
 }
 
 export function methodNotAllowed(allowed) {

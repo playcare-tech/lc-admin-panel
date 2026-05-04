@@ -1,8 +1,9 @@
 import { errorResponse } from "./http.js";
 
 const SESSION_COOKIE = "__text_admin_session";
-const SESSION_TTL_SECONDS = 60 * 60 * 12;
+const SESSION_TTL_SECONDS = 60 * 60;
 const encoder = new TextEncoder();
+const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 function toBase64Url(value) {
   const bytes = typeof value === "string" ? encoder.encode(value) : value;
@@ -22,6 +23,10 @@ function fromBase64Url(value) {
 }
 
 async function sign(value, secret) {
+  return toBase64Url(await signBytes(value, secret));
+}
+
+async function signBytes(value, secret) {
   const key = await crypto.subtle.importKey(
     "raw",
     encoder.encode(secret),
@@ -30,7 +35,23 @@ async function sign(value, secret) {
     ["sign"],
   );
   const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(value));
-  return toBase64Url(new Uint8Array(signature));
+  return new Uint8Array(signature);
+}
+
+async function verifySignature(value, signature, secret) {
+  let signatureBytes;
+  try {
+    signatureBytes = fromBase64Url(signature);
+  } catch {
+    return false;
+  }
+
+  const expectedSignatureBytes = await signBytes(value, secret);
+  if (signatureBytes.byteLength !== expectedSignatureBytes.byteLength) {
+    return false;
+  }
+
+  return crypto.subtle.timingSafeEqual(signatureBytes, expectedSignatureBytes);
 }
 
 function getCookie(request, name) {
@@ -51,6 +72,41 @@ function getCookie(request, name) {
   return null;
 }
 
+export function createCsrfToken() {
+  return toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+}
+
+function safeEqualBase64Url(left, right) {
+  let leftBytes;
+  let rightBytes;
+  try {
+    leftBytes = fromBase64Url(left);
+    rightBytes = fromBase64Url(right);
+  } catch {
+    return false;
+  }
+
+  if (leftBytes.byteLength !== rightBytes.byteLength) {
+    return false;
+  }
+
+  return crypto.subtle.timingSafeEqual(leftBytes, rightBytes);
+}
+
+export function verifyCsrfToken(request, session) {
+  if (!UNSAFE_METHODS.has(request.method.toUpperCase())) {
+    return true;
+  }
+
+  const expectedToken = session?.csrfToken;
+  const submittedToken = request.headers.get("X-CSRF-Token") || "";
+  if (!expectedToken || !submittedToken) {
+    return false;
+  }
+
+  return safeEqualBase64Url(submittedToken, expectedToken);
+}
+
 export async function createSessionCookie(env, username, extra = {}) {
   if (!env.SESSION_SECRET) {
     throw new Error("Missing SESSION_SECRET environment variable.");
@@ -60,6 +116,7 @@ export async function createSessionCookie(env, username, extra = {}) {
     user: username,
     exp: Date.now() + SESSION_TTL_SECONDS * 1000,
     permissions: extra.permissions || {},
+    csrfToken: extra.csrfToken || createCsrfToken(),
   };
   const token = toBase64Url(JSON.stringify(payload));
   const signature = await sign(token, env.SESSION_SECRET);
@@ -101,14 +158,13 @@ export async function getSession(request, env) {
     return null;
   }
 
-  const expectedSignature = await sign(payloadToken, env.SESSION_SECRET);
-  if (signature !== expectedSignature) {
+  if (!(await verifySignature(payloadToken, signature, env.SESSION_SECRET))) {
     return null;
   }
 
   try {
     const payload = JSON.parse(new TextDecoder().decode(fromBase64Url(payloadToken)));
-    if (!payload?.user || !payload?.exp || payload.exp < Date.now()) {
+    if (!payload?.user || !payload?.exp || payload.exp < Date.now() || !payload?.csrfToken) {
       return null;
     }
 
@@ -122,6 +178,9 @@ export async function requireAuth(context) {
   const session = await getSession(context.request, context.env);
   if (!session) {
     return { error: errorResponse("Unauthorized.", 401) };
+  }
+  if (!verifyCsrfToken(context.request, session)) {
+    return { error: errorResponse("Invalid CSRF token.", 403) };
   }
 
   return { session };

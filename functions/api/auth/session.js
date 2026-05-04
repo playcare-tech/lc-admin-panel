@@ -15,5 +15,6 @@ export async function onRequest(context) {
     authenticated: true,
     user: session.user,
     permissions: session.permissions || {},
+    csrfToken: session.csrfToken || "",
   });
 }

@@ -1,5 +1,5 @@
 import { requireAuth } from "../../_lib/auth.js";
-import { errorResponse, json, methodNotAllowed, readJson } from "../../_lib/http.js";
+import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import { syncHelpDeskAnalyticsWindow } from "./analytics.js";
 
 const SYNC_META_TABLE = "helpdesk_analytics_sync_meta";
@@ -128,11 +128,11 @@ export async function onRequest(context) {
       await writeSyncMeta(context.env, {
         last_finished_at: finishedAt,
         last_status: "error",
-        last_error: error.message || "HelpDesk sync failed.",
+        last_error: "HelpDesk sync failed.",
       });
       throw error;
     }
   } catch (error) {
-    return errorResponse(error.message || "HelpDesk sync failed.", 500);
+    return serverErrorResponse(error, "HelpDesk sync failed.");
   }
 }

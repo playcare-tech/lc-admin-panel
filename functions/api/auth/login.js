@@ -1,17 +1,38 @@
-import { createSessionCookie } from "../../_lib/auth.js";
+import { createCsrfToken, createSessionCookie } from "../../_lib/auth.js";
 import {
   adminPermissions,
   buildTotpUri,
+  clearTotpRateLimit,
   createOrUpdateFallbackAdminUser,
   enableAdminTotp,
   findAdminUserByUsername,
   generateTotpSecret,
+  getTotpRateLimitState,
+  recordTotpFailure,
   updateAdminPassword,
+  validateAdminPassword,
   verifyAdminCredentials,
+  verifyFallbackAdminCredentials,
   verifyTotpCode,
 } from "../../_lib/admin-users.js";
-import { errorResponse, json, methodNotAllowed, readJson } from "../../_lib/http.js";
+import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import { writeLogSafely } from "../../_lib/logs.js";
+
+function totpRateLimitResponse(rateLimit) {
+  return json(
+    {
+      error: "Too many 2FA attempts. Try again later.",
+      retryAfterSeconds: rateLimit.retryAfterSeconds,
+      lockedUntil: rateLimit.lockedUntil,
+    },
+    {
+      status: 429,
+      headers: {
+        "Retry-After": String(rateLimit.retryAfterSeconds),
+      },
+    },
+  );
+}
 
 export async function onRequest(context) {
   if (context.request.method !== "POST") {
@@ -39,10 +60,7 @@ export async function onRequest(context) {
     if (
       !existingUser &&
       !authenticated &&
-      context.env.ADMIN_USERNAME &&
-      context.env.ADMIN_PASSWORD &&
-      username === context.env.ADMIN_USERNAME &&
-      password === context.env.ADMIN_PASSWORD
+      (await verifyFallbackAdminCredentials(context.env, username, password))
     ) {
       user = await createOrUpdateFallbackAdminUser(context.env, { username, password });
       authenticated = Boolean(user);
@@ -72,22 +90,58 @@ export async function onRequest(context) {
 
     const needsPasswordChange = Boolean(user.password_reset_required);
     const needsTotpSetup = !Number(user.totp_enabled) || Boolean(user.totp_setup_required);
+    const totpRateLimit = getTotpRateLimitState(user);
+    if (totpRateLimit.locked) {
+      await writeLogSafely(context.env, {
+        actor: username,
+        area: "auth",
+        action: "login",
+        status: "error",
+        details: "2FA rate limit exceeded.",
+        metadata: { lockedUntil: totpRateLimit.lockedUntil },
+      });
+      return totpRateLimitResponse(totpRateLimit);
+    }
 
     if (needsPasswordChange || needsTotpSetup) {
       const secret = setupSecret || generateTotpSecret();
-      const hasPassword = !needsPasswordChange || newPassword.length >= 12;
+      let passwordError = "";
+      if (needsPasswordChange) {
+        try {
+          validateAdminPassword(newPassword);
+        } catch (error) {
+          passwordError = error.message;
+        }
+      }
+      const hasPassword = !needsPasswordChange || !passwordError;
       const hasTotp = !needsTotpSetup || (setupSecret && (await verifyTotpCode(setupSecret, otp)));
 
       if (!hasPassword || !hasTotp) {
+        if (needsTotpSetup && otp && !hasTotp) {
+          const rateLimit = await recordTotpFailure(context.env, username);
+          await writeLogSafely(context.env, {
+            actor: username,
+            area: "auth",
+            action: "login",
+            status: "error",
+            details: rateLimit.locked ? "Invalid 2FA setup code; rate limit exceeded." : "Invalid 2FA setup code.",
+          });
+          if (rateLimit.locked) {
+            return totpRateLimitResponse(rateLimit);
+          }
+        }
+
         return json({
           ok: false,
           requiresPasswordChange: needsPasswordChange,
           requiresTotpSetup: needsTotpSetup,
           setupSecret: needsTotpSetup ? secret : "",
           otpauthUri: needsTotpSetup ? buildTotpUri(username, secret) : "",
-          message: needsPasswordChange
-            ? "Set a new password with at least 12 characters, then verify 2FA."
-            : "Set up Google Authenticator and enter the 6-digit code.",
+          message:
+            passwordError ||
+            (needsPasswordChange
+              ? "Set a new password with uppercase, lowercase, number, and special character, then verify 2FA."
+              : "Set up Google Authenticator and enter the 6-digit code."),
         });
       }
 
@@ -97,7 +151,24 @@ export async function onRequest(context) {
       if (needsTotpSetup) {
         await enableAdminTotp(context.env, username, setupSecret);
       }
+    } else if (!otp) {
+      return json({
+        ok: false,
+        requiresOtp: true,
+        message: "Enter your 6-digit Google Authenticator code.",
+      });
     } else if (!(await verifyTotpCode(user.totp_secret, otp))) {
+      const rateLimit = await recordTotpFailure(context.env, username);
+      await writeLogSafely(context.env, {
+        actor: username,
+        area: "auth",
+        action: "login",
+        status: "error",
+        details: rateLimit.locked ? "Invalid 2FA code; rate limit exceeded." : "Invalid 2FA code.",
+      });
+      if (rateLimit.locked) {
+        return totpRateLimitResponse(rateLimit);
+      }
       return json({
         ok: false,
         requiresOtp: true,
@@ -105,8 +176,11 @@ export async function onRequest(context) {
       });
     }
 
+    await clearTotpRateLimit(context.env, username);
+    const csrfToken = createCsrfToken();
     const sessionCookie = await createSessionCookie(context.env, username, {
       permissions: adminPermissions(user),
+      csrfToken,
     });
     await writeLogSafely(context.env, {
       actor: username,
@@ -121,6 +195,7 @@ export async function onRequest(context) {
         ok: true,
         user: username,
         permissions: adminPermissions(user),
+        csrfToken,
       },
       {
         headers: {
@@ -129,6 +204,6 @@ export async function onRequest(context) {
       },
     );
   } catch (error) {
-    return errorResponse(error.message, 500);
+    return serverErrorResponse(error, "Sign in failed.");
   }
 }

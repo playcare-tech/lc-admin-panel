@@ -1,6 +1,6 @@
 import { requireAuth } from "../../_lib/auth.js";
 import { getLiveChatAgent, livechatRequest } from "../../_lib/livechat.js";
-import { errorResponse, json, methodNotAllowed, readJson } from "../../_lib/http.js";
+import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import { writeLogSafely } from "../../_lib/logs.js";
 
 export async function onRequest(context) {
@@ -63,6 +63,6 @@ export async function onRequest(context) {
 
     return json({ ok: true });
   } catch (error) {
-    return errorResponse(error.message, 500);
+    return serverErrorResponse(error, "Failed to update LiveChat groups.");
   }
 }

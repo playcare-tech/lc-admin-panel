@@ -1,5 +1,5 @@
 import { requireAuth } from "../../_lib/auth.js";
-import { errorResponse, json, methodNotAllowed } from "../../_lib/http.js";
+import { json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 
 const ANALYTICS_TABLES = [
   "helpdesk_analytics_daily",
@@ -33,6 +33,6 @@ export async function onRequest(context) {
 
     return json({ ok: true, cleared_tables: ANALYTICS_TABLES });
   } catch (error) {
-    return errorResponse(error.message || "Failed to clear HelpDesk analytics cache.", 500);
+    return serverErrorResponse(error, "Failed to clear HelpDesk analytics cache.");
   }
 }

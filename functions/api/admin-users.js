@@ -7,8 +7,26 @@ import {
   updateAdminPermissions,
 } from "../_lib/admin-users.js";
 import { requireAuth } from "../_lib/auth.js";
-import { errorResponse, json, methodNotAllowed, readJson } from "../_lib/http.js";
+import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../_lib/http.js";
 import { writeLogSafely } from "../_lib/logs.js";
+
+const SAFE_ADMIN_ERROR_MESSAGES = new Set([
+  "Admin user was not found.",
+  "Username already exists.",
+  "Password must be at least 12 characters long.",
+  "Password must include a lowercase letter.",
+  "Password must include an uppercase letter.",
+  "Password must include a number.",
+  "Password must include a special character.",
+]);
+
+function adminErrorResponse(error, fallback) {
+  if (SAFE_ADMIN_ERROR_MESSAGES.has(error?.message)) {
+    return errorResponse(error.message, 400);
+  }
+
+  return serverErrorResponse(error, fallback);
+}
 
 export async function onRequest(context) {
   if (context.request.method === "GET") {
@@ -22,7 +40,7 @@ export async function onRequest(context) {
         adminUsers: await listAdminUsers(context.env),
       });
     } catch (error) {
-      return errorResponse(error.message, 500);
+      return serverErrorResponse(error, "Failed to load admin users.");
     }
   }
 
@@ -114,7 +132,7 @@ export async function onRequest(context) {
 
       return errorResponse("Unsupported admin user action.", 400);
     } catch (error) {
-      return errorResponse(error.message, 500);
+      return adminErrorResponse(error, "Failed to update admin user.");
     }
   }
 
@@ -153,7 +171,7 @@ export async function onRequest(context) {
 
       return json({ ok: true });
     } catch (error) {
-      return errorResponse(error.message, 500);
+      return adminErrorResponse(error, "Failed to create admin user.");
     }
   }
 

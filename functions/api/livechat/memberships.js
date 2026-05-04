@@ -1,5 +1,5 @@
 import { requireAuth } from "../../_lib/auth.js";
-import { errorResponse, json, methodNotAllowed, readJson } from "../../_lib/http.js";
+import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import { buildLiveChatGroups, getLiveChatAgent, livechatRequest } from "../../_lib/livechat.js";
 import { writeLog } from "../../_lib/logs.js";
 
@@ -103,8 +103,8 @@ export async function onRequest(context) {
       action: "update_memberships",
       target: "bulk",
       status: "error",
-      details: error.message,
+      details: "Failed to update LiveChat memberships.",
     });
-    return errorResponse(error.message, 500);
+    return serverErrorResponse(error, "Failed to update LiveChat memberships.");
   }
 }
