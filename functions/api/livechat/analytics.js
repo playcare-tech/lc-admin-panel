@@ -128,7 +128,7 @@ function buildAgentDirectory(livechatDashboard) {
   const byId = new Map();
   const byEmail = new Map();
   const ids = [];
-  (livechatDashboard.agents || []).forEach((agent) => {
+  (livechatDashboard.agents || []).filter(isHumanAnalyticsAgent).forEach((agent) => {
     const normalized = {
       id: String(agent.id),
       email: agent.email || agent.id,
@@ -155,14 +155,18 @@ function resolveAgentId(value, directory) {
   return directory.byId.get(String(value))?.id || directory.byEmail.get(String(value))?.id || String(value);
 }
 
+function hasEmailLikeIdentifier(value) {
+  return `${value || ""}`.includes("@");
+}
+
+function isHumanAnalyticsAgent(agent) {
+  return hasEmailLikeIdentifier(agent.id) || hasEmailLikeIdentifier(agent.email) || hasEmailLikeIdentifier(agent.record_key);
+}
+
 function effectiveAgentIds(includedAgentIds, excludedAgentIds, directory) {
   const excluded = new Set(Array.from(excludedAgentIds).map((value) => resolveAgentId(value, directory)));
   const base = includedAgentIds.length ? includedAgentIds.map((value) => resolveAgentId(value, directory)) : directory.ids;
   const filtered = base.filter((id) => !excluded.has(id));
-
-  if (!includedAgentIds.length && !excludedAgentIds.size) {
-    return [];
-  }
   return Array.from(new Set(filtered));
 }
 
@@ -185,22 +189,30 @@ function normalizeAgentRecords(performanceData, directory, excludedAgentIds) {
         rated_bad: bad,
       };
     })
-    .filter((agent) => !excludedAgentIds.has(agent.id) && !excludedAgentIds.has(agent.email) && !excludedAgentIds.has(agent.record_key))
+    .filter(
+      (agent) =>
+        isHumanAnalyticsAgent(agent) &&
+        !excludedAgentIds.has(agent.id) &&
+        !excludedAgentIds.has(agent.email) &&
+        !excludedAgentIds.has(agent.record_key),
+    )
     .sort((left, right) => right.total_tickets - left.total_tickets || left.email.localeCompare(right.email));
 }
 
 function normalizeCachedAgentRows(rows) {
-  return rows.map((row) => ({
-    id: row.agent_id || row.agent_key,
-    record_key: row.agent_key,
-    email: row.agent_email || row.agent_key,
-    name: row.agent_name || row.agent_email || row.agent_key,
-    total_tickets: Number(row.chats_count || 0),
-    avg_ftr_ms: row.avg_ftr_ms === null || row.avg_ftr_ms === undefined ? null : Number(row.avg_ftr_ms),
-    avg_csat: row.avg_csat === null || row.avg_csat === undefined ? null : Number(row.avg_csat),
-    rated_good: Number(row.rated_good || 0),
-    rated_bad: Number(row.rated_bad || 0),
-  }));
+  return rows
+    .map((row) => ({
+      id: row.agent_id || row.agent_key,
+      record_key: row.agent_key,
+      email: row.agent_email || row.agent_key,
+      name: row.agent_name || row.agent_email || row.agent_key,
+      total_tickets: Number(row.chats_count || 0),
+      avg_ftr_ms: row.avg_ftr_ms === null || row.avg_ftr_ms === undefined ? null : Number(row.avg_ftr_ms),
+      avg_csat: row.avg_csat === null || row.avg_csat === undefined ? null : Number(row.avg_csat),
+      rated_good: Number(row.rated_good || 0),
+      rated_bad: Number(row.rated_bad || 0),
+    }))
+    .filter(isHumanAnalyticsAgent);
 }
 
 function normalizeSummary(agents) {

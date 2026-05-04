@@ -1575,6 +1575,7 @@ function renderAnalyticsFilterBar() {
   const filters = state.analytics.filters;
   const presets = ["today", "yesterday", "last_7_days", "last_30_days", "this_week", "last_week", "this_month", "last_month", "custom"];
   const agentOptions = (state.livechat.agents || [])
+    .filter((agent) => `${agent.email || agent.id || ""}`.includes("@") || `${agent.id || ""}`.includes("@"))
     .map((agent) => ({
       id: String(agent.id),
       email: agent.email || agent.id,
@@ -1586,13 +1587,27 @@ function renderAnalyticsFilterBar() {
   const excludeSearch = filters.excludeSearch.trim().toLowerCase();
   const includeOptions = agentOptions.filter((agent) => !includeSearch || agent.search.includes(includeSearch));
   const excludeOptions = agentOptions.filter((agent) => !excludeSearch || agent.search.includes(excludeSearch));
-  const optionMarkup = (agents, selected) =>
-    agents
-      .map(
-        (agent) =>
-          `<option value="${escapeHtml(agent.id)}" ${selected.includes(agent.id) ? "selected" : ""}>${escapeHtml(agent.name)} · ${escapeHtml(agent.email)}</option>`,
-      )
-      .join("");
+  const checkboxMarkup = (agents, selected, name) => `
+    <div class="analytics-checklist livechat-analytics-checklist">
+      ${
+        agents.length
+          ? agents
+              .map(
+                (agent) => `
+                  <label class="analytics-check-option">
+                    <input class="form-check-input" type="checkbox" name="${name}" value="${escapeHtml(agent.id)}" ${selected.includes(agent.id) ? "checked" : ""} />
+                    <span>
+                      <strong>${escapeHtml(agent.name)}</strong>
+                      <small>${escapeHtml(agent.email)}</small>
+                    </span>
+                  </label>
+                `,
+              )
+              .join("")
+          : `<div class="empty-state analytics-filter-empty">No agents match this search.</div>`
+      }
+    </div>
+  `;
 
   return `
     <div class="card-shell analytics-filter-bar">
@@ -1615,22 +1630,18 @@ function renderAnalyticsFilterBar() {
           <span>Search agents to include</span>
           <input id="analyticsIncludeSearch" class="form-control" type="search" placeholder="Search full name or email" value="${escapeHtml(filters.includeSearch)}" />
         </label>
-        <label>
+        <div class="analytics-filter-group">
           <span>Include agents</span>
-          <select id="analyticsAgents" class="form-select" multiple>
-            ${optionMarkup(includeOptions, filters.agents)}
-          </select>
-        </label>
+          ${checkboxMarkup(includeOptions, filters.agents, "analyticsAgents")}
+        </div>
         <label>
           <span>Search agents to exclude</span>
           <input id="analyticsExcludeSearch" class="form-control" type="search" placeholder="Search full name or email" value="${escapeHtml(filters.excludeSearch)}" />
         </label>
-        <label>
+        <div class="analytics-filter-group">
           <span>Exclude agents</span>
-          <select id="analyticsExcludeAgents" class="form-select" multiple>
-            ${optionMarkup(excludeOptions, filters.excludeAgents)}
-          </select>
-        </label>
+          ${checkboxMarkup(excludeOptions, filters.excludeAgents, "analyticsExcludeAgents")}
+        </div>
       </div>
       <div class="analytics-actions">
         <button id="analyticsPrevBtn" class="btn btn-outline-secondary" type="button">Previous period</button>
@@ -1883,7 +1894,7 @@ function renderAnalyticsLeaderboard() {
   return `
     <div class="table-shell analytics-table-shell">
       <div class="analytics-table-note">
-        Daily agent columns are loaded from per-date agents/performance reports and cached in D1; the account timeline row uses account-level report totals.
+        Daily agent columns are loaded from per-date agents/performance reports and cached in D1; chatbot records without an email-style identifier are excluded.
       </div>
       <div class="table-responsive analytics-leaderboard-wrap">
         <table class="table admin-table analytics-table">
@@ -1926,7 +1937,6 @@ function renderAnalyticsLeaderboard() {
                                     : ""
                                 }
                               </div>
-                              <button class="btn btn-outline-danger analytics-exclude-btn" type="button" data-analytics-exclude-agent="${escapeHtml(agent.id || agent.email || agent.record_key)}">Exclude</button>
                             </div>
                           </td>
                           <td>${agent.total_tickets}</td>
@@ -4018,19 +4028,29 @@ function bindAppEvents() {
     state.analytics.filters.includeSearch = event.target.value;
     rerenderPreservingInput("analyticsIncludeSearch");
   });
-  document.getElementById("analyticsAgents")?.addEventListener("change", (event) => {
-    state.analytics.filters.agents = Array.from(event.target.selectedOptions).map((option) => option.value);
-    state.analytics.data = null;
-    fetchAnalytics();
+  document.querySelectorAll("input[name='analyticsAgents']").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const visibleValues = Array.from(document.querySelectorAll("input[name='analyticsAgents']")).map((input) => input.value);
+      const visibleSelected = Array.from(document.querySelectorAll("input[name='analyticsAgents']:checked")).map((input) => input.value);
+      const hiddenSelected = state.analytics.filters.agents.filter((agentId) => !visibleValues.includes(agentId));
+      state.analytics.filters.agents = [...new Set([...hiddenSelected, ...visibleSelected])];
+      state.analytics.data = null;
+      fetchAnalytics();
+    });
   });
   document.getElementById("analyticsExcludeSearch")?.addEventListener("input", (event) => {
     state.analytics.filters.excludeSearch = event.target.value;
     rerenderPreservingInput("analyticsExcludeSearch");
   });
-  document.getElementById("analyticsExcludeAgents")?.addEventListener("change", (event) => {
-    state.analytics.filters.excludeAgents = Array.from(event.target.selectedOptions).map((option) => option.value);
-    state.analytics.data = null;
-    fetchAnalytics();
+  document.querySelectorAll("input[name='analyticsExcludeAgents']").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const visibleValues = Array.from(document.querySelectorAll("input[name='analyticsExcludeAgents']")).map((input) => input.value);
+      const visibleSelected = Array.from(document.querySelectorAll("input[name='analyticsExcludeAgents']:checked")).map((input) => input.value);
+      const hiddenSelected = state.analytics.filters.excludeAgents.filter((agentId) => !visibleValues.includes(agentId));
+      state.analytics.filters.excludeAgents = [...new Set([...hiddenSelected, ...visibleSelected])];
+      state.analytics.data = null;
+      fetchAnalytics();
+    });
   });
   document.getElementById("analyticsCompare")?.addEventListener("change", (event) => {
     state.analytics.filters.compare = event.target.checked;
@@ -4056,17 +4076,6 @@ function bindAppEvents() {
       renderApp();
     };
   });
-  document.querySelectorAll("[data-analytics-exclude-agent]").forEach((button) => {
-    button.onclick = () => {
-      const agentId = button.dataset.analyticsExcludeAgent;
-      if (agentId && !state.analytics.filters.excludeAgents.includes(agentId)) {
-        state.analytics.filters.excludeAgents.push(agentId);
-      }
-      state.analytics.data = null;
-      fetchAnalytics();
-    };
-  });
-
   document.querySelectorAll("[data-livechat-group-filter]").forEach((button) => {
     button.onclick = () => {
       state.livechatGroupQuickFilter = button.dataset.livechatGroupFilter || "";
