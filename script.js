@@ -130,9 +130,14 @@ const HELPDESK_TICKET_PRIORITIES = [
 ];
 const HELPDESK_TICKET_SORTS = [
   { value: "createdAt", label: "Creation date" },
+  { value: "requester", label: "Requester" },
+  { value: "assignedAgent", label: "Assigned agent" },
+  { value: "priority", label: "Priority" },
   { value: "updatedAt", label: "Last activity" },
   { value: "lastMessageAt", label: "Last message" },
 ];
+const HELPDESK_TICKET_TEXT_SORTS = new Set(["requester", "assignedAgent"]);
+const HELPDESK_TICKET_DATE_SORTS = new Set(["createdAt", "updatedAt", "lastMessageAt"]);
 
 const state = {
   user: null,
@@ -2398,6 +2403,23 @@ function helpdeskTicketAgentMarkup(ticket) {
   `;
 }
 
+function helpdeskTicketSortButton(sortBy, label) {
+  const filters = state.helpdeskTickets.filters;
+  const active = filters.sortBy === sortBy;
+  const icon = active ? (filters.order === "asc" ? "bi-arrow-up" : "bi-arrow-down") : "bi-arrow-down-up";
+  return `
+    <button
+      class="tickets-sort-button ${active ? "active" : ""}"
+      type="button"
+      data-helpdesk-ticket-sort="${escapeHtml(sortBy)}"
+      aria-label="Sort tickets by ${escapeHtml(label)}"
+    >
+      <span>${escapeHtml(label)}</span>
+      <i class="bi ${icon}"></i>
+    </button>
+  `;
+}
+
 function helpdeskTicketPriorityLabel(value) {
   return HELPDESK_TICKET_PRIORITIES.find((priority) => priority.value === `${value}`)?.label || "Medium";
 }
@@ -2411,6 +2433,45 @@ function helpdeskTicketTagsMarkup(ticket) {
       ${tags.map((tag) => `<span class="chip ticket-tag">${escapeHtml(tag)}</span>`).join("")}
     </div>
   `;
+}
+
+function helpdeskTicketSortValue(ticket, sortBy) {
+  if (sortBy === "requester") {
+    return helpdeskTicketRequesterLabel(ticket).toLowerCase();
+  }
+  if (sortBy === "assignedAgent") {
+    return helpdeskTicketAgentLabel(ticket).toLowerCase();
+  }
+  if (sortBy === "priority") {
+    return Number(ticket.priority ?? 0);
+  }
+  if (HELPDESK_TICKET_DATE_SORTS.has(sortBy)) {
+    return new Date(ticket[sortBy] || 0).getTime() || 0;
+  }
+  return `${ticket[sortBy] || ""}`.toLowerCase();
+}
+
+function sortHelpdeskTicketRows(tickets) {
+  const { sortBy, order } = state.helpdeskTickets.filters;
+  const direction = order === "asc" ? 1 : -1;
+  return [...tickets]
+    .map((ticket, index) => ({ ticket, index }))
+    .sort((left, right) => {
+      const leftValue = helpdeskTicketSortValue(left.ticket, sortBy);
+      const rightValue = helpdeskTicketSortValue(right.ticket, sortBy);
+      let result = 0;
+      if (typeof leftValue === "number" && typeof rightValue === "number") {
+        result = leftValue - rightValue;
+      } else {
+        result = `${leftValue}`.localeCompare(`${rightValue}`);
+      }
+      return result === 0 ? left.index - right.index : result * direction;
+    })
+    .map((item) => item.ticket);
+}
+
+function defaultHelpdeskTicketSortOrder(sortBy) {
+  return HELPDESK_TICKET_TEXT_SORTS.has(sortBy) ? "asc" : "desc";
 }
 
 function ticketCountLabel(value) {
@@ -2747,12 +2808,12 @@ function renderHelpdeskTickets() {
                       <thead>
                         <tr>
                           <th>Open</th>
-                          <th>Requester (email)</th>
+                          <th>${helpdeskTicketSortButton("requester", "Requester (email)")}</th>
                           <th>Subject</th>
-                          <th>Assigned agent (name and email)</th>
-                          <th>Priority</th>
-                          <th>Last activity</th>
-                          <th>Last message (at)</th>
+                          <th>${helpdeskTicketSortButton("assignedAgent", "Assigned agent")}</th>
+                          <th>${helpdeskTicketSortButton("priority", "Priority")}</th>
+                          <th>${helpdeskTicketSortButton("updatedAt", "Last activity")}</th>
+                          <th>${helpdeskTicketSortButton("lastMessageAt", "Last message")}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -4071,7 +4132,7 @@ async function fetchHelpdeskTickets({ silent = false } = {}) {
 
   try {
     const response = await api(`/api/helpdesk/tickets?${helpdeskTicketsQueryParams({ includeCounts: !silent }).toString()}`);
-    state.helpdeskTickets.tickets = response.tickets || [];
+    state.helpdeskTickets.tickets = sortHelpdeskTicketRows(response.tickets || []);
     if (response.counts) {
       state.helpdeskTickets.counts = response.counts;
     }
@@ -4123,7 +4184,23 @@ function applyHelpdeskTicketFiltersFromDom() {
   filters.lastMessageTo = document.getElementById("helpdeskTicketLastMessageTo")?.value || "";
   filters.priority = document.getElementById("helpdeskTicketPriority")?.value || "";
   filters.tagId = document.getElementById("helpdeskTicketTag")?.value || "";
-  filters.sortBy = document.getElementById("helpdeskTicketSortBy")?.value || "lastMessageAt";
+  const nextSortBy = document.getElementById("helpdeskTicketSortBy")?.value || "lastMessageAt";
+  if (filters.sortBy !== nextSortBy) {
+    filters.sortBy = nextSortBy;
+    filters.order = defaultHelpdeskTicketSortOrder(nextSortBy);
+  }
+  resetHelpdeskTicketPagination();
+  fetchHelpdeskTickets();
+}
+
+function sortHelpdeskTicketColumn(sortBy) {
+  const filters = state.helpdeskTickets.filters;
+  if (filters.sortBy === sortBy) {
+    filters.order = filters.order === "asc" ? "desc" : "asc";
+  } else {
+    filters.sortBy = sortBy;
+    filters.order = defaultHelpdeskTicketSortOrder(sortBy);
+  }
   resetHelpdeskTicketPagination();
   fetchHelpdeskTickets();
 }
@@ -5029,6 +5106,9 @@ function bindAppEvents() {
   });
   document.querySelectorAll("[data-helpdesk-ticket-page]").forEach((button) => {
     button.onclick = () => goHelpdeskTicketPage(button.dataset.helpdeskTicketPage);
+  });
+  document.querySelectorAll("[data-helpdesk-ticket-sort]").forEach((button) => {
+    button.onclick = () => sortHelpdeskTicketColumn(button.dataset.helpdeskTicketSort);
   });
   bindClick("helpdeskTicketsSidebarToggle", () => {
     state.helpdeskTickets.sidebarCollapsed = !state.helpdeskTickets.sidebarCollapsed;

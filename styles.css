@@ -1095,6 +1095,38 @@ body {
   font-size: 11px;
 }
 
+.tickets-sort-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tickets-sort-button span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tickets-sort-button i {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tickets-sort-button.active {
+  color: var(--accent-2);
+}
+
+.tickets-sort-button.active i {
+  color: var(--accent-2);
+}
+
 .tickets-table th:first-child,
 .tickets-table td:first-child {
   width: 84px;
