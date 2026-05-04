@@ -745,6 +745,10 @@ body {
   width: min(100%, 1120px);
 }
 
+.live-ticket-modal {
+  width: min(100%, 1280px);
+}
+
 .modal-head {
   display: flex;
   justify-content: space-between;
@@ -840,6 +844,17 @@ body {
   font-size: 12px;
 }
 
+.ticket-modal-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 14px;
+  align-items: start;
+}
+
+.ticket-thread-panel {
+  min-width: 0;
+}
+
 .helpdesk-chat-thread {
   display: grid;
   gap: 10px;
@@ -891,6 +906,114 @@ body {
   background: #f8fafc;
   color: var(--muted);
   font-size: 12px;
+}
+
+.tickets-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.tickets-table th:first-child,
+.tickets-table td:first-child {
+  width: 84px;
+}
+
+.ticket-subject-cell,
+.ticket-agent-cell {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ticket-subject-cell strong,
+.ticket-agent-cell strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ticket-subject-cell small,
+.ticket-agent-cell small {
+  color: var(--muted);
+}
+
+.ticket-subject-cell .chip {
+  width: fit-content;
+}
+
+.ticket-sidebar {
+  display: grid;
+  gap: 12px;
+  max-height: min(72vh, 760px);
+  overflow: auto;
+  border-left: 1px solid var(--line);
+  padding-left: 14px;
+}
+
+.ticket-sidebar-head {
+  display: grid;
+  gap: 2px;
+}
+
+.ticket-sidebar-group {
+  display: grid;
+  gap: 8px;
+}
+
+.ticket-sidebar-group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.ticket-sidebar-group-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.requester-ticket-list {
+  display: grid;
+  gap: 6px;
+}
+
+.requester-ticket-link {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.76);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.requester-ticket-link:hover,
+.requester-ticket-link.current {
+  border-color: rgba(37, 99, 235, 0.34);
+  background: var(--accent-soft);
+}
+
+.requester-ticket-link span:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.requester-ticket-link span,
+.requester-ticket-link small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.requester-ticket-link small {
+  color: var(--muted);
 }
 
 .log-target,
@@ -945,7 +1068,7 @@ body {
 
 .analytics-filter-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(170px, 1fr));
+  grid-template-columns: repeat(3, minmax(170px, 1fr));
   gap: 10px;
 }
 
@@ -963,8 +1086,46 @@ body {
   font-weight: 600;
 }
 
+.analytics-filter-group label {
+  margin: 0;
+}
+
+.analytics-agent-filter-matrix {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  grid-template-areas:
+    "include-search exclude-search"
+    "include-list exclude-list";
+  gap: 10px 14px;
+  align-items: start;
+}
+
+.analytics-agent-filter-search-include {
+  grid-area: include-search;
+}
+
+.analytics-agent-filter-search-exclude {
+  grid-area: exclude-search;
+}
+
+.analytics-agent-filter-list-include {
+  grid-area: include-list;
+}
+
+.analytics-agent-filter-list-exclude {
+  grid-area: exclude-list;
+}
+
 .livechat-analytics-checklist {
   max-height: 132px;
+}
+
+.analytics-agent-option-grid {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.9fr) minmax(150px, 1.1fr);
+  gap: 10px;
+  align-items: center;
 }
 
 .analytics-actions {
@@ -1193,8 +1354,17 @@ body {
   }
 
   .section-grid,
-  .modal-layout {
+  .modal-layout,
+  .ticket-modal-layout {
     grid-template-columns: 1fr;
+  }
+
+  .ticket-sidebar {
+    max-height: none;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    padding-left: 0;
+    padding-top: 14px;
   }
 
   .analytics-filter-grid,
@@ -1224,12 +1394,25 @@ body {
     grid-template-columns: 1fr;
   }
 
+  .analytics-agent-filter-matrix {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "include-search"
+      "include-list"
+      "exclude-search"
+      "exclude-list";
+  }
+
   .analytics-switch {
     margin-left: 0;
   }
 
   .toolbar-row {
     align-items: stretch;
+  }
+
+  .tickets-toolbar {
+    flex-direction: column;
   }
 
   .workspace-topbar {

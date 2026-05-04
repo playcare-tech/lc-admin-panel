@@ -125,6 +125,15 @@ const state = {
   helpdeskSync: null,
   helpdeskSyncTimer: null,
   helpdeskSyncInFlight: false,
+  helpdeskTickets: {
+    loading: false,
+    error: null,
+    inFlight: false,
+    tickets: [],
+    statuses: [],
+    updatedAt: "",
+    timer: null,
+  },
   livechatGroupSearch: "",
   livechatGroupQuickFilter: "",
   livechatGroupPriorityFilter: "",
@@ -152,6 +161,8 @@ const state = {
       to: "",
       agents: [],
       excludeAgents: [],
+      pendingAgents: null,
+      pendingExcludeAgents: null,
       includeSearch: "",
       excludeSearch: "",
       compare: true,
@@ -262,6 +273,7 @@ function showLogin() {
     clearInterval(state.helpdeskSyncTimer);
     state.helpdeskSyncTimer = null;
   }
+  stopHelpdeskTicketsRealtime();
 }
 
 function renderLoginChallenge() {
@@ -1587,6 +1599,8 @@ function renderAnalyticsFilterBar() {
   const excludeSearch = filters.excludeSearch.trim().toLowerCase();
   const includeOptions = agentOptions.filter((agent) => !includeSearch || agent.search.includes(includeSearch));
   const excludeOptions = agentOptions.filter((agent) => !excludeSearch || agent.search.includes(excludeSearch));
+  const selectedAgents = filters.pendingAgents ?? filters.agents;
+  const selectedExcludeAgents = filters.pendingExcludeAgents ?? filters.excludeAgents;
   const checkboxMarkup = (agents, selected, name) => `
     <div class="analytics-checklist livechat-analytics-checklist">
       ${
@@ -1596,7 +1610,7 @@ function renderAnalyticsFilterBar() {
                 (agent) => `
                   <label class="analytics-check-option">
                     <input class="form-check-input" type="checkbox" name="${name}" value="${escapeHtml(agent.id)}" ${selected.includes(agent.id) ? "checked" : ""} />
-                    <span>
+                    <span class="analytics-agent-option-grid">
                       <strong>${escapeHtml(agent.name)}</strong>
                       <small>${escapeHtml(agent.email)}</small>
                     </span>
@@ -1626,27 +1640,30 @@ function renderAnalyticsFilterBar() {
           <span>To</span>
           <input id="analyticsTo" class="form-control" type="date" value="${escapeHtml(isoToDateInput(filters.to))}" />
         </label>
-        <label>
-          <span>Search agents to include</span>
-          <input id="analyticsIncludeSearch" class="form-control" type="search" placeholder="Search full name or email" value="${escapeHtml(filters.includeSearch)}" />
-        </label>
-        <div class="analytics-filter-group">
-          <span>Include agents</span>
-          ${checkboxMarkup(includeOptions, filters.agents, "analyticsAgents")}
-        </div>
-        <label>
-          <span>Search agents to exclude</span>
-          <input id="analyticsExcludeSearch" class="form-control" type="search" placeholder="Search full name or email" value="${escapeHtml(filters.excludeSearch)}" />
-        </label>
-        <div class="analytics-filter-group">
-          <span>Exclude agents</span>
-          ${checkboxMarkup(excludeOptions, filters.excludeAgents, "analyticsExcludeAgents")}
+        <div class="analytics-agent-filter-matrix">
+          <label class="analytics-agent-filter-search-include">
+            <span>Search agents to include</span>
+            <input id="analyticsIncludeSearch" class="form-control" type="search" placeholder="Search full name or email" value="${escapeHtml(filters.includeSearch)}" />
+          </label>
+          <label class="analytics-agent-filter-search-exclude">
+            <span>Search agents to exclude</span>
+            <input id="analyticsExcludeSearch" class="form-control" type="search" placeholder="Search full name or email" value="${escapeHtml(filters.excludeSearch)}" />
+          </label>
+          <div class="analytics-filter-group analytics-agent-filter-list-include">
+            <span>Include agents</span>
+            ${checkboxMarkup(includeOptions, selectedAgents, "analyticsAgents")}
+          </div>
+          <div class="analytics-filter-group analytics-agent-filter-list-exclude">
+            <span>Exclude agents</span>
+            ${checkboxMarkup(excludeOptions, selectedExcludeAgents, "analyticsExcludeAgents")}
+          </div>
         </div>
       </div>
       <div class="analytics-actions">
         <button id="analyticsPrevBtn" class="btn btn-outline-secondary" type="button">Previous period</button>
         <button id="analyticsNextBtn" class="btn btn-outline-secondary" type="button">Next period</button>
-        <button id="analyticsReloadBtn" class="btn btn-primary" type="button">Reload analytics</button>
+        <button id="analyticsFilterBtn" class="btn btn-primary" type="button">Filter</button>
+        <button id="analyticsReloadBtn" class="btn btn-outline-secondary" type="button">Reload analytics</button>
         <label class="analytics-switch">
           <input id="analyticsCompare" class="form-check-input" type="checkbox" ${filters.compare ? "checked" : ""} />
           <span>Compare</span>
@@ -1654,6 +1671,23 @@ function renderAnalyticsFilterBar() {
       </div>
     </div>
   `;
+}
+
+function stagedLiveChatAnalyticsSelection(name, currentSelected) {
+  const visibleValues = Array.from(document.querySelectorAll(`input[name='${name}']`)).map((input) => input.value);
+  const visibleSelected = Array.from(document.querySelectorAll(`input[name='${name}']:checked`)).map((input) => input.value);
+  const hiddenSelected = currentSelected.filter((agentId) => !visibleValues.includes(agentId));
+  return [...new Set([...hiddenSelected, ...visibleSelected])];
+}
+
+function applyLiveChatAnalyticsFilters() {
+  const filters = state.analytics.filters;
+  filters.agents = filters.pendingAgents ?? stagedLiveChatAnalyticsSelection("analyticsAgents", filters.agents);
+  filters.excludeAgents = filters.pendingExcludeAgents ?? stagedLiveChatAnalyticsSelection("analyticsExcludeAgents", filters.excludeAgents);
+  filters.pendingAgents = null;
+  filters.pendingExcludeAgents = null;
+  state.analytics.data = null;
+  fetchAnalytics();
 }
 
 function analyticsDelta(current, previous, { lowerIsBetter = false, formatter = (value) => value } = {}) {
@@ -2284,6 +2318,244 @@ function formatHelpdeskDateTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
   return date.toLocaleString();
+}
+
+function helpdeskTicketRequesterLabel(ticket) {
+  return ticket.requesterEmail || ticket.requester?.email || ticket.requesterName || ticket.requester?.name || "-";
+}
+
+function helpdeskTicketAgentLabel(ticket) {
+  const agent = ticket.assignedAgent || ticket.assignment?.agent || {};
+  const name = agent.name || "";
+  const email = agent.email || "";
+  if (name && email && name !== email) return `${name} <${email}>`;
+  return name || email || "Unassigned";
+}
+
+function helpdeskTicketAgentMarkup(ticket) {
+  const agent = ticket.assignedAgent || ticket.assignment?.agent || {};
+  const name = agent.name || "";
+  const email = agent.email || "";
+  if (!name && !email) return `<span class="subtle">Unassigned</span>`;
+
+  return `
+    <div class="ticket-agent-cell">
+      <strong>${escapeHtml(name || email)}</strong>
+      ${email && email !== name ? `<small>${escapeHtml(email)}</small>` : ""}
+    </div>
+  `;
+}
+
+function helpdeskTicketReceivedDate(ticket) {
+  const date = new Date(ticket.createdAt || ticket.ticket_created_at || "");
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isSameLocalDay(left, right) {
+  return (
+    left &&
+    right &&
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate()
+  );
+}
+
+function helpdeskTicketMonthLabel(ticket) {
+  const date = helpdeskTicketReceivedDate(ticket);
+  if (!date) return "No received date";
+  return date.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
+
+function splitRequesterTicketsByDate(tickets) {
+  const now = new Date();
+  const today = [];
+  const months = new Map();
+
+  for (const ticket of tickets || []) {
+    const date = helpdeskTicketReceivedDate(ticket);
+    if (date && isSameLocalDay(date, now)) {
+      today.push(ticket);
+      continue;
+    }
+
+    const month = helpdeskTicketMonthLabel(ticket);
+    if (!months.has(month)) months.set(month, []);
+    months.get(month).push(ticket);
+  }
+
+  const sortByCreated = (items) =>
+    [...items].sort((left, right) => (left.createdAt || "").localeCompare(right.createdAt || ""));
+
+  return {
+    today: sortByCreated(today),
+    months: Array.from(months.entries()).map(([label, items]) => ({
+      label,
+      tickets: sortByCreated(items),
+    })),
+  };
+}
+
+function renderRequesterTicketList(tickets, currentTicketId) {
+  if (!tickets.length) {
+    return `<div class="empty-state">No tickets in this group.</div>`;
+  }
+
+  return `
+    <div class="requester-ticket-list">
+      ${tickets
+        .map((ticket) => {
+          const isCurrent = String(ticket.id) === String(currentTicketId);
+          return `
+            <button
+              class="requester-ticket-link ${isCurrent ? "current" : ""}"
+              type="button"
+              data-helpdesk-related-ticket-open="${escapeHtml(ticket.id)}"
+            >
+              <span>
+                <strong>${escapeHtml(ticket.short_id || ticket.shortID || ticket.id || "-")}</strong>
+                ${isCurrent ? `<small>Current ticket</small>` : ""}
+              </span>
+              <span>${escapeHtml(ticket.subject || "No subject")}</span>
+              <small>${escapeHtml(formatHelpdeskDateTime(ticket.createdAt))}</small>
+            </button>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function renderHelpdeskRequesterTicketSidebar(ticket) {
+  const requesterTickets = ticket.requesterTickets || [];
+  const currentTicketId = ticket.id || ticket.ticket_id;
+  const groups = splitRequesterTicketsByDate(requesterTickets);
+  const todayParent = groups.today[0] || null;
+  const todayChildren = todayParent
+    ? groups.today
+        .slice(1)
+        .filter((item) => String(item.id) !== String(todayParent.id) && !item.parentTicket)
+        .map((item) => item.id)
+    : [];
+
+  return `
+    <aside class="ticket-sidebar">
+      <div class="ticket-sidebar-head">
+        <div class="section-title">Requester tickets</div>
+        <div class="subtle">${escapeHtml(helpdeskTicketRequesterLabel(ticket))}</div>
+      </div>
+      <div class="ticket-sidebar-group">
+        <div class="ticket-sidebar-group-head">
+          <strong>Received today</strong>
+          <span>${groups.today.length}</span>
+        </div>
+        <button
+          id="helpdeskMergeTodayBtn"
+          class="btn btn-sm btn-outline-primary"
+          type="button"
+          ${todayChildren.length ? "" : "disabled"}
+          data-parent-ticket-id="${escapeHtml(todayParent?.id || "")}"
+          data-child-ticket-ids="${escapeHtml(todayChildren.join(","))}"
+        >
+          Merge today into first ticket
+        </button>
+        ${renderRequesterTicketList(groups.today, currentTicketId)}
+      </div>
+      ${
+        groups.months.length
+          ? groups.months
+              .map(
+                (group) => `
+                  <div class="ticket-sidebar-group">
+                    <div class="ticket-sidebar-group-head">
+                      <strong>${escapeHtml(group.label)}</strong>
+                      <span>${group.tickets.length}</span>
+                    </div>
+                    ${renderRequesterTicketList(group.tickets, currentTicketId)}
+                  </div>
+                `,
+              )
+              .join("")
+          : `<div class="empty-state">No older requester tickets loaded.</div>`
+      }
+    </aside>
+  `;
+}
+
+function renderHelpdeskTickets() {
+  const { tickets, loading, error, updatedAt } = state.helpdeskTickets;
+  const openCount = tickets.filter((ticket) => ticket.status === "open").length;
+  const pendingCount = tickets.filter((ticket) => ticket.status === "pending").length;
+  const onholdCount = tickets.filter((ticket) => ticket.status === "onhold").length;
+
+  return `
+    ${renderStats([
+      { label: "Tickets", value: tickets.length, meta: "Recent HelpDesk rows" },
+      { label: "Open", value: openCount, meta: "Waiting in HelpDesk" },
+      { label: "Pending", value: pendingCount, meta: "Pending requester or team" },
+      { label: "On hold", value: onholdCount, meta: updatedAt ? `Updated ${formatHelpdeskDateTime(updatedAt)}` : "Auto-refreshing" },
+    ])}
+    <div class="table-shell tickets-table-shell">
+      <div class="tickets-toolbar">
+        <div>
+          <div class="section-title">Tickets</div>
+          <div class="subtle">Live table refreshes every 15 seconds.</div>
+        </div>
+        <button id="helpdeskTicketsReloadBtn" class="btn btn-outline-secondary" type="button">
+          ${loading ? "Loading..." : "Reload tickets"}
+        </button>
+      </div>
+      ${
+        error
+          ? `<div class="empty-state analytics-error">${escapeHtml(error)}</div>`
+          : tickets.length
+            ? `<div class="table-responsive">
+                <table class="table admin-table tickets-table">
+                  <thead>
+                    <tr>
+                      <th>Open</th>
+                      <th>Requester (email)</th>
+                      <th>Subject</th>
+                      <th>Assigned agent (name and email)</th>
+                      <th>Last message (at)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${tickets
+                      .map(
+                        (ticket) => `
+                          <tr>
+                            <td>
+                              <button
+                                class="btn btn-sm btn-outline-primary"
+                                type="button"
+                                data-helpdesk-ticket-open-live="${escapeHtml(ticket.id)}"
+                              >Open</button>
+                            </td>
+                            <td>
+                              <strong>${escapeHtml(helpdeskTicketRequesterLabel(ticket))}</strong>
+                              ${ticket.requesterName ? `<div class="analytics-agent-sub">${escapeHtml(ticket.requesterName)}</div>` : ""}
+                            </td>
+                            <td>
+                              <div class="ticket-subject-cell">
+                                <strong>${escapeHtml(ticket.subject || "No subject")}</strong>
+                                <span class="chip">${escapeHtml(ticket.status || "unknown")}</span>
+                                ${ticket.short_id ? `<small>${escapeHtml(ticket.short_id)}</small>` : ""}
+                              </div>
+                            </td>
+                            <td>${helpdeskTicketAgentMarkup(ticket)}</td>
+                            <td>${escapeHtml(formatHelpdeskDateTime(ticket.lastMessageAt))}</td>
+                          </tr>
+                        `,
+                      )
+                      .join("")}
+                  </tbody>
+                </table>
+              </div>`
+            : `<div class="empty-state">${loading ? "Loading HelpDesk tickets..." : "No HelpDesk tickets returned."}</div>`
+      }
+    </div>
+  `;
 }
 
 function formatHelpdeskSyncStatus(sync = state.helpdeskSync) {
@@ -3493,6 +3765,74 @@ function startHelpdeskAutoSync() {
   }, 30 * 60 * 1000);
 }
 
+function stopHelpdeskTicketsRealtime() {
+  if (!state.helpdeskTickets.timer) return;
+  clearInterval(state.helpdeskTickets.timer);
+  state.helpdeskTickets.timer = null;
+}
+
+function startHelpdeskTicketsRealtime() {
+  if (state.helpdeskTickets.timer) return;
+  state.helpdeskTickets.timer = setInterval(() => {
+    if (state.section === "helpdesk-tickets") {
+      fetchHelpdeskTickets({ silent: true });
+    }
+  }, 15 * 1000);
+}
+
+async function fetchHelpdeskTickets({ silent = false } = {}) {
+  if (state.helpdeskTickets.inFlight) return;
+  state.helpdeskTickets.inFlight = true;
+  state.helpdeskTickets.loading = !silent || !state.helpdeskTickets.tickets.length;
+  state.helpdeskTickets.error = null;
+  if (state.section === "helpdesk-tickets") renderApp();
+
+  try {
+    const response = await api("/api/helpdesk/tickets?pageSize=80&status=all");
+    state.helpdeskTickets.tickets = response.tickets || [];
+    state.helpdeskTickets.statuses = response.statuses || [];
+    state.helpdeskTickets.updatedAt = response.updatedAt || new Date().toISOString();
+  } catch (error) {
+    state.helpdeskTickets.error = error.message;
+  } finally {
+    state.helpdeskTickets.loading = false;
+    state.helpdeskTickets.inFlight = false;
+    if (state.section === "helpdesk-tickets") renderApp();
+  }
+}
+
+async function openHelpdeskTicket(ticketId) {
+  if (!ticketId) return;
+
+  try {
+    setMessage(statusMessage, "Loading HelpDesk ticket...");
+    const response = await api(`/api/helpdesk/ticket?id=${encodeURIComponent(ticketId)}`);
+    openModal("helpdesk-ticket", response.ticket);
+    setMessage(statusMessage, "");
+  } catch (error) {
+    setMessage(statusMessage, error.message, "error");
+  }
+}
+
+async function mergeHelpdeskTodayTickets(parentTicketId, childTicketIds) {
+  const childIds = childTicketIds.filter(Boolean);
+  if (!parentTicketId || !childIds.length) return;
+  const confirmed = window.confirm(`Merge ${childIds.length} ticket(s) into the first ticket received today?`);
+  if (!confirmed) return;
+
+  await withBusyState(async () => {
+    await api("/api/helpdesk/tickets", {
+      method: "POST",
+      body: {
+        parentTicketId,
+        childTicketIds: childIds,
+      },
+    });
+    await fetchHelpdeskTickets({ silent: true });
+    await openHelpdeskTicket(parentTicketId);
+  }, "HelpDesk tickets merged.");
+}
+
 function currentSectionTitle() {
   const titles = {
     "livechat-users": "LiveChat Users",
@@ -3502,6 +3842,7 @@ function currentSectionTitle() {
     "helpdesk-users": "HelpDesk Users",
     "helpdesk-groups": "HelpDesk Groups",
     "create-helpdesk-user": "Create HelpDesk User",
+    "helpdesk-tickets": "HelpDesk Tickets",
     "helpdesk-analytics": "HelpDesk Analytics",
     "admin-users": "Admin Users",
     logs: "Logs",
@@ -3520,48 +3861,58 @@ function renderModal() {
     const events = ticket.conversation || [];
     modalRoot.innerHTML = `
       <div class="modal-overlay">
-        <div class="modal-card helpdesk-chat-modal">
+        <div class="modal-card helpdesk-chat-modal live-ticket-modal">
           <div class="modal-head">
             <div>
-              <div class="modal-title">Ticket ${escapeHtml(ticket.short_id || ticket.ticket_id || "")}</div>
+              <div class="modal-title">Ticket ${escapeHtml(ticket.short_id || ticket.shortID || ticket.ticket_id || ticket.id || "")}</div>
               <div class="subtle">
-                ${escapeHtml(ticket.subject || "Conversation evidence")}
-                ${ticket.ticket_link ? ` · <a href="${escapeHtml(ticket.ticket_link)}" target="_blank" rel="noreferrer">Open ticket</a>` : ""}
+                ${escapeHtml(ticket.subject || "No subject")}
+                ${ticket.ticket_link || ticket.link ? ` · <a href="${escapeHtml(ticket.ticket_link || ticket.link)}" target="_blank" rel="noreferrer">Open in HelpDesk</a>` : ""}
               </div>
             </div>
             <button id="closeModalBtn" class="btn btn-sm btn-outline-secondary" type="button">Close</button>
           </div>
-          <div class="helpdesk-ticket-summary">
-            <span>Agent replies: <strong>${Number(ticket.agent_reply_count || 0)}</strong></span>
-            <span>Incoming messages: <strong>${Number(ticket.incoming_message_count || 0)}</strong></span>
-            <span>Created: <strong>${escapeHtml(formatHelpdeskDateTime(ticket.ticket_created_at))}</strong></span>
-            <span>Solved: <strong>${escapeHtml(formatHelpdeskDateTime(ticket.ticket_solved_at))}</strong></span>
-            <span>Closed: <strong>${escapeHtml(formatHelpdeskDateTime(ticket.ticket_closed_at))}</strong></span>
-          </div>
-          <div class="helpdesk-chat-thread">
-            ${
-              events.length
-                ? events
-                    .map((event) => {
-                      const authorType = event.author_type || "system";
-                      const isAgent = authorType === "agent";
-                      const isPrivate = Boolean(event.is_private);
-                      const isSystem = authorType === "system" || (!event.text && !event.html);
-                      const message = plainMessageText(event.text || event.html) || event.status || event.type || "System event";
-                      return `
-                        <div class="helpdesk-chat-event ${isAgent ? "agent" : ""} ${isPrivate ? "private" : ""} ${isSystem ? "system" : ""}">
-                          <div class="helpdesk-chat-meta">
-                            <strong>${escapeHtml(event.author_name || authorType)}</strong>
-                            <span>${escapeHtml(authorType)}${isPrivate ? " · internal/private" : ""}</span>
-                            <span>${escapeHtml(formatHelpdeskDateTime(event.date))}</span>
-                          </div>
-                          <div class="helpdesk-chat-bubble">${escapeHtml(message)}</div>
-                        </div>
-                      `;
-                    })
-                    .join("")
-                : '<div class="empty-state">No conversation events were stored for this ticket.</div>'
-            }
+          <div class="ticket-modal-layout">
+            <main class="ticket-thread-panel">
+              <div class="helpdesk-ticket-summary">
+                <span>Requester: <strong>${escapeHtml(helpdeskTicketRequesterLabel(ticket))}</strong></span>
+                <span>Assigned: <strong>${escapeHtml(helpdeskTicketAgentLabel(ticket))}</strong></span>
+                <span>Status: <strong>${escapeHtml(ticket.status || "unknown")}</strong></span>
+                <span>Created: <strong>${escapeHtml(formatHelpdeskDateTime(ticket.createdAt || ticket.ticket_created_at))}</strong></span>
+                <span>Last message: <strong>${escapeHtml(formatHelpdeskDateTime(ticket.lastMessageAt || ticket.last_public_reply_at))}</strong></span>
+              </div>
+              <div class="helpdesk-chat-thread">
+                ${
+                  events.length
+                    ? events
+                        .map((event) => {
+                          const authorType = event.author_type || "system";
+                          const isAgent = authorType === "agent";
+                          const isPrivate = Boolean(event.is_private);
+                          const isSystem = authorType === "system" || (!event.text && !event.html);
+                          const message =
+                            plainMessageText(event.text || event.html) ||
+                            event.activity ||
+                            event.status ||
+                            event.type ||
+                            "System event";
+                          return `
+                            <div class="helpdesk-chat-event ${isAgent ? "agent" : ""} ${isPrivate ? "private" : ""} ${isSystem ? "system" : ""}">
+                              <div class="helpdesk-chat-meta">
+                                <strong>${escapeHtml(event.author_name || event.author_email || authorType)}</strong>
+                                <span>${escapeHtml(isPrivate ? "internal comment" : authorType)}</span>
+                                <span>${escapeHtml(formatHelpdeskDateTime(event.date))}</span>
+                              </div>
+                              <div class="helpdesk-chat-bubble">${escapeHtml(message)}</div>
+                            </div>
+                          `;
+                        })
+                        .join("")
+                    : '<div class="empty-state">No conversation events were returned for this ticket.</div>'
+                }
+              </div>
+            </main>
+            ${renderHelpdeskRequesterTicketSidebar(ticket)}
           </div>
         </div>
       </div>
@@ -3748,6 +4099,9 @@ function renderModal() {
 function renderApp() {
   const filterBar = document.getElementById("filterBar");
   pageTitle.textContent = currentSectionTitle();
+  if (state.section !== "helpdesk-tickets") {
+    stopHelpdeskTicketsRealtime();
+  }
   document.querySelectorAll(".sidebar-link").forEach((button) => {
     button.classList.toggle("active", button.dataset.section === state.section);
   });
@@ -3776,6 +4130,9 @@ function renderApp() {
   } else if (state.section === "create-helpdesk-user") {
     appContent.innerHTML = renderCreateUserForm("helpdesk");
     filterBar.classList.add("d-none");
+  } else if (state.section === "helpdesk-tickets") {
+    appContent.innerHTML = renderHelpdeskTickets();
+    filterBar.classList.add("d-none");
   } else if (state.section === "admin-users") {
     appContent.innerHTML = renderAdminUsers();
     filterBar.classList.add("d-none");
@@ -3796,6 +4153,18 @@ function renderApp() {
     state.helpdesk_analytics.filters.from = range.from;
     state.helpdesk_analytics.filters.to = range.to;
     fetchHelpdeskAnalytics();
+  }
+
+  if (state.section === "helpdesk-tickets") {
+    startHelpdeskTicketsRealtime();
+    if (
+      !state.helpdeskTickets.loading &&
+      !state.helpdeskTickets.tickets.length &&
+      !state.helpdeskTickets.error &&
+      !state.helpdeskTickets.updatedAt
+    ) {
+      fetchHelpdeskTickets();
+    }
   }
 }
 
@@ -4025,31 +4394,27 @@ function bindAppEvents() {
     fetchAnalytics();
   });
   document.getElementById("analyticsIncludeSearch")?.addEventListener("input", (event) => {
+    const currentSelected = state.analytics.filters.pendingAgents ?? state.analytics.filters.agents;
+    state.analytics.filters.pendingAgents = stagedLiveChatAnalyticsSelection("analyticsAgents", currentSelected);
     state.analytics.filters.includeSearch = event.target.value;
     rerenderPreservingInput("analyticsIncludeSearch");
   });
   document.querySelectorAll("input[name='analyticsAgents']").forEach((checkbox) => {
     checkbox.addEventListener("change", () => {
-      const visibleValues = Array.from(document.querySelectorAll("input[name='analyticsAgents']")).map((input) => input.value);
-      const visibleSelected = Array.from(document.querySelectorAll("input[name='analyticsAgents']:checked")).map((input) => input.value);
-      const hiddenSelected = state.analytics.filters.agents.filter((agentId) => !visibleValues.includes(agentId));
-      state.analytics.filters.agents = [...new Set([...hiddenSelected, ...visibleSelected])];
-      state.analytics.data = null;
-      fetchAnalytics();
+      const currentSelected = state.analytics.filters.pendingAgents ?? state.analytics.filters.agents;
+      state.analytics.filters.pendingAgents = stagedLiveChatAnalyticsSelection("analyticsAgents", currentSelected);
     });
   });
   document.getElementById("analyticsExcludeSearch")?.addEventListener("input", (event) => {
+    const currentSelected = state.analytics.filters.pendingExcludeAgents ?? state.analytics.filters.excludeAgents;
+    state.analytics.filters.pendingExcludeAgents = stagedLiveChatAnalyticsSelection("analyticsExcludeAgents", currentSelected);
     state.analytics.filters.excludeSearch = event.target.value;
     rerenderPreservingInput("analyticsExcludeSearch");
   });
   document.querySelectorAll("input[name='analyticsExcludeAgents']").forEach((checkbox) => {
     checkbox.addEventListener("change", () => {
-      const visibleValues = Array.from(document.querySelectorAll("input[name='analyticsExcludeAgents']")).map((input) => input.value);
-      const visibleSelected = Array.from(document.querySelectorAll("input[name='analyticsExcludeAgents']:checked")).map((input) => input.value);
-      const hiddenSelected = state.analytics.filters.excludeAgents.filter((agentId) => !visibleValues.includes(agentId));
-      state.analytics.filters.excludeAgents = [...new Set([...hiddenSelected, ...visibleSelected])];
-      state.analytics.data = null;
-      fetchAnalytics();
+      const currentSelected = state.analytics.filters.pendingExcludeAgents ?? state.analytics.filters.excludeAgents;
+      state.analytics.filters.pendingExcludeAgents = stagedLiveChatAnalyticsSelection("analyticsExcludeAgents", currentSelected);
     });
   });
   document.getElementById("analyticsCompare")?.addEventListener("change", (event) => {
@@ -4065,6 +4430,9 @@ function bindAppEvents() {
     shiftAnalyticsPeriod(1);
     state.analytics.data = null;
     fetchAnalytics();
+  });
+  bindClick("analyticsFilterBtn", () => {
+    applyLiveChatAnalyticsFilters();
   });
   bindClick("analyticsReloadBtn", () => {
     state.analytics.data = null;
@@ -4291,6 +4659,21 @@ function bindAppEvents() {
   });
   document.querySelectorAll("[data-open-helpdesk-group]").forEach((button) => {
     button.onclick = () => openHelpDeskGroupModal(button.dataset.openHelpdeskGroup);
+  });
+  bindClick("helpdeskTicketsReloadBtn", () => {
+    fetchHelpdeskTickets();
+  });
+  document.querySelectorAll("[data-helpdesk-ticket-open-live]").forEach((button) => {
+    button.onclick = () => openHelpdeskTicket(button.dataset.helpdeskTicketOpenLive);
+  });
+  document.querySelectorAll("[data-helpdesk-related-ticket-open]").forEach((button) => {
+    button.onclick = () => openHelpdeskTicket(button.dataset.helpdeskRelatedTicketOpen);
+  });
+  bindClick("helpdeskMergeTodayBtn", () => {
+    const button = document.getElementById("helpdeskMergeTodayBtn");
+    const parentTicketId = button?.dataset.parentTicketId || "";
+    const childTicketIds = (button?.dataset.childTicketIds || "").split(",").filter(Boolean);
+    mergeHelpdeskTodayTickets(parentTicketId, childTicketIds);
   });
   document.querySelectorAll("[data-livechat-suspend]").forEach((button) => {
     button.onclick = async () => {
