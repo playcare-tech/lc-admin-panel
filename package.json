@@ -12,6 +12,7 @@
     "wrangler": "^4.87.0"
   },
   "dependencies": {
+    "dompurify": "^3.4.2",
     "qrcode": "^1.5.4"
   }
 }

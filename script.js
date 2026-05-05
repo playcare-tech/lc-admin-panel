@@ -425,13 +425,52 @@ function renderTotpQr() {
   window.QRCode.toCanvas(canvas, uri, { width: 184, margin: 1 }, () => {});
 }
 
-function escapeHtml(value) {
+const DOMPURIFY_TEXT_CONFIG = {
+  ALLOWED_ATTR: [],
+  ALLOWED_TAGS: [],
+  KEEP_CONTENT: true,
+  RETURN_TRUSTED_TYPE: false,
+};
+
+const SAFE_URL_PROTOCOLS = new Set(["http:", "https:"]);
+
+function fallbackEscapeHtml(value) {
   return `${value ?? ""}`
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+    .replaceAll("'", "&#039;")
+    .replaceAll("`", "&#096;");
+}
+
+function escapeHtml(value) {
+  const raw = `${value ?? ""}`;
+  if (!raw) return "";
+  if (!window.DOMPurify?.sanitize || typeof document === "undefined") {
+    return fallbackEscapeHtml(raw);
+  }
+
+  const textNodeHost = document.createElement("div");
+  textNodeHost.textContent = raw;
+  const sanitized = window.DOMPurify.sanitize(textNodeHost.innerHTML, DOMPURIFY_TEXT_CONFIG);
+  return `${sanitized}`
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;")
+    .replaceAll("`", "&#096;");
+}
+
+function safeUrlAttribute(value, fallback = "") {
+  const raw = `${value ?? ""}`.trim();
+  if (!raw) return fallback;
+
+  try {
+    const url = new URL(raw, window.location.origin);
+    if (!SAFE_URL_PROTOCOLS.has(url.protocol)) return fallback;
+    return escapeHtml(url.href);
+  } catch {
+    return fallback;
+  }
 }
 
 function padDatePart(value) {
@@ -1466,8 +1505,9 @@ function initials(value) {
 }
 
 function renderLiveChatProfileCard(agent, currentMembershipMarkup) {
-  const avatar = agent.avatar
-    ? `<img src="${escapeHtml(agent.avatar)}" alt="" />`
+  const avatarUrl = safeUrlAttribute(agent.avatar);
+  const avatar = avatarUrl
+    ? `<img src="${avatarUrl}" alt="" />`
     : `<span>${escapeHtml(initials(agent.name || agent.email) || "LC")}</span>`;
 
   return `
@@ -4277,7 +4317,9 @@ function renderHelpdeskAgentTicketDetails(agent) {
           <tbody>
             ${tickets
               .map(
-                (ticket) => `
+                (ticket) => {
+                  const ticketHref = safeUrlAttribute(ticket.ticket_link, "#");
+                  return `
                   <tr>
                     <td>
                       <button
@@ -4290,7 +4332,7 @@ function renderHelpdeskAgentTicketDetails(agent) {
                       >Chat</button>
                     </td>
                     <td>
-                      <a href="${escapeHtml(ticket.ticket_link || "#")}" target="_blank" rel="noreferrer">${escapeHtml(ticket.short_id || ticket.ticket_id || "-")}</a>
+                      <a href="${ticketHref}" target="_blank" rel="noreferrer">${escapeHtml(ticket.short_id || ticket.ticket_id || "-")}</a>
                       ${ticket.subject ? `<div class="analytics-agent-sub">${escapeHtml(ticket.subject)}</div>` : ""}
                     </td>
                     <td>${Number(ticket.agent_reply_count || 0)}</td>
@@ -4300,7 +4342,8 @@ function renderHelpdeskAgentTicketDetails(agent) {
                     <td>${escapeHtml(formatHelpdeskDateTime(ticket.ticket_closed_at))}</td>
                     <td>${escapeHtml(formatHelpdeskDateTime(ticket.last_public_reply_at))}</td>
                   </tr>
-                `,
+                `;
+                },
               )
               .join("")}
           </tbody>
@@ -4726,6 +4769,7 @@ function renderModal() {
   if (state.modalType === "helpdesk-ticket") {
     const ticket = state.modalAgent;
     const events = ticket.conversation || [];
+    const ticketHref = safeUrlAttribute(ticket.ticket_link || ticket.link);
     modalRoot.innerHTML = `
       <div class="modal-overlay">
         <div class="modal-card helpdesk-chat-modal live-ticket-modal">
@@ -4734,7 +4778,7 @@ function renderModal() {
               <div class="modal-title">Ticket ${escapeHtml(ticket.short_id || ticket.shortID || ticket.ticket_id || ticket.id || "")}</div>
               <div class="subtle">
                 ${escapeHtml(ticket.subject || "No subject")}
-                ${ticket.ticket_link || ticket.link ? ` · <a href="${escapeHtml(ticket.ticket_link || ticket.link)}" target="_blank" rel="noreferrer">Open in HelpDesk</a>` : ""}
+                ${ticketHref ? ` · <a href="${ticketHref}" target="_blank" rel="noreferrer">Open in HelpDesk</a>` : ""}
               </div>
             </div>
             <button id="closeModalBtn" class="btn btn-sm btn-outline-secondary" type="button">Close</button>

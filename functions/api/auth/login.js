@@ -46,16 +46,17 @@ export async function onRequest(context) {
     const existingUser = username ? await findAdminUserByUsername(context.env, username) : null;
     let authenticated = false;
     try {
-      user = await verifyAdminCredentials(context.env, username, password);
+      user = await verifyAdminCredentials(context.env, username, password, existingUser);
       authenticated = Boolean(user);
     } catch {
       authenticated = false;
     }
+    const fallbackAuthenticated = authenticated ? false : await verifyFallbackAdminCredentials(context.env, username, password);
 
     if (
       !existingUser &&
       !authenticated &&
-      (await verifyFallbackAdminCredentials(context.env, username, password))
+      fallbackAuthenticated
     ) {
       user = await createOrUpdateFallbackAdminUser(context.env, { username, password });
       authenticated = Boolean(user);

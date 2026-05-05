@@ -5,6 +5,8 @@ const CREATE_ADMIN_USERS_INDEX_SQL =
   "CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users (username)";
 
 const PBKDF2_ITERATIONS = 100000;
+const DUMMY_PASSWORD_SALT = "LC_ADMIN_DUMMY_PASSWORD_SALT_V1";
+const DUMMY_PASSWORD_HASH = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const TOTP_STEP_SECONDS = 30;
 const TOTP_DIGITS = 6;
 const TOTP_RATE_LIMIT_MAX_ATTEMPTS = 5;
@@ -215,9 +217,12 @@ export async function createAdminUser(env, { username, password, createdBy, canM
     .run();
 }
 
-export async function verifyAdminCredentials(env, username, password) {
-  const user = await findAdminUserByUsername(env, username);
+export async function verifyAdminCredentials(env, username, password, preloadedUser) {
+  const user = arguments.length >= 4 ? preloadedUser : await findAdminUserByUsername(env, username);
   if (!user) {
+    // Keep invalid-login timing close to the real-password path to avoid username enumeration.
+    const hash = await hashPassword(password, DUMMY_PASSWORD_SALT);
+    safeEqualBase64(hash, DUMMY_PASSWORD_HASH);
     return null;
   }
 
@@ -226,16 +231,11 @@ export async function verifyAdminCredentials(env, username, password) {
 }
 
 export async function verifyFallbackAdminCredentials(env, username, password) {
-  if (!env.ADMIN_USERNAME || username !== env.ADMIN_USERNAME) {
-    return false;
-  }
-
-  if (env.ADMIN_PASSWORD_HASH && env.ADMIN_PASSWORD_SALT) {
-    const hash = await hashPassword(password, env.ADMIN_PASSWORD_SALT);
-    return safeEqualBase64(hash, env.ADMIN_PASSWORD_HASH);
-  }
-
-  return false;
+  const hasFallbackCredentials = Boolean(env.ADMIN_USERNAME && env.ADMIN_PASSWORD_HASH && env.ADMIN_PASSWORD_SALT);
+  // Run PBKDF2 even when fallback credentials are absent or the username differs.
+  const hash = await hashPassword(password, hasFallbackCredentials ? env.ADMIN_PASSWORD_SALT : DUMMY_PASSWORD_SALT);
+  const passwordMatches = safeEqualBase64(hash, hasFallbackCredentials ? env.ADMIN_PASSWORD_HASH : DUMMY_PASSWORD_HASH);
+  return hasFallbackCredentials && username === env.ADMIN_USERNAME && passwordMatches;
 }
 
 export function adminPermissions(user) {
