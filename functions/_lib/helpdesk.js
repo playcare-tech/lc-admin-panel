@@ -254,6 +254,7 @@ export function normalizeHelpDeskTicketSummary(ticket, agentDirectory = new Map(
     status: ticket?.status || "",
     priority: ticket?.priority ?? 0,
     subject: ticket?.subject || "",
+    teamIDs: Array.isArray(ticket?.teamIDs) ? ticket.teamIDs.map(String) : [],
     tagIDs: Array.isArray(ticket?.tagIDs) ? ticket.tagIDs.map(String) : [],
     silo: ticket?.silo || "tickets",
     requester,

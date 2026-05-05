@@ -19,6 +19,8 @@ const MAX_PAGE_SIZE = 40;
 const AUTO_MERGE_PAGE_SIZE = 100;
 const AUTO_MERGE_MAX_PAGES = 10;
 const AUTO_MERGE_ACTION = "auto_merge_duplicate_tickets";
+const NO_REPLY_COMPLAINTS_EMAIL = "no-reply-complaints@casino.guru";
+const OTHER_TAG_NAME = "other";
 const SORT_FIELDS = ["createdAt", "updatedAt", "lastMessageAt"];
 const PRIORITIES = new Set(["-10", "0", "10", "20"]);
 
@@ -151,6 +153,10 @@ function requesterKey(ticket) {
   return `${ticket.requesterEmail || ticket.requester?.email || ""}`.trim().toLowerCase();
 }
 
+function isNoReplyComplaintsTicket(ticket) {
+  return requesterKey(ticket) === NO_REPLY_COMPLAINTS_EMAIL;
+}
+
 function ticketCreatedTime(ticket) {
   const date = new Date(ticket.createdAt || 0);
   return Number.isNaN(date.getTime()) ? 0 : date.getTime();
@@ -162,6 +168,21 @@ function stripHtml(value) {
 
 function ticketLink(ticket) {
   return ticket.link || `https://app.helpdesk.com/tickets/${encodeURIComponent(ticket.short_id || ticket.id)}`;
+}
+
+function preserveTeamPayload(ticket) {
+  const teamIDs = Array.isArray(ticket?.teamIDs) ? ticket.teamIDs.map(String).filter(Boolean) : [];
+  const teamId = String(ticket?.assignment?.team?.ID || ticket?.assignment?.team?.id || "").trim();
+  const agentId = String(ticket?.assignment?.agent?.ID || ticket?.assignment?.agent?.id || "").trim();
+  const assignment = {};
+
+  if (teamId) assignment.team = { ID: teamId };
+  if (agentId) assignment.agent = { ID: agentId };
+
+  return {
+    ...(teamIDs.length ? { teamIDs } : {}),
+    ...(Object.keys(assignment).length ? { assignment } : {}),
+  };
 }
 
 function eventMessageText(event) {
@@ -215,6 +236,81 @@ async function mergeChildTicket(env, parentTicket, childTicket) {
     method: "POST",
     body: { childTicketID: childTicket.id },
   });
+}
+
+async function mergeChildTicketPreservingTeam(env, parentDetail, parentTicket, childTicket, childContent, mode = "automatic") {
+  const preservedTeam = preserveTeamPayload(parentDetail);
+  await addInternalMergeNote(env, parentTicket, childTicket, childContent, mode);
+  await mergeChildTicket(env, parentTicket, childTicket);
+
+  if (Object.keys(preservedTeam).length) {
+    await helpdeskRequest(env, `/tickets/${encodeURIComponent(parentTicket.id)}`, {
+      method: "PATCH",
+      body: preservedTeam,
+    });
+  }
+}
+
+async function otherTagId(env) {
+  const payload = await helpdeskRequest(env, "/tags");
+  const tags = Array.isArray(payload) ? payload : payload?.tags || payload?.data || payload?.items || [];
+  const tag = tags.find((item) => `${item.name || ""}`.trim().toLowerCase() === OTHER_TAG_NAME);
+  if (!tag) {
+    throw new Error('HelpDesk tag "other" was not found.');
+  }
+  return String(tag.ID || tag.id || "");
+}
+
+async function solveNoReplyComplaintsTicket(env, ticket, tagId) {
+  const ticketId = ticket.id || ticket.ticket_id || normalizeHelpDeskTicketSummary(ticket).id;
+  if (!ticketId) return null;
+
+  const tagIDs = new Set((ticket.tagIDs || []).map(String).filter(Boolean));
+  tagIDs.add(tagId);
+
+  await helpdeskRequest(env, `/tickets/${encodeURIComponent(ticketId)}`, {
+    method: "PATCH",
+    body: {
+      status: "solved",
+      tagIDs: Array.from(tagIDs),
+    },
+  });
+
+  return {
+    ticketId,
+    shortId: ticket.short_id || ticket.shortID || ticket.shortId || ticketId,
+    link: ticketLink(ticket),
+  };
+}
+
+async function solveNoReplyComplaintsTickets(context, auth, tickets, reason) {
+  const matchingTickets = tickets.filter(isNoReplyComplaintsTicket);
+  if (!matchingTickets.length) return [];
+
+  const tagId = await otherTagId(context.env);
+  const solved = [];
+  for (const ticket of matchingTickets) {
+    const result = await solveNoReplyComplaintsTicket(context.env, ticket, tagId);
+    if (result) solved.push(result);
+  }
+
+  await writeLogSafely(context.env, {
+    actor: auth.session.user,
+    area: "helpdesk",
+    action: "solve_no_reply_complaints",
+    target: matchingTickets.map((ticket) => ticket.id || ticket.ticket_id).filter(Boolean).join(","),
+    status: "success",
+    details: `Solved ${solved.length} no-reply complaints ticket(s) instead of merging.`,
+    metadata: {
+      requesterEmail: NO_REPLY_COMPLAINTS_EMAIL,
+      reason,
+      tagName: OTHER_TAG_NAME,
+      tagId,
+      tickets: solved,
+    },
+  });
+
+  return solved;
 }
 
 async function fetchOpenTicketsForAutoMerge(env, timezoneOffsetMinutes) {
@@ -271,16 +367,15 @@ function duplicateGroups(tickets, timezoneOffsetMinutes) {
 
 async function autoMergeDuplicateOpenTickets(context, auth, timezoneOffsetMinutes) {
   const tickets = await fetchOpenTicketsForAutoMerge(context.env, timezoneOffsetMinutes);
-  const groups = duplicateGroups(tickets, timezoneOffsetMinutes);
+  const solvedNoReplyTickets = await solveNoReplyComplaintsTickets(context, auth, tickets, "automatic_duplicate_merge");
+  const groups = duplicateGroups(tickets.filter((ticket) => !isNoReplyComplaintsTicket(ticket)), timezoneOffsetMinutes);
   const dashboard = await getHelpDeskDashboard(context.env);
   const agentDirectory = buildHelpDeskAgentDirectory(dashboard);
   const merged = [];
 
   for (const group of groups) {
-    const parentTicket = normalizeHelpDeskTicketSummary(
-      await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(group.parent.id)}`),
-      agentDirectory,
-    );
+    const parentDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(group.parent.id)}`);
+    const parentTicket = normalizeHelpDeskTicketSummary(parentDetail, agentDirectory);
     if (parentTicket.status !== "open" || parentTicket.parentTicket) continue;
 
     for (const child of group.children) {
@@ -290,8 +385,7 @@ async function autoMergeDuplicateOpenTickets(context, auth, timezoneOffsetMinute
         if (childTicket.parentTicket || childTicket.status !== "open") continue;
 
         const childContent = mergedTicketContent(childDetail, agentDirectory);
-        await addInternalMergeNote(context.env, parentTicket, childTicket, childContent);
-        await mergeChildTicket(context.env, parentTicket, childTicket);
+        await mergeChildTicketPreservingTeam(context.env, parentDetail, parentTicket, childTicket, childContent);
 
         const logMetadata = {
           mode: "automatic",
@@ -339,7 +433,7 @@ async function autoMergeDuplicateOpenTickets(context, auth, timezoneOffsetMinute
     }
   }
 
-  return merged;
+  return { merged, solvedNoReplyTickets };
 }
 
 async function mergeLogs(env) {
@@ -437,9 +531,12 @@ async function listTickets(context, auth) {
     url.searchParams.get("runAutoMerge") === "1" && status === "open" && silo === "tickets" && !cursor;
 
   let autoMerged = [];
+  let autoSolvedNoReplyTickets = [];
   if (shouldAutoMerge) {
     try {
-      autoMerged = await autoMergeDuplicateOpenTickets(context, auth, timezoneOffsetMinutes);
+      const autoMergeResult = await autoMergeDuplicateOpenTickets(context, auth, timezoneOffsetMinutes);
+      autoMerged = autoMergeResult.merged;
+      autoSolvedNoReplyTickets = autoMergeResult.solvedNoReplyTickets;
     } catch (error) {
       console.error("Failed to run automatic HelpDesk duplicate merge.", error);
       await writeLogSafely(context.env, {
@@ -489,6 +586,7 @@ async function listTickets(context, auth) {
     ...(tags ? { tags } : {}),
     ...(recentMergeLogs ? { mergeLogs: recentMergeLogs } : {}),
     autoMerged,
+    autoSolvedNoReplyTickets,
     updatedAt: new Date().toISOString(),
     refreshIntervalSeconds: 30,
     page: {
@@ -523,14 +621,48 @@ async function mergeTickets(context, auth) {
   const agentDirectory = buildHelpDeskAgentDirectory(dashboard);
   const parentDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(parentTicketId)}`);
   const parentTicket = normalizeHelpDeskTicketSummary(parentDetail, agentDirectory);
+  const childDetails = await Promise.all(
+    uniqueChildTicketIds.map((ticketId) => helpdeskRequest(context.env, `/tickets/${encodeURIComponent(ticketId)}`)),
+  );
+  const childTickets = childDetails.map((ticket) => normalizeHelpDeskTicketSummary(ticket, agentDirectory));
+  const childDetailById = new Map(childTickets.map((ticket, index) => [ticket.id, childDetails[index]]));
+  const noReplySolvedTickets = await solveNoReplyComplaintsTickets(
+    context,
+    auth,
+    [parentTicket, ...childTickets],
+    "manual_merge",
+  );
+  const mergeableChildTickets = childTickets.filter((ticket) => !isNoReplyComplaintsTicket(ticket));
   const mergedTicketDetails = [];
 
-  for (const childTicketId of uniqueChildTicketIds) {
-    const childDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(childTicketId)}`);
-    const childTicket = normalizeHelpDeskTicketSummary(childDetail, agentDirectory);
+  if (isNoReplyComplaintsTicket(parentTicket)) {
+    await writeLog(context.env, {
+      actor: auth.session.user,
+      area: "helpdesk",
+      action: "merge_tickets",
+      target: parentTicketId,
+      status: "success",
+      details: "Skipped merge for no-reply complaints requester and solved matching tickets.",
+      metadata: {
+        mode: "manual",
+        requesterEmail: NO_REPLY_COMPLAINTS_EMAIL,
+        parentTicketId,
+        solvedTickets: noReplySolvedTickets,
+      },
+    });
+
+    return json({
+      ok: true,
+      parentTicketId,
+      mergedTicketIds: [],
+      solvedTicketIds: noReplySolvedTickets.map((ticket) => ticket.ticketId),
+    });
+  }
+
+  for (const childTicket of mergeableChildTickets) {
+    const childDetail = childDetailById.get(childTicket.id);
     const childContent = mergedTicketContent(childDetail, agentDirectory);
-    await addInternalMergeNote(context.env, parentTicket, childTicket, childContent, "manual");
-    await mergeChildTicket(context.env, parentTicket, childTicket);
+    await mergeChildTicketPreservingTeam(context.env, parentDetail, parentTicket, childTicket, childContent, "manual");
     mergedTicketDetails.push({
       childTicketId: childTicket.id,
       childShortId: childTicket.short_id || childTicket.shortID,
@@ -546,22 +678,24 @@ async function mergeTickets(context, auth) {
     action: "merge_tickets",
     target: parentTicketId,
     status: "success",
-    details: `Merged ${uniqueChildTicketIds.length} HelpDesk ticket(s).`,
+    details: `Merged ${mergeableChildTickets.length} HelpDesk ticket(s).`,
     metadata: {
       mode: "manual",
       parentTicketId,
       parentShortId: parentTicket.short_id || parentTicket.shortID,
       parentSubject: parentTicket.subject || "",
       parentLink: ticketLink(parentTicket),
-      childTicketIds: uniqueChildTicketIds,
+      childTicketIds: mergeableChildTickets.map((ticket) => ticket.id),
       mergedTickets: mergedTicketDetails,
+      solvedTickets: noReplySolvedTickets,
     },
   });
 
   return json({
     ok: true,
     parentTicketId,
-    mergedTicketIds: uniqueChildTicketIds,
+    mergedTicketIds: mergeableChildTickets.map((ticket) => ticket.id),
+    solvedTicketIds: noReplySolvedTickets.map((ticket) => ticket.ticketId),
   });
 }
 
