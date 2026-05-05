@@ -4,17 +4,21 @@ import {
   getHelpDeskDashboard,
   helpdeskRequest,
   helpdeskRequestWithMeta,
+  normalizeHelpDeskConversationEvents,
   normalizeHelpDeskTicketList,
   normalizeHelpDeskTicketSummary,
 } from "../../_lib/helpdesk.js";
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
-import { writeLog } from "../../_lib/logs.js";
+import { listLogsByAction, writeLog, writeLogSafely } from "../../_lib/logs.js";
 
 const ACTIVE_STATUSES = ["open", "pending", "onhold"];
 const ALL_STATUSES = ["open", "pending", "onhold", "solved", "closed"];
 const FOLDERS = ["archive", "spam", "trash"];
 const DEFAULT_PAGE_SIZE = 40;
 const MAX_PAGE_SIZE = 40;
+const AUTO_MERGE_PAGE_SIZE = 100;
+const AUTO_MERGE_MAX_PAGES = 10;
+const AUTO_MERGE_ACTION = "auto_merge_duplicate_tickets";
 const SORT_FIELDS = ["createdAt", "updatedAt", "lastMessageAt"];
 const PRIORITIES = new Set(["-10", "0", "10", "20"]);
 
@@ -137,6 +141,227 @@ function normalizeCursor(url) {
   return { direction, value, id };
 }
 
+function dateKey(value, timezoneOffsetMinutes = 0) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return "";
+  return new Date(date.getTime() - timezoneOffsetMinutes * 60000).toISOString().slice(0, 10);
+}
+
+function requesterKey(ticket) {
+  return `${ticket.requesterEmail || ticket.requester?.email || ""}`.trim().toLowerCase();
+}
+
+function ticketCreatedTime(ticket) {
+  const date = new Date(ticket.createdAt || 0);
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
+
+function stripHtml(value) {
+  return `${value || ""}`.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function ticketLink(ticket) {
+  return ticket.link || `https://app.helpdesk.com/tickets/${encodeURIComponent(ticket.short_id || ticket.id)}`;
+}
+
+function eventMessageText(event) {
+  return stripHtml(event.text || event.html || event.activity || "");
+}
+
+function mergedTicketContent(ticket, agentDirectory) {
+  const events = normalizeHelpDeskConversationEvents(ticket, agentDirectory);
+  const messageEvents = events
+    .filter((event) => eventMessageText(event))
+    .map((event) => {
+      const author = event.author_name || event.author_email || event.author_type || "unknown";
+      const date = event.date ? ` at ${event.date}` : "";
+      return `[${author}${date}] ${eventMessageText(event)}`;
+    });
+
+  if (messageEvents.length) {
+    return messageEvents.join("\n\n").slice(0, 12000);
+  }
+
+  return stripHtml(ticket.subject || "No message content found.").slice(0, 12000);
+}
+
+function internalMergeNote(parentTicket, childTicket, childContent, mode = "automatic") {
+  const childId = childTicket.short_id || childTicket.id;
+  const mergeLabel = mode === "manual" ? "Manual duplicate merge" : "Automatic duplicate merge";
+  return [
+    `${mergeLabel} from ticket ${childId}.`,
+    `Merged ticket link: ${ticketLink(childTicket)}`,
+    "",
+    "Merged ticket content:",
+    childContent || "No message content found.",
+  ].join("\n");
+}
+
+async function addInternalMergeNote(env, parentTicket, childTicket, childContent, mode = "automatic") {
+  await helpdeskRequest(env, `/tickets/${encodeURIComponent(parentTicket.id)}`, {
+    method: "PATCH",
+    body: {
+      author: { type: "agent" },
+      message: {
+        text: internalMergeNote(parentTicket, childTicket, childContent, mode),
+      },
+      isPrivate: true,
+    },
+  });
+}
+
+async function mergeChildTicket(env, parentTicket, childTicket) {
+  await helpdeskRequest(env, `/tickets/${encodeURIComponent(parentTicket.id)}/childTickets`, {
+    method: "POST",
+    body: { childTicketID: childTicket.id },
+  });
+}
+
+async function fetchOpenTicketsForAutoMerge(env, timezoneOffsetMinutes) {
+  const tickets = [];
+  let cursor = null;
+
+  for (let page = 0; page < AUTO_MERGE_MAX_PAGES; page += 1) {
+    const batch = await fetchTicketBatch(env, {
+      status: "open",
+      silo: "tickets",
+      pageSize: AUTO_MERGE_PAGE_SIZE,
+      sortBy: "createdAt",
+      order: "desc",
+      filters: {},
+      cursor,
+    });
+    const normalized = batch.tickets.map((ticket) => normalizeHelpDeskTicketSummary(ticket));
+    tickets.push(...normalized);
+    const lastTicket = normalized.at(-1);
+    if (!lastTicket || normalized.length < AUTO_MERGE_PAGE_SIZE) break;
+    cursor = {
+      direction: "next",
+      value: lastTicket.createdAt,
+      id: lastTicket.id,
+    };
+  }
+
+  return tickets.filter((ticket) => {
+    return ticket.status === "open" && ticket.silo === "tickets" && !ticket.parentTicket && requesterKey(ticket) && dateKey(ticket.createdAt, timezoneOffsetMinutes);
+  });
+}
+
+function duplicateGroups(tickets, timezoneOffsetMinutes) {
+  const groups = new Map();
+  for (const ticket of tickets) {
+    const key = `${requesterKey(ticket)}|${dateKey(ticket.createdAt, timezoneOffsetMinutes)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(ticket);
+  }
+
+  return Array.from(groups.entries())
+    .map(([key, groupTickets]) => {
+      const [requesterEmail, createdDate] = key.split("|");
+      const sorted = [...groupTickets].sort((left, right) => ticketCreatedTime(left) - ticketCreatedTime(right));
+      return {
+        requesterEmail,
+        createdDate,
+        parent: sorted[0],
+        children: sorted.slice(1),
+      };
+    })
+    .filter((group) => group.children.length);
+}
+
+async function autoMergeDuplicateOpenTickets(context, auth, timezoneOffsetMinutes) {
+  const tickets = await fetchOpenTicketsForAutoMerge(context.env, timezoneOffsetMinutes);
+  const groups = duplicateGroups(tickets, timezoneOffsetMinutes);
+  const dashboard = await getHelpDeskDashboard(context.env);
+  const agentDirectory = buildHelpDeskAgentDirectory(dashboard);
+  const merged = [];
+
+  for (const group of groups) {
+    const parentTicket = normalizeHelpDeskTicketSummary(
+      await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(group.parent.id)}`),
+      agentDirectory,
+    );
+    if (parentTicket.status !== "open" || parentTicket.parentTicket) continue;
+
+    for (const child of group.children) {
+      try {
+        const childDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(child.id)}`);
+        const childTicket = normalizeHelpDeskTicketSummary(childDetail, agentDirectory);
+        if (childTicket.parentTicket || childTicket.status !== "open") continue;
+
+        const childContent = mergedTicketContent(childDetail, agentDirectory);
+        await addInternalMergeNote(context.env, parentTicket, childTicket, childContent);
+        await mergeChildTicket(context.env, parentTicket, childTicket);
+
+        const logMetadata = {
+          mode: "automatic",
+          requesterEmail: group.requesterEmail,
+          createdDate: group.createdDate,
+          parentTicketId: parentTicket.id,
+          parentShortId: parentTicket.short_id || parentTicket.shortID,
+          parentSubject: parentTicket.subject || "",
+          parentLink: ticketLink(parentTicket),
+          childTicketId: childTicket.id,
+          childShortId: childTicket.short_id || childTicket.shortID,
+          childSubject: childTicket.subject || "",
+          childLink: ticketLink(childTicket),
+          mergedContentPreview: childContent.slice(0, 1000),
+        };
+
+        await writeLogSafely(context.env, {
+          actor: auth.session.user,
+          area: "helpdesk",
+          action: AUTO_MERGE_ACTION,
+          target: parentTicket.id,
+          status: "success",
+          details: `Auto-merged duplicate ticket ${childTicket.short_id || childTicket.id} into ${parentTicket.short_id || parentTicket.id}.`,
+          metadata: logMetadata,
+        });
+
+        merged.push(logMetadata);
+      } catch (error) {
+        await writeLogSafely(context.env, {
+          actor: auth.session.user,
+          area: "helpdesk",
+          action: AUTO_MERGE_ACTION,
+          target: group.parent.id,
+          status: "error",
+          details: "Failed to auto-merge duplicate HelpDesk ticket.",
+          metadata: {
+            mode: "automatic",
+            requesterEmail: group.requesterEmail,
+            createdDate: group.createdDate,
+            parentTicketId: group.parent.id,
+            childTicketId: child.id,
+          },
+        });
+      }
+    }
+  }
+
+  return merged;
+}
+
+async function mergeLogs(env) {
+  const [autoLogs, manualLogs] = await Promise.all([
+    listLogsByAction(env, {
+      area: "helpdesk",
+      action: AUTO_MERGE_ACTION,
+      limit: 12,
+    }),
+    listLogsByAction(env, {
+      area: "helpdesk",
+      action: "merge_tickets",
+      limit: 12,
+    }),
+  ]);
+
+  return [...autoLogs, ...manualLogs]
+    .filter((entry) => entry.status === "success")
+    .sort((left, right) => `${right.created_at || ""}`.localeCompare(`${left.created_at || ""}`))
+    .slice(0, 12);
+}
+
 async function ticketCount(env, { status, silo, filters }) {
   const result = await fetchTicketBatch(env, {
     status,
@@ -176,7 +401,7 @@ async function ticketTags(env) {
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-async function listTickets(context) {
+async function listTickets(context, auth) {
   const url = new URL(context.request.url);
   const pageSize = clampPageSize(url.searchParams.get("pageSize"));
   const statusParam = url.searchParams.get("status") || "open";
@@ -188,10 +413,30 @@ async function listTickets(context) {
   const filters = normalizeTicketFilters(url);
   const cursor = normalizeCursor(url);
   const includeCounts = url.searchParams.get("includeCounts") !== "0";
+  const timezoneOffsetMinutes = Number(url.searchParams.get("tzOffset") || 0);
+  const shouldAutoMerge =
+    url.searchParams.get("autoMerge") !== "0" && status === "open" && silo === "tickets" && !cursor;
+
+  let autoMerged = [];
+  if (shouldAutoMerge) {
+    try {
+      autoMerged = await autoMergeDuplicateOpenTickets(context, auth, timezoneOffsetMinutes);
+    } catch (error) {
+      console.error("Failed to run automatic HelpDesk duplicate merge.", error);
+      await writeLogSafely(context.env, {
+        actor: auth.session.user,
+        area: "helpdesk",
+        action: AUTO_MERGE_ACTION,
+        target: "open_tickets",
+        status: "error",
+        details: "Automatic duplicate merge scan failed.",
+      });
+    }
+  }
 
   const dashboard = await getHelpDeskDashboard(context.env);
   const agentDirectory = buildHelpDeskAgentDirectory(dashboard);
-  const [batches, counts, tags] = await Promise.all([
+  const [batches, counts, tags, recentMergeLogs] = await Promise.all([
     Promise.all(
       statuses.map((item) =>
         fetchTicketBatch(context.env, {
@@ -207,6 +452,7 @@ async function listTickets(context) {
     ),
     includeCounts ? ticketCounts(context.env, filters) : Promise.resolve(null),
     includeCounts ? ticketTags(context.env) : Promise.resolve(null),
+    includeCounts || autoMerged.length ? mergeLogs(context.env) : Promise.resolve(null),
   ]);
   const allTickets = uniqueSortedTickets(
     batches.flatMap((batch) => batch.tickets).map((ticket) => normalizeHelpDeskTicketSummary(ticket, agentDirectory)),
@@ -223,6 +469,8 @@ async function listTickets(context) {
     silo,
     ...(counts ? { counts } : {}),
     ...(tags ? { tags } : {}),
+    ...(recentMergeLogs ? { mergeLogs: recentMergeLogs } : {}),
+    autoMerged,
     updatedAt: new Date().toISOString(),
     refreshIntervalSeconds: 30,
     page: {
@@ -253,10 +501,24 @@ async function mergeTickets(context, auth) {
     return errorResponse("At least one child ticket is required.", 400);
   }
 
+  const dashboard = await getHelpDeskDashboard(context.env);
+  const agentDirectory = buildHelpDeskAgentDirectory(dashboard);
+  const parentDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(parentTicketId)}`);
+  const parentTicket = normalizeHelpDeskTicketSummary(parentDetail, agentDirectory);
+  const mergedTicketDetails = [];
+
   for (const childTicketId of uniqueChildTicketIds) {
-    await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(parentTicketId)}/childTickets`, {
-      method: "POST",
-      body: { childTicketID: childTicketId },
+    const childDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(childTicketId)}`);
+    const childTicket = normalizeHelpDeskTicketSummary(childDetail, agentDirectory);
+    const childContent = mergedTicketContent(childDetail, agentDirectory);
+    await addInternalMergeNote(context.env, parentTicket, childTicket, childContent, "manual");
+    await mergeChildTicket(context.env, parentTicket, childTicket);
+    mergedTicketDetails.push({
+      childTicketId: childTicket.id,
+      childShortId: childTicket.short_id || childTicket.shortID,
+      childSubject: childTicket.subject || "",
+      childLink: ticketLink(childTicket),
+      mergedContentPreview: childContent.slice(0, 1000),
     });
   }
 
@@ -268,8 +530,13 @@ async function mergeTickets(context, auth) {
     status: "success",
     details: `Merged ${uniqueChildTicketIds.length} HelpDesk ticket(s).`,
     metadata: {
+      mode: "manual",
       parentTicketId,
+      parentShortId: parentTicket.short_id || parentTicket.shortID,
+      parentSubject: parentTicket.subject || "",
+      parentLink: ticketLink(parentTicket),
       childTicketIds: uniqueChildTicketIds,
+      mergedTickets: mergedTicketDetails,
     },
   });
 
@@ -290,7 +557,7 @@ export async function onRequest(context) {
 
   try {
     if (context.request.method === "GET") {
-      return await listTickets(context);
+      return await listTickets(context, auth);
     }
 
     return await mergeTickets(context, auth);

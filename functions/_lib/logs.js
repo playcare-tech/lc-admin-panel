@@ -60,3 +60,25 @@ export async function listLogs(env, limit = 250) {
     metadata: row.metadata ? JSON.parse(row.metadata) : null,
   }));
 }
+
+export async function listLogsByAction(env, { area, action, limit = 25 } = {}) {
+  await ensureLogsTable(env.DB);
+  const safeLimit = Math.min(100, Math.max(1, Number(limit) || 25));
+  const { results } = await env.DB.prepare(
+    `
+      SELECT id, created_at, actor, area, action, target, status, details, metadata
+      FROM logs
+      WHERE (? IS NULL OR area = ?)
+        AND (? IS NULL OR action = ?)
+      ORDER BY created_at DESC
+      LIMIT ?
+    `,
+  )
+    .bind(area || null, area || null, action || null, action || null, safeLimit)
+    .all();
+
+  return results.map((row) => ({
+    ...row,
+    metadata: row.metadata ? JSON.parse(row.metadata) : null,
+  }));
+}

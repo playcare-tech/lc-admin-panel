@@ -1023,6 +1023,45 @@ body {
   color: var(--accent-2);
 }
 
+.tickets-merge-log-section {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.tickets-merge-log-list {
+  display: grid;
+  gap: 8px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.tickets-merge-log-item {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.74);
+  font-size: 12px;
+}
+
+.tickets-merge-log-item strong,
+.tickets-merge-log-item span,
+.tickets-merge-log-item small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tickets-merge-log-item span,
+.tickets-merge-log-item small,
+.tickets-merge-log-empty {
+  color: var(--muted);
+}
+
+.tickets-merge-log-empty {
+  font-size: 12px;
+}
+
 .tickets-main {
   display: grid;
   gap: 14px;

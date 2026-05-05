@@ -163,6 +163,7 @@ const state = {
     tickets: [],
     counts: { statuses: {} },
     tags: [],
+    mergeLogs: [],
     filters: {
       status: "open",
       silo: "tickets",
@@ -2542,9 +2543,56 @@ function renderHelpdeskTicketsSidebar() {
                 `,
               ).join("")}
             </div>
+            ${renderHelpdeskTicketMergeLogs()}
           `
       }
     </aside>
+  `;
+}
+
+function mergeLogSummary(entry) {
+  const metadata = entry.metadata || {};
+  const child =
+    metadata.childShortId ||
+    metadata.childTicketId ||
+    metadata.mergedTickets?.[0]?.childShortId ||
+    metadata.mergedTickets?.[0]?.childTicketId ||
+    "ticket";
+  const parent = metadata.parentShortId || metadata.parentTicketId || entry.target || "parent";
+  return `${child} -> ${parent}`;
+}
+
+function mergeLogSubtext(entry) {
+  const metadata = entry.metadata || {};
+  const requester = metadata.requesterEmail || "";
+  const date = metadata.createdDate || "";
+  const mode = metadata.mode === "automatic" ? "Auto" : "Manual";
+  return [mode, requester, date].filter(Boolean).join(" · ");
+}
+
+function renderHelpdeskTicketMergeLogs() {
+  const logs = state.helpdeskTickets.mergeLogs || [];
+  return `
+    <div class="tickets-rail-section tickets-merge-log-section">
+      <div class="tickets-rail-label">Merge logs</div>
+      ${
+        logs.length
+          ? `<div class="tickets-merge-log-list">
+              ${logs
+                .map(
+                  (entry) => `
+                    <div class="tickets-merge-log-item">
+                      <strong>${escapeHtml(mergeLogSummary(entry))}</strong>
+                      <span>${escapeHtml(mergeLogSubtext(entry))}</span>
+                      <small>${escapeHtml(formatHelpdeskDateTime(entry.created_at))}</small>
+                    </div>
+                  `,
+                )
+                .join("")}
+            </div>`
+          : `<div class="tickets-merge-log-empty">No merges logged yet.</div>`
+      }
+    </div>
   `;
 }
 
@@ -4095,6 +4143,8 @@ function helpdeskTicketsQueryParams({ includeCounts = true } = {}) {
     sortBy: filters.sortBy || "lastMessageAt",
     order: filters.order || "desc",
     includeCounts: includeCounts ? "1" : "0",
+    autoMerge: "1",
+    tzOffset: String(new Date().getTimezoneOffset()),
   });
   const cursor = helpdeskTicketsCurrentCursor();
   if (cursor) {
@@ -4138,6 +4188,9 @@ async function fetchHelpdeskTickets({ silent = false } = {}) {
     }
     if (response.tags) {
       state.helpdeskTickets.tags = response.tags;
+    }
+    if (response.mergeLogs) {
+      state.helpdeskTickets.mergeLogs = response.mergeLogs;
     }
     state.helpdeskTickets.page = {
       ...state.helpdeskTickets.page,
@@ -4263,7 +4316,7 @@ async function mergeHelpdeskTodayTickets(parentTicketId, childTicketIds) {
         childTicketIds: childIds,
       },
     });
-    await fetchHelpdeskTickets({ silent: true });
+    await fetchHelpdeskTickets();
     await openHelpdeskTicket(parentTicketId);
   }, "HelpDesk tickets merged.");
 }
