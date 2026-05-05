@@ -138,6 +138,29 @@ const HELPDESK_TICKET_SORTS = [
 ];
 const HELPDESK_TICKET_TEXT_SORTS = new Set(["requester", "assignedAgent"]);
 const HELPDESK_TICKET_DATE_SORTS = new Set(["createdAt", "updatedAt", "lastMessageAt"]);
+const HELPDESK_AUTO_REPLY_DEFAULT_MESSAGE = [
+  "Dear player,",
+  "",
+  "Thank you for reaching out to us. This email confirms that we have received your request and will get back to you as soon as possible. Please note that our response time may be longer than usual due to a high volume of incoming requests.",
+  "",
+  "We appreciate your patience in the meantime.",
+  "",
+  "Best regards,",
+  "",
+  "Customer Support Team",
+].join("\n");
+
+function defaultHelpdeskWorkflowForm() {
+  return {
+    type: "auto_resolve_requester",
+    title: "",
+    requesterEmail: "",
+    status: "solved",
+    tags: "",
+    senderName: "Axel",
+    messageText: HELPDESK_AUTO_REPLY_DEFAULT_MESSAGE,
+  };
+}
 
 const state = {
   user: null,
@@ -161,12 +184,7 @@ const state = {
     workflows: [],
     runs: [],
     runsFor: "",
-    form: {
-      title: "",
-      requesterEmail: "",
-      status: "solved",
-      tags: "",
-    },
+    form: defaultHelpdeskWorkflowForm(),
   },
   helpdeskTickets: {
     loading: false,
@@ -2924,6 +2942,7 @@ function renderHelpdeskTickets() {
 function helpdeskWorkflowTypeLabel(type) {
   if (type === "auto_merge_duplicates") return "Auto-merge";
   if (type === "auto_resolve_requester") return "Auto-resolve";
+  if (type === "auto_reply_new_requester_ticket") return "Auto-reply";
   return type ? type.replaceAll("_", " ") : "Workflow";
 }
 
@@ -2935,6 +2954,9 @@ function helpdeskWorkflowConfigText(workflow) {
   if (workflow.type === "auto_resolve_requester") {
     const tags = (config.tagNames || []).length ? ` · tags: ${(config.tagNames || []).join(", ")}` : "";
     return `${config.requesterEmail || "requester"} -> ${config.status || "solved"}${tags}`;
+  }
+  if (workflow.type === "auto_reply_new_requester_ticket") {
+    return `sender: ${config.senderName || config.senderAgentId || "agent"} · first author: ${config.firstAuthorType || "client"}`;
   }
   return "";
 }
@@ -3028,35 +3050,55 @@ function renderHelpdeskWorkflowRuns() {
 
 function renderHelpdeskWorkflowCreateForm() {
   const form = state.helpdeskWorkflows.form;
+  const type = form.type || "auto_resolve_requester";
+  const isAutoReply = type === "auto_reply_new_requester_ticket";
   return `
     <div class="table-shell workflow-form-shell">
       <div class="tickets-toolbar">
         <div>
-          <div class="section-title">New auto-resolve workflow</div>
-          <div class="subtle">Incoming matching tickets are updated automatically when the open queue refreshes.</div>
+          <div class="section-title">New workflow</div>
+          <div class="subtle">Incoming tickets are processed when the open queue refreshes.</div>
         </div>
       </div>
       <div class="workflow-form-grid">
         <label class="tickets-filter-group">
+          <span>Type</span>
+          <select id="workflowTypeInput" class="form-select">
+            <option value="auto_resolve_requester" ${type === "auto_resolve_requester" ? "selected" : ""}>Auto-resolve</option>
+            <option value="auto_reply_new_requester_ticket" ${isAutoReply ? "selected" : ""}>Auto-reply</option>
+          </select>
+        </label>
+        <label class="tickets-filter-group ${isAutoReply ? "workflow-field-wide" : ""}">
           <span>Title</span>
           <input id="workflowTitleInput" class="form-control" type="text" value="${escapeHtml(form.title)}" />
         </label>
-        <label class="tickets-filter-group">
-          <span>Requester email</span>
-          <input id="workflowRequesterInput" class="form-control" type="email" value="${escapeHtml(form.requesterEmail)}" />
-        </label>
-        <label class="tickets-filter-group">
-          <span>Status</span>
-          <select id="workflowStatusInput" class="form-select">
-            ${HELPDESK_TICKET_STATUSES
-              .map((status) => `<option value="${status.id}" ${form.status === status.id ? "selected" : ""}>${escapeHtml(status.label)}</option>`)
-              .join("")}
-          </select>
-        </label>
-        <label class="tickets-filter-group">
-          <span>Tags to add</span>
-          <input id="workflowTagsInput" class="form-control" type="text" value="${escapeHtml(form.tags)}" placeholder="other, complaint" />
-        </label>
+        ${
+          isAutoReply
+            ? `<label class="tickets-filter-group">
+                <span>Sender</span>
+                <input id="workflowSenderInput" class="form-control" type="text" value="${escapeHtml(form.senderName)}" />
+              </label>
+              <label class="tickets-filter-group workflow-message-group">
+                <span>Message</span>
+                <textarea id="workflowMessageInput" class="form-control workflow-message-input">${escapeHtml(form.messageText)}</textarea>
+              </label>`
+            : `<label class="tickets-filter-group">
+                <span>Requester email</span>
+                <input id="workflowRequesterInput" class="form-control" type="email" value="${escapeHtml(form.requesterEmail)}" />
+              </label>
+              <label class="tickets-filter-group">
+                <span>Status</span>
+                <select id="workflowStatusInput" class="form-select">
+                  ${HELPDESK_TICKET_STATUSES
+                    .map((status) => `<option value="${status.id}" ${form.status === status.id ? "selected" : ""}>${escapeHtml(status.label)}</option>`)
+                    .join("")}
+                </select>
+              </label>
+              <label class="tickets-filter-group">
+                <span>Tags to add</span>
+                <input id="workflowTagsInput" class="form-control" type="text" value="${escapeHtml(form.tags)}" placeholder="other, complaint" />
+              </label>`
+        }
         <div class="workflow-form-actions">
           <button id="workflowSaveBtn" class="btn btn-primary" type="button">Save workflow</button>
         </div>
@@ -4333,11 +4375,16 @@ function startHelpdeskTicketsRealtime() {
 }
 
 function syncHelpdeskWorkflowFormFromDom() {
+  const senderInput = document.getElementById("workflowSenderInput");
+  const messageInput = document.getElementById("workflowMessageInput");
   state.helpdeskWorkflows.form = {
+    type: document.getElementById("workflowTypeInput")?.value || state.helpdeskWorkflows.form.type || "auto_resolve_requester",
     title: document.getElementById("workflowTitleInput")?.value || "",
     requesterEmail: document.getElementById("workflowRequesterInput")?.value || "",
     status: document.getElementById("workflowStatusInput")?.value || "solved",
     tags: document.getElementById("workflowTagsInput")?.value || "",
+    senderName: senderInput ? senderInput.value : state.helpdeskWorkflows.form.senderName || "Axel",
+    messageText: messageInput ? messageInput.value : state.helpdeskWorkflows.form.messageText || HELPDESK_AUTO_REPLY_DEFAULT_MESSAGE,
   };
 }
 
@@ -4387,19 +4434,17 @@ async function saveHelpdeskWorkflow() {
     const response = await api("/api/helpdesk/workflows", {
       method: "POST",
       body: {
+        type: form.type,
         title: form.title,
         requesterEmail: form.requesterEmail,
         status: form.status,
         tags: form.tags,
+        senderName: form.senderName,
+        messageText: form.messageText,
       },
     });
     state.helpdeskWorkflows.workflows = response.workflows || [];
-    state.helpdeskWorkflows.form = {
-      title: "",
-      requesterEmail: "",
-      status: "solved",
-      tags: "",
-    };
+    state.helpdeskWorkflows.form = defaultHelpdeskWorkflowForm();
     setMessage(statusMessage, "Workflow saved.", "success");
     renderApp();
   } catch (error) {
@@ -5477,7 +5522,11 @@ function bindAppEvents() {
     const childTicketIds = (button?.dataset.childTicketIds || "").split(",").filter(Boolean);
     mergeHelpdeskTodayTickets(parentTicketId, childTicketIds);
   });
-  ["workflowTitleInput", "workflowRequesterInput", "workflowStatusInput", "workflowTagsInput"].forEach((id) => {
+  document.getElementById("workflowTypeInput")?.addEventListener("change", () => {
+    syncHelpdeskWorkflowFormFromDom();
+    renderApp();
+  });
+  ["workflowTitleInput", "workflowRequesterInput", "workflowStatusInput", "workflowTagsInput", "workflowSenderInput", "workflowMessageInput"].forEach((id) => {
     document.getElementById(id)?.addEventListener("input", syncHelpdeskWorkflowFormFromDom);
     document.getElementById(id)?.addEventListener("change", syncHelpdeskWorkflowFormFromDom);
   });

@@ -25,7 +25,14 @@ const AUTO_MERGE_PAGE_SIZE = 100;
 const AUTO_MERGE_MAX_PAGES = 10;
 const AUTO_MERGE_ACTION = "auto_merge_duplicate_tickets";
 const AUTO_RESOLVE_WORKFLOW_TYPE = "auto_resolve_requester";
+const AUTO_REPLY_WORKFLOW_TYPE = "auto_reply_new_requester_ticket";
 const AUTO_MERGE_WORKFLOW_TYPE = "auto_merge_duplicates";
+const RUNNABLE_WORKFLOW_TYPES = new Set([AUTO_RESOLVE_WORKFLOW_TYPE, AUTO_REPLY_WORKFLOW_TYPE, AUTO_MERGE_WORKFLOW_TYPE]);
+const WORKFLOW_TYPE_ORDER = {
+  [AUTO_RESOLVE_WORKFLOW_TYPE]: 0,
+  [AUTO_REPLY_WORKFLOW_TYPE]: 1,
+  [AUTO_MERGE_WORKFLOW_TYPE]: 2,
+};
 const SORT_FIELDS = ["createdAt", "updatedAt", "lastMessageAt"];
 const PRIORITIES = new Set(["-10", "0", "10", "20"]);
 const STATUSES = new Set(["open", "pending", "onhold", "solved", "closed"]);
@@ -330,6 +337,142 @@ async function runAutoResolveWorkflow(context, workflow, openTickets) {
   };
 }
 
+function workflowCreatedAfter(workflow) {
+  const configured = workflow.config?.createdAfter || workflow.createdAt || "";
+  const date = configured ? new Date(configured) : null;
+  return date && !Number.isNaN(date.getTime()) ? date.getTime() : 0;
+}
+
+function candidateCreatedAt(ticket) {
+  const date = ticket.createdAt ? new Date(ticket.createdAt) : null;
+  return date && !Number.isNaN(date.getTime()) ? date.getTime() : 0;
+}
+
+function comparableAgentValue(value) {
+  return `${value || ""}`.trim().toLowerCase();
+}
+
+async function resolveWorkflowAgent(env, config) {
+  const senderAgentId = `${config.senderAgentId || ""}`.trim();
+  const senderName = `${config.senderName || config.sender || ""}`.trim();
+  if (!senderAgentId && !senderName) {
+    throw new Error("Auto-reply workflow has no sender configured.");
+  }
+
+  const dashboard = await getHelpDeskDashboard(env);
+  const agents = dashboard.agents || [];
+  if (senderAgentId) {
+    const exactAgent = agents.find((agent) => agent.id === senderAgentId);
+    if (exactAgent) return exactAgent;
+  }
+
+  const senderKey = comparableAgentValue(senderName || senderAgentId);
+  const exactMatches = agents.filter((agent) => {
+    return [agent.id, agent.email, agent.name].some((value) => comparableAgentValue(value) === senderKey);
+  });
+  if (exactMatches.length === 1) return exactMatches[0];
+  if (exactMatches.length > 1) {
+    throw new Error(`Auto-reply sender "${senderName}" matches multiple HelpDesk agents.`);
+  }
+
+  const prefixMatches = agents.filter((agent) => comparableAgentValue(agent.name).startsWith(senderKey));
+  if (prefixMatches.length === 1) return prefixMatches[0];
+  if (prefixMatches.length > 1) {
+    throw new Error(`Auto-reply sender "${senderName}" matches multiple HelpDesk agents.`);
+  }
+
+  throw new Error(`Auto-reply sender "${senderName || senderAgentId}" was not found in HelpDesk agents.`);
+}
+
+function eventPublicMessageText(event) {
+  if (event.is_private) return "";
+  return stripHtml(event.text || event.html || "");
+}
+
+function normalizedMessageText(value) {
+  return stripHtml(value).replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function ticketAlreadyHasAutoReply(events, messageText) {
+  const expected = normalizedMessageText(messageText);
+  if (!expected) return false;
+  return events.some((event) => !event.is_private && normalizedMessageText(event.text || event.html || "") === expected);
+}
+
+async function runAutoReplyWorkflow(context, workflow, openTickets) {
+  const config = workflow.config || {};
+  const messageText = `${config.messageText || config.message || ""}`.trim();
+  if (!messageText) {
+    throw new Error("Auto-reply workflow has no message text configured.");
+  }
+
+  const senderAgent = await resolveWorkflowAgent(context.env, config);
+  const createdAfterMs = workflowCreatedAfter(workflow);
+  const candidates = openTickets.filter((ticket) => {
+    return ticket.status === "open" && candidateCreatedAt(ticket) >= createdAfterMs;
+  });
+  const repliedTickets = [];
+  const skippedTickets = [];
+
+  for (const candidate of candidates) {
+    const ticketDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(candidate.id)}`);
+    const normalizedTicket = normalizeHelpDeskTicketSummary(ticketDetail);
+    if (normalizedTicket.status !== "open" || normalizedTicket.parentTicket) {
+      continue;
+    }
+
+    const events = normalizeHelpDeskConversationEvents(ticketDetail);
+    const publicMessageEvents = events.filter((event) => eventPublicMessageText(event));
+    const firstPublicMessage = publicMessageEvents[0];
+    const hasAgentPublicMessage = publicMessageEvents.some((event) => event.author_type === "agent");
+
+    if (!firstPublicMessage || firstPublicMessage.author_type !== "client" || hasAgentPublicMessage) {
+      skippedTickets.push({
+        ticketId: normalizedTicket.id,
+        shortId: normalizedTicket.short_id,
+        reason: firstPublicMessage ? `first_public_author:${firstPublicMessage.author_type || "unknown"}` : "no_public_message",
+      });
+      continue;
+    }
+    if (ticketAlreadyHasAutoReply(events, messageText)) {
+      continue;
+    }
+
+    await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(normalizedTicket.id)}`, {
+      method: "PATCH",
+      body: {
+        author: {
+          type: "agent",
+          ID: senderAgent.id,
+        },
+        message: {
+          text: messageText,
+        },
+        isPrivate: false,
+      },
+    });
+
+    repliedTickets.push({
+      ticketId: normalizedTicket.id,
+      shortId: normalizedTicket.short_id,
+      link: ticketLink(normalizedTicket),
+      requesterEmail: normalizedTicket.requesterEmail,
+    });
+  }
+
+  return {
+    details: `Auto-replied to ${repliedTickets.length} new requester ticket(s).`,
+    metadata: {
+      type: workflow.type,
+      senderAgentId: senderAgent.id,
+      senderName: senderAgent.name,
+      candidates: candidates.length,
+      repliedTickets,
+      skippedTickets,
+    },
+  };
+}
+
 async function runAutoMergeWorkflow(context, auth, workflow, timezoneOffsetMinutes) {
   const result = await autoMergeDuplicateOpenTickets(context, auth, timezoneOffsetMinutes);
   return {
@@ -344,10 +487,14 @@ async function runAutoMergeWorkflow(context, auth, workflow, timezoneOffsetMinut
 async function runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes, openTickets) {
   const startedAt = new Date().toISOString();
   try {
-    const result =
-      workflow.type === AUTO_MERGE_WORKFLOW_TYPE
-        ? await runAutoMergeWorkflow(context, auth, workflow, timezoneOffsetMinutes)
-        : await runAutoResolveWorkflow(context, workflow, openTickets);
+    let result;
+    if (workflow.type === AUTO_MERGE_WORKFLOW_TYPE) {
+      result = await runAutoMergeWorkflow(context, auth, workflow, timezoneOffsetMinutes);
+    } else if (workflow.type === AUTO_REPLY_WORKFLOW_TYPE) {
+      result = await runAutoReplyWorkflow(context, workflow, openTickets);
+    } else {
+      result = await runAutoResolveWorkflow(context, workflow, openTickets);
+    }
     const finishedAt = new Date().toISOString();
 
     await recordHelpdeskWorkflowRun(context.env, {
@@ -419,18 +566,17 @@ async function runEnabledHelpdeskWorkflows(context, auth, timezoneOffsetMinutes)
 
   const dueWorkflows = [];
   for (const workflow of workflows) {
-    if ([AUTO_MERGE_WORKFLOW_TYPE, AUTO_RESOLVE_WORKFLOW_TYPE].includes(workflow.type) && (await workflowRunDue(context.env, workflow))) {
+    if (RUNNABLE_WORKFLOW_TYPES.has(workflow.type) && (await workflowRunDue(context.env, workflow))) {
       dueWorkflows.push(workflow);
     }
   }
   if (!dueWorkflows.length) return [];
   dueWorkflows.sort((left, right) => {
-    if (left.type === right.type) return 0;
-    return left.type === AUTO_RESOLVE_WORKFLOW_TYPE ? -1 : 1;
+    return (WORKFLOW_TYPE_ORDER[left.type] ?? 99) - (WORKFLOW_TYPE_ORDER[right.type] ?? 99);
   });
 
   let openTickets = null;
-  if (dueWorkflows.some((workflow) => workflow.type === AUTO_RESOLVE_WORKFLOW_TYPE)) {
+  if (dueWorkflows.some((workflow) => [AUTO_RESOLVE_WORKFLOW_TYPE, AUTO_REPLY_WORKFLOW_TYPE].includes(workflow.type))) {
     openTickets = await fetchOpenTicketsForAutoMerge(context.env, timezoneOffsetMinutes);
   }
 

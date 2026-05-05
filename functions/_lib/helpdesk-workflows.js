@@ -258,6 +258,35 @@ export async function createHelpdeskAutoResolveWorkflow(env, { title, requesterE
   return id;
 }
 
+export async function createHelpdeskAutoReplyWorkflow(env, { title, senderName, senderAgentId, messageText }) {
+  await ensureHelpdeskWorkflowTables(env.DB);
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    `
+      INSERT INTO helpdesk_workflows (id, title, type, enabled, config_json, created_at, updated_at)
+      VALUES (?, ?, 'auto_reply_new_requester_ticket', 1, ?, ?, ?)
+    `,
+  )
+    .bind(
+      id,
+      title,
+      JSON.stringify({
+        intervalMinutes: 5,
+        firstAuthorType: "client",
+        senderName,
+        senderAgentId,
+        messageText,
+        createdAfter: now,
+      }),
+      now,
+      now,
+    )
+    .run();
+
+  return id;
+}
+
 export async function recordHelpdeskWorkflowRun(env, run) {
   await ensureHelpdeskWorkflowTables(env.DB);
   const startedAt = run.startedAt || new Date().toISOString();

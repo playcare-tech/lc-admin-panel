@@ -1233,6 +1233,19 @@ body {
   align-items: end;
 }
 
+.workflow-field-wide {
+  grid-column: span 2;
+}
+
+.workflow-message-group {
+  grid-column: 1 / -1;
+}
+
+.workflow-message-input {
+  min-height: 168px;
+  resize: vertical;
+}
+
 .workflow-form-actions {
   display: flex;
   align-items: end;

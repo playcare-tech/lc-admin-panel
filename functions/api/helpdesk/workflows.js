@@ -3,6 +3,7 @@ import { helpdeskRequest } from "../../_lib/helpdesk.js";
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import { writeLogSafely } from "../../_lib/logs.js";
 import {
+  createHelpdeskAutoReplyWorkflow,
   createHelpdeskAutoResolveWorkflow,
   listHelpdeskWorkflowRuns,
   listHelpdeskWorkflows,
@@ -10,6 +11,8 @@ import {
 } from "../../_lib/helpdesk-workflows.js";
 
 const STATUSES = new Set(["open", "pending", "onhold", "solved", "closed"]);
+const AUTO_RESOLVE_WORKFLOW_TYPE = "auto_resolve_requester";
+const AUTO_REPLY_WORKFLOW_TYPE = "auto_reply_new_requester_ticket";
 
 function splitTags(value) {
   const tags = Array.isArray(value) ? value : `${value || ""}`.split(",");
@@ -72,11 +75,55 @@ async function getWorkflows(context) {
 async function createWorkflow(context, auth) {
   const body = await readJson(context.request);
   const title = `${body.title || ""}`.trim();
+  const type = `${body.type || AUTO_RESOLVE_WORKFLOW_TYPE}`.trim();
+
+  if (!title) return errorResponse("Workflow title is required.", 400);
+
+  if (type === AUTO_REPLY_WORKFLOW_TYPE) {
+    const senderName = `${body.senderName || body.sender || ""}`.trim();
+    const senderAgentId = `${body.senderAgentId || ""}`.trim();
+    const messageText = `${body.messageText || body.message || ""}`.trim();
+
+    if (!senderName && !senderAgentId) return errorResponse("Sender is required.", 400);
+    if (!messageText) return errorResponse("Message text is required.", 400);
+
+    const workflowId = await createHelpdeskAutoReplyWorkflow(context.env, {
+      title,
+      senderName,
+      senderAgentId,
+      messageText,
+    });
+
+    await writeLogSafely(context.env, {
+      actor: auth.session.user,
+      area: "helpdesk",
+      action: "create_workflow",
+      target: workflowId,
+      status: "success",
+      details: `Created HelpDesk workflow ${title}.`,
+      metadata: {
+        workflowId,
+        type,
+        senderName,
+        senderAgentId,
+      },
+    });
+
+    return json({
+      ok: true,
+      workflowId,
+      workflows: await listHelpdeskWorkflows(context.env),
+    });
+  }
+
+  if (type !== AUTO_RESOLVE_WORKFLOW_TYPE) {
+    return errorResponse("Choose a valid workflow type.", 400);
+  }
+
   const requesterEmail = normalizeEmail(body.requesterEmail);
   const status = `${body.status || "solved"}`.trim().toLowerCase();
   const tagNames = splitTags(body.tags || body.tagNames);
 
-  if (!title) return errorResponse("Workflow title is required.", 400);
   if (!requesterEmail || !requesterEmail.includes("@")) return errorResponse("Requester email is required.", 400);
   if (!STATUSES.has(status)) return errorResponse("Choose a valid HelpDesk ticket status.", 400);
 
@@ -98,7 +145,7 @@ async function createWorkflow(context, auth) {
     details: `Created HelpDesk workflow ${title}.`,
     metadata: {
       workflowId,
-      type: "auto_resolve_requester",
+      type,
       requesterEmail,
       status,
       tagNames,
