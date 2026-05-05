@@ -1158,6 +1158,86 @@ body {
   font-size: 12px;
 }
 
+.workflows-page {
+  display: grid;
+  gap: 14px;
+}
+
+.workflows-table th,
+.workflows-table td {
+  vertical-align: middle;
+}
+
+.workflow-name-cell {
+  display: grid;
+  gap: 3px;
+  min-width: min(100%, 280px);
+}
+
+.workflow-name-cell span {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.workflow-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 48px;
+  height: 26px;
+  margin: 0;
+}
+
+.workflow-switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.workflow-switch span {
+  width: 48px;
+  height: 26px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  border: 1px solid var(--line-strong);
+  transition: background-color 140ms ease;
+}
+
+.workflow-switch span::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(31, 41, 64, 0.2);
+  transition: transform 140ms ease;
+}
+
+.workflow-switch input:checked + span {
+  background: var(--success);
+  border-color: rgba(15, 118, 110, 0.36);
+}
+
+.workflow-switch input:checked + span::after {
+  transform: translateX(22px);
+}
+
+.workflow-form-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(170px, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.workflow-form-actions {
+  display: flex;
+  align-items: end;
+}
+
 .tickets-sort-button.active {
   color: var(--accent-2);
 }
@@ -1620,7 +1700,8 @@ body {
   .analytics-filter-grid,
   .analytics-card-grid,
   .helpdesk-analytics-filters,
-  .tickets-filter-bar {
+  .tickets-filter-bar,
+  .workflow-form-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1642,7 +1723,8 @@ body {
   .analytics-card-grid,
   .analytics-top-grid,
   .helpdesk-analytics-filters,
-  .tickets-filter-bar {
+  .tickets-filter-bar,
+  .workflow-form-grid {
     grid-template-columns: 1fr;
   }
 

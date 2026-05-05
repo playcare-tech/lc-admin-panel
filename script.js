@@ -155,6 +155,19 @@ const state = {
   helpdeskSync: null,
   helpdeskSyncTimer: null,
   helpdeskSyncInFlight: false,
+  helpdeskWorkflows: {
+    loading: false,
+    error: null,
+    workflows: [],
+    runs: [],
+    runsFor: "",
+    form: {
+      title: "",
+      requesterEmail: "",
+      status: "solved",
+      tags: "",
+    },
+  },
   helpdeskTickets: {
     loading: false,
     error: null,
@@ -2908,6 +2921,195 @@ function renderHelpdeskTickets() {
   `;
 }
 
+function helpdeskWorkflowTypeLabel(type) {
+  if (type === "auto_merge_duplicates") return "Auto-merge";
+  if (type === "auto_resolve_requester") return "Auto-resolve";
+  return type ? type.replaceAll("_", " ") : "Workflow";
+}
+
+function helpdeskWorkflowConfigText(workflow) {
+  const config = workflow.config || {};
+  if (workflow.type === "auto_merge_duplicates") {
+    return "Duplicate open tickets from the same requester and same local day.";
+  }
+  if (workflow.type === "auto_resolve_requester") {
+    const tags = (config.tagNames || []).length ? ` · tags: ${(config.tagNames || []).join(", ")}` : "";
+    return `${config.requesterEmail || "requester"} -> ${config.status || "solved"}${tags}`;
+  }
+  return "";
+}
+
+function renderHelpdeskWorkflowRows() {
+  const workflows = state.helpdeskWorkflows.workflows || [];
+  if (!workflows.length) {
+    return `<tr><td colspan="5"><div class="empty-state">No HelpDesk workflows yet.</div></td></tr>`;
+  }
+
+  return workflows
+    .map(
+      (workflow) => `
+        <tr>
+          <td>
+            <div class="workflow-name-cell">
+              <strong>${escapeHtml(workflow.title)}</strong>
+              <span>${escapeHtml(helpdeskWorkflowConfigText(workflow))}</span>
+            </div>
+          </td>
+          <td><span class="chip">${escapeHtml(helpdeskWorkflowTypeLabel(workflow.type))}</span></td>
+          <td>${Number(workflow.runsLast24h || 0)}</td>
+          <td>
+            <button
+              class="btn btn-sm btn-outline-secondary"
+              type="button"
+              data-helpdesk-workflow-runs="${escapeHtml(workflow.id)}"
+            >See runs</button>
+          </td>
+          <td>
+            <label class="workflow-switch">
+              <input
+                type="checkbox"
+                data-helpdesk-workflow-toggle="${escapeHtml(workflow.id)}"
+                ${workflow.enabled ? "checked" : ""}
+              />
+              <span></span>
+            </label>
+          </td>
+        </tr>
+      `,
+    )
+    .join("");
+}
+
+function renderHelpdeskWorkflowRuns() {
+  const workflowId = state.helpdeskWorkflows.runsFor;
+  if (!workflowId) return "";
+
+  const workflow = (state.helpdeskWorkflows.workflows || []).find((item) => item.id === workflowId);
+  const runs = state.helpdeskWorkflows.runs || [];
+  return `
+    <div class="table-shell workflow-runs-shell">
+      <div class="tickets-toolbar">
+        <div>
+          <div class="section-title">Runs${workflow ? ` · ${escapeHtml(workflow.title)}` : ""}</div>
+          <div class="subtle">Most recent workflow executions.</div>
+        </div>
+      </div>
+      ${
+        runs.length
+          ? `<div class="table-responsive">
+              <table class="table admin-table">
+                <thead>
+                  <tr>
+                    <th>Started</th>
+                    <th>Status</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${runs
+                    .map(
+                      (run) => `
+                        <tr>
+                          <td>${escapeHtml(formatHelpdeskDateTime(run.startedAt))}</td>
+                          <td><span class="chip">${escapeHtml(run.status)}</span></td>
+                          <td>${escapeHtml(run.details || "No details.")}</td>
+                        </tr>
+                      `,
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+            </div>`
+          : `<div class="empty-state">No runs recorded for this workflow.</div>`
+      }
+    </div>
+  `;
+}
+
+function renderHelpdeskWorkflowCreateForm() {
+  const form = state.helpdeskWorkflows.form;
+  return `
+    <div class="table-shell workflow-form-shell">
+      <div class="tickets-toolbar">
+        <div>
+          <div class="section-title">New auto-resolve workflow</div>
+          <div class="subtle">Incoming matching tickets are updated automatically when the open queue refreshes.</div>
+        </div>
+      </div>
+      <div class="workflow-form-grid">
+        <label class="tickets-filter-group">
+          <span>Title</span>
+          <input id="workflowTitleInput" class="form-control" type="text" value="${escapeHtml(form.title)}" />
+        </label>
+        <label class="tickets-filter-group">
+          <span>Requester email</span>
+          <input id="workflowRequesterInput" class="form-control" type="email" value="${escapeHtml(form.requesterEmail)}" />
+        </label>
+        <label class="tickets-filter-group">
+          <span>Status</span>
+          <select id="workflowStatusInput" class="form-select">
+            ${HELPDESK_TICKET_STATUSES
+              .map((status) => `<option value="${status.id}" ${form.status === status.id ? "selected" : ""}>${escapeHtml(status.label)}</option>`)
+              .join("")}
+          </select>
+        </label>
+        <label class="tickets-filter-group">
+          <span>Tags to add</span>
+          <input id="workflowTagsInput" class="form-control" type="text" value="${escapeHtml(form.tags)}" placeholder="other, complaint" />
+        </label>
+        <div class="workflow-form-actions">
+          <button id="workflowSaveBtn" class="btn btn-primary" type="button">Save workflow</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderHelpdeskWorkflows() {
+  const { loading, error, workflows } = state.helpdeskWorkflows;
+  const enabledCount = workflows.filter((workflow) => workflow.enabled).length;
+  const runsLast24h = workflows.reduce((sum, workflow) => sum + Number(workflow.runsLast24h || 0), 0);
+
+  return `
+    <section class="workflows-page">
+      ${renderStats([
+        { label: "Workflows", value: workflows.length, meta: "Configured rules" },
+        { label: "Enabled", value: enabledCount, meta: "Currently active" },
+        { label: "Runs", value: runsLast24h, meta: "Last 24 hours" },
+      ])}
+      <div class="table-shell workflows-table-shell">
+        <div class="tickets-toolbar">
+          <div>
+            <div class="section-title">HelpDesk workflows</div>
+            <div class="subtle">${loading ? "Loading workflows..." : "Switch workflows on or off and inspect recent runs."}</div>
+          </div>
+          <button id="workflowsReloadBtn" class="btn btn-sm btn-outline-secondary" type="button">Reload</button>
+        </div>
+        ${
+          error
+            ? `<div class="empty-state analytics-error">${escapeHtml(error)}</div>`
+            : `<div class="table-responsive">
+                <table class="table admin-table workflows-table">
+                  <thead>
+                    <tr>
+                      <th>Workflow</th>
+                      <th>Kind</th>
+                      <th>Runs 24h</th>
+                      <th>Runs</th>
+                      <th>Enabled</th>
+                    </tr>
+                  </thead>
+                  <tbody>${renderHelpdeskWorkflowRows()}</tbody>
+                </table>
+              </div>`
+        }
+      </div>
+      ${renderHelpdeskWorkflowRuns()}
+      ${renderHelpdeskWorkflowCreateForm()}
+    </section>
+  `;
+}
+
 function formatHelpdeskSyncStatus(sync = state.helpdeskSync) {
   if (!sync) return "HelpDesk auto sync: loading...";
   const lastRun = sync.last_success_at || sync.last_finished_at || sync.last_started_at;
@@ -4130,6 +4332,82 @@ function startHelpdeskTicketsRealtime() {
   }, 30 * 1000);
 }
 
+function syncHelpdeskWorkflowFormFromDom() {
+  state.helpdeskWorkflows.form = {
+    title: document.getElementById("workflowTitleInput")?.value || "",
+    requesterEmail: document.getElementById("workflowRequesterInput")?.value || "",
+    status: document.getElementById("workflowStatusInput")?.value || "solved",
+    tags: document.getElementById("workflowTagsInput")?.value || "",
+  };
+}
+
+async function fetchHelpdeskWorkflows({ runsFor = state.helpdeskWorkflows.runsFor || "" } = {}) {
+  state.helpdeskWorkflows.loading = true;
+  state.helpdeskWorkflows.error = null;
+  if (state.section === "helpdesk-workflows") renderApp();
+
+  try {
+    const params = new URLSearchParams();
+    if (runsFor) params.set("runsFor", runsFor);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    const response = await api(`/api/helpdesk/workflows${suffix}`);
+    state.helpdeskWorkflows.workflows = response.workflows || [];
+    state.helpdeskWorkflows.runs = response.runs || [];
+    state.helpdeskWorkflows.runsFor = response.runsFor || runsFor || "";
+  } catch (error) {
+    state.helpdeskWorkflows.error = error.message;
+  } finally {
+    state.helpdeskWorkflows.loading = false;
+    if (state.section === "helpdesk-workflows") renderApp();
+  }
+}
+
+async function toggleHelpdeskWorkflow(workflowId, enabled) {
+  try {
+    setMessage(statusMessage, `${enabled ? "Enabling" : "Disabling"} workflow...`);
+    const response = await api("/api/helpdesk/workflows", {
+      method: "PATCH",
+      body: { id: workflowId, enabled },
+    });
+    state.helpdeskWorkflows.workflows = response.workflows || [];
+    setMessage(statusMessage, `Workflow ${enabled ? "enabled" : "disabled"}.`, "success");
+    renderApp();
+  } catch (error) {
+    setMessage(statusMessage, error.message, "error");
+    fetchHelpdeskWorkflows();
+  }
+}
+
+async function saveHelpdeskWorkflow() {
+  syncHelpdeskWorkflowFormFromDom();
+  const form = state.helpdeskWorkflows.form;
+
+  try {
+    setMessage(statusMessage, "Saving workflow...");
+    const response = await api("/api/helpdesk/workflows", {
+      method: "POST",
+      body: {
+        title: form.title,
+        requesterEmail: form.requesterEmail,
+        status: form.status,
+        tags: form.tags,
+      },
+    });
+    state.helpdeskWorkflows.workflows = response.workflows || [];
+    state.helpdeskWorkflows.form = {
+      title: "",
+      requesterEmail: "",
+      status: "solved",
+      tags: "",
+    };
+    setMessage(statusMessage, "Workflow saved.", "success");
+    renderApp();
+  } catch (error) {
+    setMessage(statusMessage, error.message, "error");
+    renderApp();
+  }
+}
+
 function helpdeskTicketsCurrentCursor() {
   return state.helpdeskTickets.page.cursorStack.at(-1) || null;
 }
@@ -4144,6 +4422,7 @@ function helpdeskTicketsQueryParams({ includeCounts = true } = {}) {
     order: filters.order || "desc",
     includeCounts: includeCounts ? "1" : "0",
     autoMerge: "0",
+    workflows: "1",
     tzOffset: String(new Date().getTimezoneOffset()),
   });
   const cursor = helpdeskTicketsCurrentCursor();
@@ -4331,6 +4610,7 @@ function currentSectionTitle() {
     "helpdesk-groups": "HelpDesk Groups",
     "create-helpdesk-user": "Create HelpDesk User",
     "helpdesk-tickets": "HelpDesk Tickets",
+    "helpdesk-workflows": "HelpDesk Workflows",
     "helpdesk-analytics": "HelpDesk Analytics",
     "admin-users": "Admin Users",
     logs: "Logs",
@@ -4621,6 +4901,9 @@ function renderApp() {
   } else if (state.section === "helpdesk-tickets") {
     appContent.innerHTML = renderHelpdeskTickets();
     filterBar.classList.add("d-none");
+  } else if (state.section === "helpdesk-workflows") {
+    appContent.innerHTML = renderHelpdeskWorkflows();
+    filterBar.classList.add("d-none");
   } else if (state.section === "admin-users") {
     appContent.innerHTML = renderAdminUsers();
     filterBar.classList.add("d-none");
@@ -4654,17 +4937,22 @@ function renderApp() {
       fetchHelpdeskTickets();
     }
   }
+
+  if (state.section === "helpdesk-workflows" && !state.helpdeskWorkflows.loading && !state.helpdeskWorkflows.workflows.length && !state.helpdeskWorkflows.error) {
+    fetchHelpdeskWorkflows();
+  }
 }
 
 async function refreshData() {
   setMessage(statusMessage, "Refreshing...");
 
-  const [livechatResult, helpdeskResult, adminUsersResult, logsResult, syncResult] = await Promise.allSettled([
+  const [livechatResult, helpdeskResult, adminUsersResult, logsResult, syncResult, workflowsResult] = await Promise.allSettled([
     api("/api/livechat/dashboard"),
     api("/api/helpdesk/dashboard"),
     api("/api/admin-users"),
     api("/api/logs"),
     fetchHelpdeskSyncStatus(),
+    api("/api/helpdesk/workflows"),
   ]);
 
   if (livechatResult.status === "fulfilled") {
@@ -4677,6 +4965,9 @@ async function refreshData() {
   if (adminUsersResult.status === "fulfilled") {
     state.adminUsers = adminUsersResult.value.adminUsers || [];
   }
+  if (workflowsResult.status === "fulfilled") {
+    state.helpdeskWorkflows.workflows = workflowsResult.value.workflows || [];
+  }
   state.logs = logsResult.status === "fulfilled" ? logsResult.value.logs || [] : [];
   state.logsWarning = logsResult.status === "fulfilled" ? logsResult.value.warning || "" : "Logs unavailable.";
 
@@ -4688,6 +4979,7 @@ async function refreshData() {
     adminUsersResult.status !== "fulfilled" ? `Admin users: ${adminUsersResult.reason.message}` : "",
     state.logsWarning,
     syncResult.status !== "fulfilled" ? `HelpDesk sync: ${syncResult.reason.message}` : "",
+    workflowsResult.status !== "fulfilled" ? `Workflows: ${workflowsResult.reason.message}` : "",
   ].filter(Boolean);
 
   setMessage(
@@ -5184,6 +5476,22 @@ function bindAppEvents() {
     const parentTicketId = button?.dataset.parentTicketId || "";
     const childTicketIds = (button?.dataset.childTicketIds || "").split(",").filter(Boolean);
     mergeHelpdeskTodayTickets(parentTicketId, childTicketIds);
+  });
+  ["workflowTitleInput", "workflowRequesterInput", "workflowStatusInput", "workflowTagsInput"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("input", syncHelpdeskWorkflowFormFromDom);
+    document.getElementById(id)?.addEventListener("change", syncHelpdeskWorkflowFormFromDom);
+  });
+  bindClick("workflowsReloadBtn", () => {
+    fetchHelpdeskWorkflows();
+  });
+  bindClick("workflowSaveBtn", () => {
+    saveHelpdeskWorkflow();
+  });
+  document.querySelectorAll("[data-helpdesk-workflow-runs]").forEach((button) => {
+    button.onclick = () => fetchHelpdeskWorkflows({ runsFor: button.dataset.helpdeskWorkflowRuns });
+  });
+  document.querySelectorAll("[data-helpdesk-workflow-toggle]").forEach((input) => {
+    input.onchange = () => toggleHelpdeskWorkflow(input.dataset.helpdeskWorkflowToggle, input.checked);
   });
   document.querySelectorAll("[data-livechat-suspend]").forEach((button) => {
     button.onclick = async () => {

@@ -10,6 +10,11 @@ import {
 } from "../../_lib/helpdesk.js";
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import { listLogsByAction, writeLog, writeLogSafely } from "../../_lib/logs.js";
+import {
+  lastHelpdeskWorkflowRunAt,
+  listEnabledHelpdeskWorkflows,
+  recordHelpdeskWorkflowRun,
+} from "../../_lib/helpdesk-workflows.js";
 
 const ACTIVE_STATUSES = ["open", "pending", "onhold"];
 const ALL_STATUSES = ["open", "pending", "onhold", "solved", "closed"];
@@ -21,8 +26,11 @@ const AUTO_MERGE_MAX_PAGES = 10;
 const AUTO_MERGE_ACTION = "auto_merge_duplicate_tickets";
 const NO_REPLY_COMPLAINTS_EMAIL = "no-reply-complaints@casino.guru";
 const OTHER_TAG_NAME = "other";
+const AUTO_RESOLVE_WORKFLOW_TYPE = "auto_resolve_requester";
+const AUTO_MERGE_WORKFLOW_TYPE = "auto_merge_duplicates";
 const SORT_FIELDS = ["createdAt", "updatedAt", "lastMessageAt"];
 const PRIORITIES = new Set(["-10", "0", "10", "20"]);
+const STATUSES = new Set(["open", "pending", "onhold", "solved", "closed"]);
 
 function clampPageSize(value) {
   const parsed = Number.parseInt(value || "", 10);
@@ -313,6 +321,196 @@ async function solveNoReplyComplaintsTickets(context, auth, tickets, reason) {
   return solved;
 }
 
+function workflowIntervalMinutes(workflow) {
+  const configured = Number(workflow.config?.intervalMinutes);
+  if (Number.isFinite(configured) && configured > 0) return configured;
+  return workflow.type === AUTO_MERGE_WORKFLOW_TYPE ? 30 : 5;
+}
+
+async function workflowRunDue(env, workflow) {
+  const lastRunAt = await lastHelpdeskWorkflowRunAt(env, workflow.id);
+  if (!lastRunAt) return true;
+  const lastRunMs = new Date(lastRunAt).getTime();
+  if (!Number.isFinite(lastRunMs)) return true;
+  return Date.now() - lastRunMs >= workflowIntervalMinutes(workflow) * 60 * 1000;
+}
+
+async function patchTicketStatusAndTags(env, ticket, status, tagIds) {
+  const ticketId = ticket.id || ticket.ticket_id;
+  if (!ticketId) return null;
+
+  const currentTagIds = new Set((ticket.tagIDs || []).map(String).filter(Boolean));
+  for (const tagId of tagIds || []) {
+    currentTagIds.add(String(tagId));
+  }
+
+  const nextTagIds = Array.from(currentTagIds);
+  const hasAllTags = (tagIds || []).every((tagId) => currentTagIds.has(String(tagId)));
+  if (ticket.status === status && hasAllTags) {
+    return null;
+  }
+
+  await helpdeskRequest(env, `/tickets/${encodeURIComponent(ticketId)}`, {
+    method: "PATCH",
+    body: {
+      status,
+      tagIDs: nextTagIds,
+      ...preserveTeamPayload(ticket),
+    },
+  });
+
+  return {
+    ticketId,
+    shortId: ticket.short_id || ticket.shortID || ticketId,
+    link: ticketLink(ticket),
+  };
+}
+
+async function runAutoResolveWorkflow(context, workflow, openTickets) {
+  const config = workflow.config || {};
+  const requesterEmail = `${config.requesterEmail || ""}`.trim().toLowerCase();
+  const status = `${config.status || "solved"}`.trim().toLowerCase();
+  const tagIds = Array.isArray(config.tagIds) ? config.tagIds.map(String).filter(Boolean) : [];
+  const tagNames = Array.isArray(config.tagNames) ? config.tagNames : [];
+
+  if (!requesterEmail || !STATUSES.has(status)) {
+    throw new Error("Auto-resolve workflow has invalid configuration.");
+  }
+
+  const changedTickets = [];
+  const matches = openTickets.filter((ticket) => requesterKey(ticket) === requesterEmail);
+  for (const ticket of matches) {
+    const changed = await patchTicketStatusAndTags(context.env, ticket, status, tagIds);
+    if (changed) changedTickets.push(changed);
+  }
+
+  return {
+    details: `Auto-resolved ${changedTickets.length} ticket(s) for ${requesterEmail}.`,
+    metadata: {
+      type: workflow.type,
+      requesterEmail,
+      status,
+      tagIds,
+      tagNames,
+      matchedTickets: matches.length,
+      changedTickets,
+    },
+  };
+}
+
+async function runAutoMergeWorkflow(context, auth, workflow, timezoneOffsetMinutes) {
+  const result = await autoMergeDuplicateOpenTickets(context, auth, timezoneOffsetMinutes);
+  return {
+    details: `Auto-merged ${result.merged.length} duplicate ticket(s).`,
+    metadata: {
+      type: workflow.type,
+      mergedTickets: result.merged,
+      solvedNoReplyTickets: result.solvedNoReplyTickets,
+    },
+  };
+}
+
+async function runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes, openTickets) {
+  const startedAt = new Date().toISOString();
+  try {
+    const result =
+      workflow.type === AUTO_MERGE_WORKFLOW_TYPE
+        ? await runAutoMergeWorkflow(context, auth, workflow, timezoneOffsetMinutes)
+        : await runAutoResolveWorkflow(context, workflow, openTickets);
+    const finishedAt = new Date().toISOString();
+
+    await recordHelpdeskWorkflowRun(context.env, {
+      workflowId: workflow.id,
+      workflowTitle: workflow.title,
+      status: "success",
+      startedAt,
+      finishedAt,
+      details: result.details,
+      metadata: result.metadata,
+    });
+    await writeLogSafely(context.env, {
+      actor: auth.session.user,
+      area: "helpdesk",
+      action: "run_workflow",
+      target: workflow.id,
+      status: "success",
+      details: result.details,
+      metadata: {
+        workflowId: workflow.id,
+        workflowTitle: workflow.title,
+        ...result.metadata,
+      },
+    });
+
+    return {
+      workflowId: workflow.id,
+      status: "success",
+      details: result.details,
+    };
+  } catch (error) {
+    const finishedAt = new Date().toISOString();
+    await recordHelpdeskWorkflowRun(context.env, {
+      workflowId: workflow.id,
+      workflowTitle: workflow.title,
+      status: "error",
+      startedAt,
+      finishedAt,
+      details: error.message || "Workflow failed.",
+      metadata: {
+        type: workflow.type,
+      },
+    });
+    await writeLogSafely(context.env, {
+      actor: auth.session.user,
+      area: "helpdesk",
+      action: "run_workflow",
+      target: workflow.id,
+      status: "error",
+      details: error.message || "Workflow failed.",
+      metadata: {
+        workflowId: workflow.id,
+        workflowTitle: workflow.title,
+        type: workflow.type,
+      },
+    });
+
+    return {
+      workflowId: workflow.id,
+      status: "error",
+      details: error.message || "Workflow failed.",
+    };
+  }
+}
+
+async function runEnabledHelpdeskWorkflows(context, auth, timezoneOffsetMinutes) {
+  const workflows = await listEnabledHelpdeskWorkflows(context.env);
+  if (!workflows.length) return [];
+
+  const dueWorkflows = [];
+  for (const workflow of workflows) {
+    if ([AUTO_MERGE_WORKFLOW_TYPE, AUTO_RESOLVE_WORKFLOW_TYPE].includes(workflow.type) && (await workflowRunDue(context.env, workflow))) {
+      dueWorkflows.push(workflow);
+    }
+  }
+  if (!dueWorkflows.length) return [];
+  dueWorkflows.sort((left, right) => {
+    if (left.type === right.type) return 0;
+    return left.type === AUTO_RESOLVE_WORKFLOW_TYPE ? -1 : 1;
+  });
+
+  let openTickets = null;
+  if (dueWorkflows.some((workflow) => workflow.type === AUTO_RESOLVE_WORKFLOW_TYPE)) {
+    openTickets = await fetchOpenTicketsForAutoMerge(context.env, timezoneOffsetMinutes);
+  }
+
+  const runs = [];
+  for (const workflow of dueWorkflows) {
+    runs.push(await runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes, openTickets || []));
+  }
+
+  return runs;
+}
+
 async function fetchOpenTicketsForAutoMerge(env, timezoneOffsetMinutes) {
   const tickets = [];
   let cursor = null;
@@ -527,25 +725,22 @@ async function listTickets(context, auth) {
   const cursor = normalizeCursor(url);
   const includeCounts = url.searchParams.get("includeCounts") !== "0";
   const timezoneOffsetMinutes = Number(url.searchParams.get("tzOffset") || 0);
-  const shouldAutoMerge =
-    url.searchParams.get("runAutoMerge") === "1" && status === "open" && silo === "tickets" && !cursor;
+  const shouldRunWorkflows =
+    url.searchParams.get("workflows") !== "0" && status === "open" && silo === "tickets" && !cursor;
 
-  let autoMerged = [];
-  let autoSolvedNoReplyTickets = [];
-  if (shouldAutoMerge) {
+  let workflowRuns = [];
+  if (shouldRunWorkflows) {
     try {
-      const autoMergeResult = await autoMergeDuplicateOpenTickets(context, auth, timezoneOffsetMinutes);
-      autoMerged = autoMergeResult.merged;
-      autoSolvedNoReplyTickets = autoMergeResult.solvedNoReplyTickets;
+      workflowRuns = await runEnabledHelpdeskWorkflows(context, auth, timezoneOffsetMinutes);
     } catch (error) {
-      console.error("Failed to run automatic HelpDesk duplicate merge.", error);
+      console.error("Failed to run HelpDesk workflows.", error);
       await writeLogSafely(context.env, {
         actor: auth.session.user,
         area: "helpdesk",
-        action: AUTO_MERGE_ACTION,
+        action: "run_workflows",
         target: "open_tickets",
         status: "error",
-        details: "Automatic duplicate merge scan failed.",
+        details: "HelpDesk workflow scan failed.",
       });
     }
   }
@@ -567,7 +762,7 @@ async function listTickets(context, auth) {
     ),
     includeCounts ? ticketCounts(context.env, filters) : Promise.resolve(null),
     includeCounts ? ticketTags(context.env) : Promise.resolve(null),
-    includeCounts || autoMerged.length ? mergeLogs(context.env) : Promise.resolve(null),
+    includeCounts ? mergeLogs(context.env) : Promise.resolve(null),
   ]);
   const allTickets = uniqueSortedTickets(
     batches.flatMap((batch) => batch.tickets).map((ticket) => normalizeHelpDeskTicketSummary(ticket, agentDirectory)),
@@ -585,8 +780,7 @@ async function listTickets(context, auth) {
     ...(counts ? { counts } : {}),
     ...(tags ? { tags } : {}),
     ...(recentMergeLogs ? { mergeLogs: recentMergeLogs } : {}),
-    autoMerged,
-    autoSolvedNoReplyTickets,
+    workflowRuns,
     updatedAt: new Date().toISOString(),
     refreshIntervalSeconds: 30,
     page: {
