@@ -137,12 +137,12 @@ export async function createSessionCookie(env, username, extra = {}) {
 }
 
 export async function rotateCsrfToken(context, response) {
-  if (!isUnsafeMethod(context.request.method) || response.status >= 400) {
+  const session = await getSession(context.request, context.env);
+  if (!session) {
     return response;
   }
 
-  const session = await getSession(context.request, context.env);
-  if (!session) {
+  if (isUnsafeMethod(context.request.method) && !verifyCsrfToken(context.request, session)) {
     return response;
   }
 

@@ -342,6 +342,9 @@ async function api(path, options = {}) {
       };
     }
   }
+  if (nextCsrfToken && payload && typeof payload === "object" && !Array.isArray(payload)) {
+    payload.csrfToken = nextCsrfToken;
+  }
 
   if (!response.ok) {
     throw new Error(payload.error || `Request failed with ${response.status}.`);
