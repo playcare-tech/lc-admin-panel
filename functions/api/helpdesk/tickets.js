@@ -22,7 +22,10 @@ const FOLDERS = ["archive", "spam", "trash"];
 const DEFAULT_PAGE_SIZE = 40;
 const MAX_PAGE_SIZE = 40;
 const AUTO_MERGE_PAGE_SIZE = 100;
-const AUTO_MERGE_MAX_PAGES = 10;
+const WORKFLOW_OPEN_TICKETS_MAX_PAGES = 10;
+const AUTO_MERGE_MAX_PAGES = 5;
+const AUTO_MERGE_DETAIL_LOOKUP_LIMIT = 12;
+const AUTO_MERGE_MAX_MERGES_PER_RUN = 2;
 const AUTO_MERGE_ACTION = "auto_merge_duplicate_tickets";
 const AUTO_RESOLVE_WORKFLOW_TYPE = "auto_resolve_requester";
 const AUTO_REPLY_WORKFLOW_TYPE = "auto_reply_new_requester_ticket";
@@ -65,6 +68,21 @@ function safeSilo(value) {
 
 function safePriority(value) {
   return PRIORITIES.has(`${value}`) ? `${value}` : "";
+}
+
+function safePositiveInteger(value, fallback, max) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(parsed, max);
+}
+
+function autoMergeLimits(workflow) {
+  const config = workflow?.config || {};
+  return {
+    maxPages: safePositiveInteger(config.maxPages, AUTO_MERGE_MAX_PAGES, 10),
+    maxDetailLookups: safePositiveInteger(config.maxDetailLookups, AUTO_MERGE_DETAIL_LOOKUP_LIMIT, 25),
+    maxMergesPerRun: safePositiveInteger(config.maxMergesPerRun, AUTO_MERGE_MAX_MERGES_PER_RUN, 5),
+  };
 }
 
 function appendDateRange(params, fromName, toName, fromValue, toValue) {
@@ -487,12 +505,20 @@ async function runAutoReplyWorkflow(context, workflow, openTickets) {
 }
 
 async function runAutoMergeWorkflow(context, auth, workflow) {
-  const result = await autoMergeDuplicateOpenTickets(context, auth);
+  const result = await autoMergeDuplicateOpenTickets(context, auth, workflow);
+  const limitText = result.detailLimitReached || result.mergeLimitReached ? " More candidates will be checked on the next run." : "";
   return {
-    details: `Auto-merged ${result.merged.length} duplicate ticket(s).`,
+    details: `Auto-merged ${result.merged.length} duplicate ticket(s) after checking ${result.detailLookups} ticket detail(s).${limitText}`,
     metadata: {
       type: workflow.type,
       mergedTickets: result.merged,
+      mergeErrors: result.mergeErrors,
+      scannedTickets: result.scannedTickets,
+      duplicateGroups: result.duplicateGroups,
+      detailLookups: result.detailLookups,
+      detailLimitReached: result.detailLimitReached,
+      mergeLimitReached: result.mergeLimitReached,
+      limits: result.limits,
     },
   };
 }
@@ -601,11 +627,11 @@ async function runEnabledHelpdeskWorkflows(context, auth, timezoneOffsetMinutes)
   return runs;
 }
 
-async function fetchOpenTicketsForAutoMerge(env) {
+async function fetchOpenTicketsForAutoMerge(env, maxPages = WORKFLOW_OPEN_TICKETS_MAX_PAGES) {
   const tickets = [];
   let cursor = null;
 
-  for (let page = 0; page < AUTO_MERGE_MAX_PAGES; page += 1) {
+  for (let page = 0; page < maxPages; page += 1) {
     const batch = await fetchTicketBatch(env, {
       status: "open",
       silo: "tickets",
@@ -644,15 +670,27 @@ function requesterTicketGroups(tickets) {
     .filter((group) => group.tickets.length > 1);
 }
 
-async function duplicateGroupsByRequesterAndContent(context, tickets, agentDirectory) {
+async function duplicateGroupsByRequesterAndContent(
+  context,
+  tickets,
+  agentDirectory,
+  maxDetailLookups = AUTO_MERGE_DETAIL_LOOKUP_LIMIT,
+) {
   const groups = [];
   const requesterGroups = requesterTicketGroups(tickets);
+  let detailLookups = 0;
+  let detailLimitReached = false;
 
   for (const requesterGroup of requesterGroups) {
     const contentGroups = new Map();
     const sortedTickets = [...requesterGroup.tickets].sort((left, right) => ticketCreatedTime(left) - ticketCreatedTime(right));
 
     for (const ticket of sortedTickets) {
+      if (detailLookups >= maxDetailLookups) {
+        detailLimitReached = true;
+        break;
+      }
+      detailLookups += 1;
       const detail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(ticket.id)}`);
       const normalizedTicket = normalizeHelpDeskTicketSummary(detail, agentDirectory);
       if (normalizedTicket.status !== "open" || normalizedTicket.parentTicket || requesterKey(normalizedTicket) !== requesterGroup.requesterEmail) {
@@ -681,24 +719,39 @@ async function duplicateGroupsByRequesterAndContent(context, tickets, agentDirec
         children: sorted.slice(1),
       });
     }
+
+    if (detailLimitReached) break;
   }
 
-  return groups;
+  return {
+    groups,
+    detailLookups,
+    detailLimitReached,
+    requesterGroups: requesterGroups.length,
+  };
 }
 
-async function autoMergeDuplicateOpenTickets(context, auth) {
-  const tickets = await fetchOpenTicketsForAutoMerge(context.env);
-  const dashboard = await getHelpDeskDashboard(context.env);
-  const agentDirectory = buildHelpDeskAgentDirectory(dashboard);
-  const groups = await duplicateGroupsByRequesterAndContent(context, tickets, agentDirectory);
+async function autoMergeDuplicateOpenTickets(context, auth, workflow) {
+  const limits = autoMergeLimits(workflow);
+  const tickets = await fetchOpenTicketsForAutoMerge(context.env, limits.maxPages);
+  const agentDirectory = new Map();
+  const scan = await duplicateGroupsByRequesterAndContent(context, tickets, agentDirectory, limits.maxDetailLookups);
+  const groups = scan.groups;
   const merged = [];
+  const mergeErrors = [];
+  let mergeLimitReached = false;
 
+  groupLoop:
   for (const group of groups) {
     const parentDetail = group.parent.detail;
     const parentTicket = group.parent.ticket;
     if (parentTicket.status !== "open" || parentTicket.parentTicket) continue;
 
     for (const child of group.children) {
+      if (merged.length >= limits.maxMergesPerRun) {
+        mergeLimitReached = true;
+        break groupLoop;
+      }
       try {
         const childDetail = child.detail;
         const childTicket = child.ticket;
@@ -722,38 +775,67 @@ async function autoMergeDuplicateOpenTickets(context, auth) {
           mergedContentPreview: childContent.slice(0, 1000),
         };
 
-        await writeLogSafely(context.env, {
-          actor: auth.session.user,
-          area: "helpdesk",
-          action: AUTO_MERGE_ACTION,
-          target: parentTicket.id,
-          status: "success",
-          details: `Auto-merged duplicate ticket ${childTicket.short_id || childTicket.id} into ${parentTicket.short_id || parentTicket.id}.`,
-          metadata: logMetadata,
-        });
-
         merged.push(logMetadata);
       } catch (error) {
         const parentId = group.parent.ticket?.id || group.parent.detail?.id || "unknown";
-        await writeLogSafely(context.env, {
-          actor: auth.session.user,
-          area: "helpdesk",
-          action: AUTO_MERGE_ACTION,
-          target: parentId,
-          status: "error",
-          details: "Failed to auto-merge duplicate HelpDesk ticket.",
-          metadata: {
-            mode: "automatic",
-            requesterEmail: group.requesterEmail,
-            parentTicketId: parentId,
-            childTicketId: child.ticket?.id || "unknown",
-          },
+        mergeErrors.push({
+          requesterEmail: group.requesterEmail,
+          parentTicketId: parentId,
+          childTicketId: child.ticket?.id || "unknown",
+          message: error.message || "Failed to auto-merge duplicate HelpDesk ticket.",
         });
       }
     }
   }
 
-  return { merged };
+  if (merged.length) {
+    await writeLogSafely(context.env, {
+      actor: auth.session.user,
+      area: "helpdesk",
+      action: AUTO_MERGE_ACTION,
+      target: merged[0].parentTicketId,
+      status: "success",
+      details: `Auto-merged ${merged.length} duplicate HelpDesk ticket(s).`,
+      metadata: {
+        mode: "automatic",
+        requesterEmail: merged[0].requesterEmail || "",
+        duplicateContentPreview: merged[0].duplicateContentPreview || "",
+        mergedTickets: merged,
+        scannedTickets: tickets.length,
+        duplicateGroups: groups.length,
+        detailLookups: scan.detailLookups,
+        detailLimitReached: scan.detailLimitReached,
+        mergeLimitReached,
+        limits,
+      },
+    });
+  }
+
+  if (mergeErrors.length) {
+    await writeLogSafely(context.env, {
+      actor: auth.session.user,
+      area: "helpdesk",
+      action: AUTO_MERGE_ACTION,
+      target: mergeErrors[0].parentTicketId,
+      status: "error",
+      details: `Failed to auto-merge ${mergeErrors.length} duplicate HelpDesk ticket(s).`,
+      metadata: {
+        mode: "automatic",
+        mergeErrors,
+      },
+    });
+  }
+
+  return {
+    merged,
+    mergeErrors,
+    scannedTickets: tickets.length,
+    duplicateGroups: groups.length,
+    detailLookups: scan.detailLookups,
+    detailLimitReached: scan.detailLimitReached,
+    mergeLimitReached,
+    limits,
+  };
 }
 
 async function mergeLogs(env) {

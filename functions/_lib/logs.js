@@ -14,6 +14,9 @@ const LOG_COLUMNS = {
   metadata: "TEXT",
 };
 
+let logsTableReady = false;
+let logsTableReadyPromise = null;
+
 function parseMetadata(value) {
   if (!value) return null;
   try {
@@ -24,11 +27,7 @@ function parseMetadata(value) {
   }
 }
 
-export async function ensureLogsTable(db) {
-  if (!db) {
-    throw new Error("Missing DB binding.");
-  }
-
+async function prepareLogsTable(db) {
   await db.exec(CREATE_TABLE_SQL);
   const { results } = await db.prepare("PRAGMA table_info(logs)").all();
   const existingColumns = new Set((results || []).map((column) => column.name));
@@ -38,6 +37,26 @@ export async function ensureLogsTable(db) {
     }
   }
   await db.exec(CREATE_INDEX_SQL);
+}
+
+export async function ensureLogsTable(db) {
+  if (!db) {
+    throw new Error("Missing DB binding.");
+  }
+  if (logsTableReady) return;
+
+  if (!logsTableReadyPromise) {
+    logsTableReadyPromise = prepareLogsTable(db)
+      .then(() => {
+        logsTableReady = true;
+      })
+      .catch((error) => {
+        logsTableReadyPromise = null;
+        throw error;
+      });
+  }
+
+  await logsTableReadyPromise;
 }
 
 export async function writeLog(env, entry) {
