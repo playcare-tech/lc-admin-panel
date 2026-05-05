@@ -18,18 +18,13 @@ import {
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import { writeLogSafely } from "../../_lib/logs.js";
 
-function totpRateLimitResponse(rateLimit) {
+function totpRateLimitResponse() {
   return json(
     {
-      error: "Too many 2FA attempts. Try again later.",
-      retryAfterSeconds: rateLimit.retryAfterSeconds,
-      lockedUntil: rateLimit.lockedUntil,
+      error: "Too many 2FA attempts. Try later.",
     },
     {
       status: 429,
-      headers: {
-        "Retry-After": String(rateLimit.retryAfterSeconds),
-      },
     },
   );
 }
@@ -100,7 +95,7 @@ export async function onRequest(context) {
         details: "2FA rate limit exceeded.",
         metadata: { lockedUntil: totpRateLimit.lockedUntil },
       });
-      return totpRateLimitResponse(totpRateLimit);
+      return totpRateLimitResponse();
     }
 
     if (needsPasswordChange || needsTotpSetup) {
@@ -127,7 +122,7 @@ export async function onRequest(context) {
             details: rateLimit.locked ? "Invalid 2FA setup code; rate limit exceeded." : "Invalid 2FA setup code.",
           });
           if (rateLimit.locked) {
-            return totpRateLimitResponse(rateLimit);
+            return totpRateLimitResponse();
           }
         }
 
@@ -167,7 +162,7 @@ export async function onRequest(context) {
         details: rateLimit.locked ? "Invalid 2FA code; rate limit exceeded." : "Invalid 2FA code.",
       });
       if (rateLimit.locked) {
-        return totpRateLimitResponse(rateLimit);
+        return totpRateLimitResponse();
       }
       return json({
         ok: false,

@@ -235,7 +235,7 @@ export async function verifyFallbackAdminCredentials(env, username, password) {
     return safeEqualBase64(hash, env.ADMIN_PASSWORD_HASH);
   }
 
-  return Boolean(env.ADMIN_PASSWORD && password === env.ADMIN_PASSWORD);
+  return false;
 }
 
 export function adminPermissions(user) {
