@@ -2,6 +2,7 @@ import { requireAuth } from "../../_lib/auth.js";
 import { helpdeskRequest } from "../../_lib/helpdesk.js";
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import { writeLogSafely } from "../../_lib/logs.js";
+import { runHelpdeskWorkflowOnce } from "./tickets.js";
 import {
   createHelpdeskAutoReplyWorkflow,
   createHelpdeskAutoResolveWorkflow,
@@ -13,6 +14,7 @@ import {
 const STATUSES = new Set(["open", "pending", "onhold", "solved", "closed"]);
 const AUTO_RESOLVE_WORKFLOW_TYPE = "auto_resolve_requester";
 const AUTO_REPLY_WORKFLOW_TYPE = "auto_reply_new_requester_ticket";
+const AUTO_MERGE_WORKFLOW_TYPE = "auto_merge_duplicates";
 
 function splitTags(value) {
   const tags = Array.isArray(value) ? value : `${value || ""}`.split(",");
@@ -72,8 +74,7 @@ async function getWorkflows(context) {
   });
 }
 
-async function createWorkflow(context, auth) {
-  const body = await readJson(context.request);
+async function createWorkflow(context, auth, body) {
   const title = `${body.title || ""}`.trim();
   const type = `${body.type || AUTO_RESOLVE_WORKFLOW_TYPE}`.trim();
 
@@ -159,6 +160,29 @@ async function createWorkflow(context, auth) {
   });
 }
 
+async function runWorkflow(context, auth, body) {
+  const workflowId = `${body.id || body.workflowId || ""}`.trim();
+  if (!workflowId) return errorResponse("Workflow ID is required.", 400);
+
+  const workflows = await listHelpdeskWorkflows(context.env);
+  const workflow = workflows.find((item) => item.id === workflowId);
+  if (!workflow) return errorResponse("Workflow not found.", 404);
+  if (workflow.type !== AUTO_MERGE_WORKFLOW_TYPE) {
+    return errorResponse("Manual run is only available for auto-merge workflows.", 400);
+  }
+
+  const timezoneOffsetMinutes = Number(body.tzOffset || body.timezoneOffsetMinutes || 0);
+  const run = await runHelpdeskWorkflowOnce(context, auth, workflow, timezoneOffsetMinutes);
+
+  return json({
+    ok: run.status === "success",
+    run,
+    runsFor: workflowId,
+    runs: await listHelpdeskWorkflowRuns(context.env, workflowId),
+    workflows: await listHelpdeskWorkflows(context.env),
+  });
+}
+
 async function updateWorkflow(context, auth) {
   const body = await readJson(context.request);
   const workflowId = `${body.id || body.workflowId || ""}`.trim();
@@ -198,7 +222,11 @@ export async function onRequest(context) {
   try {
     if (context.request.method === "GET") return await getWorkflows(context);
     if (context.request.method === "PATCH") return await updateWorkflow(context, auth);
-    return await createWorkflow(context, auth);
+    const body = await readJson(context.request);
+    if (`${body.action || ""}`.trim().toLowerCase() === "run") {
+      return await runWorkflow(context, auth, body);
+    }
+    return await createWorkflow(context, auth, body);
   } catch (error) {
     if (error.message?.startsWith("HelpDesk tag not found:")) {
       return errorResponse(error.message, 400);

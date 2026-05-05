@@ -599,6 +599,10 @@ async function runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes,
   }
 }
 
+export async function runHelpdeskWorkflowOnce(context, auth, workflow, timezoneOffsetMinutes = 0) {
+  return runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes, []);
+}
+
 async function runEnabledHelpdeskWorkflows(context, auth, timezoneOffsetMinutes) {
   const workflows = await listEnabledHelpdeskWorkflows(context.env);
   if (!workflows.length) return [];

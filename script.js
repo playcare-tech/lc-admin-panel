@@ -184,6 +184,7 @@ const state = {
     workflows: [],
     runs: [],
     runsFor: "",
+    runningWorkflowId: "",
     form: defaultHelpdeskWorkflowForm(),
   },
   helpdeskTickets: {
@@ -2972,8 +2973,10 @@ function renderHelpdeskWorkflowRows() {
   }
 
   return workflows
-    .map(
-      (workflow) => `
+    .map((workflow) => {
+      const isAutoMerge = workflow.type === "auto_merge_duplicates";
+      const isRunning = state.helpdeskWorkflows.runningWorkflowId === workflow.id;
+      return `
         <tr>
           <td>
             <div class="workflow-name-cell">
@@ -2984,11 +2987,23 @@ function renderHelpdeskWorkflowRows() {
           <td><span class="chip">${escapeHtml(helpdeskWorkflowTypeLabel(workflow.type))}</span></td>
           <td>${Number(workflow.runsLast24h || 0)}</td>
           <td>
-            <button
-              class="btn btn-sm btn-outline-secondary"
-              type="button"
-              data-helpdesk-workflow-runs="${escapeHtml(workflow.id)}"
-            >See runs</button>
+            <div class="workflow-actions">
+              <button
+                class="btn btn-sm btn-outline-secondary"
+                type="button"
+                data-helpdesk-workflow-runs="${escapeHtml(workflow.id)}"
+              >See runs</button>
+              ${
+                isAutoMerge
+                  ? `<button
+                      class="btn btn-sm btn-primary"
+                      type="button"
+                      data-helpdesk-workflow-run="${escapeHtml(workflow.id)}"
+                      ${isRunning ? "disabled" : ""}
+                    >${isRunning ? "Running..." : "Run"}</button>`
+                  : ""
+              }
+            </div>
           </td>
           <td>
             <label class="workflow-switch">
@@ -3001,8 +3016,8 @@ function renderHelpdeskWorkflowRows() {
             </label>
           </td>
         </tr>
-      `,
-    )
+      `;
+    })
     .join("");
 }
 
@@ -4429,6 +4444,37 @@ async function toggleHelpdeskWorkflow(workflowId, enabled) {
   }
 }
 
+async function runHelpdeskWorkflow(workflowId) {
+  state.helpdeskWorkflows.runningWorkflowId = workflowId;
+  setMessage(statusMessage, "Running workflow...");
+  if (state.section === "helpdesk-workflows") renderApp();
+
+  try {
+    const response = await api("/api/helpdesk/workflows", {
+      method: "POST",
+      body: {
+        action: "run",
+        id: workflowId,
+        tzOffset: new Date().getTimezoneOffset(),
+      },
+    });
+    const run = response.run || {};
+    state.helpdeskWorkflows.workflows = response.workflows || state.helpdeskWorkflows.workflows;
+    state.helpdeskWorkflows.runs = response.runs || state.helpdeskWorkflows.runs;
+    state.helpdeskWorkflows.runsFor = response.runsFor || workflowId;
+    setMessage(
+      statusMessage,
+      run.details || "Workflow run finished.",
+      run.status === "error" ? "error" : "success",
+    );
+  } catch (error) {
+    setMessage(statusMessage, error.message, "error");
+  } finally {
+    state.helpdeskWorkflows.runningWorkflowId = "";
+    if (state.section === "helpdesk-workflows") renderApp();
+  }
+}
+
 async function saveHelpdeskWorkflow() {
   syncHelpdeskWorkflowFormFromDom();
   const form = state.helpdeskWorkflows.form;
@@ -5542,6 +5588,9 @@ function bindAppEvents() {
   });
   document.querySelectorAll("[data-helpdesk-workflow-runs]").forEach((button) => {
     button.onclick = () => fetchHelpdeskWorkflows({ runsFor: button.dataset.helpdeskWorkflowRuns });
+  });
+  document.querySelectorAll("[data-helpdesk-workflow-run]").forEach((button) => {
+    button.onclick = () => runHelpdeskWorkflow(button.dataset.helpdeskWorkflowRun);
   });
   document.querySelectorAll("[data-helpdesk-workflow-toggle]").forEach((input) => {
     input.onchange = () => toggleHelpdeskWorkflow(input.dataset.helpdeskWorkflowToggle, input.checked);

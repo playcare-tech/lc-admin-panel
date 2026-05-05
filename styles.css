@@ -1180,6 +1180,12 @@ body {
   overflow-wrap: anywhere;
 }
 
+.workflow-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .workflow-switch {
   position: relative;
   display: inline-flex;
