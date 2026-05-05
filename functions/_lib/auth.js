@@ -107,6 +107,10 @@ export function verifyCsrfToken(request, session) {
   return safeEqualBase64Url(submittedToken, expectedToken);
 }
 
+export function isUnsafeMethod(method) {
+  return UNSAFE_METHODS.has(`${method || ""}`.toUpperCase());
+}
+
 export async function createSessionCookie(env, username, extra = {}) {
   if (!env.SESSION_SECRET) {
     throw new Error("Missing SESSION_SECRET environment variable.");
@@ -130,6 +134,32 @@ export async function createSessionCookie(env, username, extra = {}) {
     "SameSite=Strict",
     `Max-Age=${SESSION_TTL_SECONDS}`,
   ].join("; ");
+}
+
+export async function rotateCsrfToken(context, response) {
+  if (!isUnsafeMethod(context.request.method) || response.status >= 400) {
+    return response;
+  }
+
+  const session = await getSession(context.request, context.env);
+  if (!session) {
+    return response;
+  }
+
+  const csrfToken = createCsrfToken();
+  const sessionCookie = await createSessionCookie(context.env, session.user, {
+    permissions: session.permissions || {},
+    csrfToken,
+  });
+  const headers = new Headers(response.headers);
+  headers.set("Set-Cookie", sessionCookie);
+  headers.set("X-CSRF-Token", csrfToken);
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 export function clearSessionCookie() {

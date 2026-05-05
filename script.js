@@ -323,6 +323,10 @@ async function api(path, options = {}) {
     headers,
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
+  const nextCsrfToken = response.headers.get("X-CSRF-Token");
+  if (nextCsrfToken) {
+    state.csrfToken = nextCsrfToken;
+  }
 
   const text = await response.text();
   let payload = {};
