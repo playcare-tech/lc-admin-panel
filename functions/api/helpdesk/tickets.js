@@ -380,13 +380,18 @@ async function ticketCount(env, { status, silo, filters }) {
 }
 
 async function ticketCounts(env, filters) {
-  const statusEntries = await Promise.all(
-    ALL_STATUSES.map(async (status) => [status, await ticketCount(env, { status, silo: "tickets", filters })]),
-  );
+  try {
+    const statusEntries = await Promise.all(
+      ALL_STATUSES.map(async (status) => [status, await ticketCount(env, { status, silo: "tickets", filters })]),
+    );
 
-  return {
-    statuses: Object.fromEntries(statusEntries),
-  };
+    return {
+      statuses: Object.fromEntries(statusEntries),
+    };
+  } catch (error) {
+    console.error("Failed to load HelpDesk ticket counts.", error);
+    return null;
+  }
 }
 
 async function ticketTags(env) {
@@ -406,6 +411,15 @@ async function ticketTags(env) {
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
+async function helpdeskAgentDirectory(env) {
+  try {
+    return buildHelpDeskAgentDirectory(await getHelpDeskDashboard(env));
+  } catch (error) {
+    console.error("Failed to load HelpDesk agent directory.", error);
+    return new Map();
+  }
+}
+
 async function listTickets(context, auth) {
   const url = new URL(context.request.url);
   const pageSize = clampPageSize(url.searchParams.get("pageSize"));
@@ -420,7 +434,7 @@ async function listTickets(context, auth) {
   const includeCounts = url.searchParams.get("includeCounts") !== "0";
   const timezoneOffsetMinutes = Number(url.searchParams.get("tzOffset") || 0);
   const shouldAutoMerge =
-    url.searchParams.get("autoMerge") !== "0" && status === "open" && silo === "tickets" && !cursor;
+    url.searchParams.get("runAutoMerge") === "1" && status === "open" && silo === "tickets" && !cursor;
 
   let autoMerged = [];
   if (shouldAutoMerge) {
@@ -439,8 +453,7 @@ async function listTickets(context, auth) {
     }
   }
 
-  const dashboard = await getHelpDeskDashboard(context.env);
-  const agentDirectory = buildHelpDeskAgentDirectory(dashboard);
+  const agentDirectory = await helpdeskAgentDirectory(context.env);
   const [batches, counts, tags, recentMergeLogs] = await Promise.all([
     Promise.all(
       statuses.map((item) =>

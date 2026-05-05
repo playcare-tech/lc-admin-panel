@@ -4143,7 +4143,7 @@ function helpdeskTicketsQueryParams({ includeCounts = true } = {}) {
     sortBy: filters.sortBy || "lastMessageAt",
     order: filters.order || "desc",
     includeCounts: includeCounts ? "1" : "0",
-    autoMerge: "1",
+    autoMerge: "0",
     tzOffset: String(new Date().getTimezoneOffset()),
   });
   const cursor = helpdeskTicketsCurrentCursor();
