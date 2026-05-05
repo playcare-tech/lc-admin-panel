@@ -336,8 +336,8 @@ function preserveTeamPayload(ticket) {
   const agentId = String(ticket?.assignment?.agent?.ID || ticket?.assignment?.agent?.id || "").trim();
   const assignment = {};
 
-  if (teamId) assignment.team = { ID: teamId };
   if (agentId) assignment.agent = { ID: agentId };
+  if (teamId && agentId) assignment.team = { ID: teamId };
 
   return {
     ...(teamIDs.length ? { teamIDs } : {}),
