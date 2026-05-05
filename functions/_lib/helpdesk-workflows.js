@@ -35,6 +35,9 @@ const BUILT_IN_WORKFLOWS = [
   },
 ];
 
+let workflowTablesReady = false;
+let workflowTablesReadyPromise = null;
+
 function parseJson(value, fallback = {}) {
   if (!value) return fallback;
   try {
@@ -71,18 +74,36 @@ function runFromRow(row) {
   };
 }
 
-export async function ensureHelpdeskWorkflowTables(db) {
-  if (!db) {
-    throw new Error("Missing DB binding.");
-  }
+async function objectExists(db, type, name) {
+  const row = await db
+    .prepare("SELECT name FROM sqlite_master WHERE type = ? AND name = ?")
+    .bind(type, name)
+    .first();
+  return Boolean(row);
+}
 
-  await db.exec(WORKFLOWS_TABLE_SQL);
-  await db.exec(RUNS_TABLE_SQL);
-  await db.exec("CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_runs_workflow_started ON helpdesk_workflow_runs (workflow_id, started_at DESC)");
-  await db.exec("CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_runs_started ON helpdesk_workflow_runs (started_at DESC)");
+async function workflowExists(db, workflowId) {
+  const row = await db.prepare("SELECT id FROM helpdesk_workflows WHERE id = ?").bind(workflowId).first();
+  return Boolean(row);
+}
+
+async function prepareHelpdeskWorkflowTables(db) {
+  if (!(await objectExists(db, "table", "helpdesk_workflows"))) {
+    await db.exec(WORKFLOWS_TABLE_SQL);
+  }
+  if (!(await objectExists(db, "table", "helpdesk_workflow_runs"))) {
+    await db.exec(RUNS_TABLE_SQL);
+  }
+  if (!(await objectExists(db, "index", "idx_helpdesk_workflow_runs_workflow_started"))) {
+    await db.exec("CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_runs_workflow_started ON helpdesk_workflow_runs (workflow_id, started_at DESC)");
+  }
+  if (!(await objectExists(db, "index", "idx_helpdesk_workflow_runs_started"))) {
+    await db.exec("CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_runs_started ON helpdesk_workflow_runs (started_at DESC)");
+  }
 
   const now = new Date().toISOString();
   for (const workflow of BUILT_IN_WORKFLOWS) {
+    if (await workflowExists(db, workflow.id)) continue;
     await db
       .prepare(
         `
@@ -93,6 +114,26 @@ export async function ensureHelpdeskWorkflowTables(db) {
       .bind(workflow.id, workflow.title, workflow.type, workflow.enabled, JSON.stringify(workflow.config), now, now)
       .run();
   }
+}
+
+export async function ensureHelpdeskWorkflowTables(db) {
+  if (!db) {
+    throw new Error("Missing DB binding.");
+  }
+  if (workflowTablesReady) return;
+
+  if (!workflowTablesReadyPromise) {
+    workflowTablesReadyPromise = prepareHelpdeskWorkflowTables(db)
+      .then(() => {
+        workflowTablesReady = true;
+      })
+      .catch((error) => {
+        workflowTablesReadyPromise = null;
+        throw error;
+      });
+  }
+
+  await workflowTablesReadyPromise;
 }
 
 export async function listHelpdeskWorkflows(env) {
