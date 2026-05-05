@@ -4,12 +4,39 @@ const CREATE_TABLE_SQL =
 const CREATE_INDEX_SQL =
   "CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs (created_at DESC)";
 
+const LOG_COLUMNS = {
+  actor: "TEXT NOT NULL DEFAULT 'unknown'",
+  area: "TEXT NOT NULL DEFAULT 'app'",
+  action: "TEXT NOT NULL DEFAULT 'unknown'",
+  target: "TEXT",
+  status: "TEXT NOT NULL DEFAULT 'success'",
+  details: "TEXT",
+  metadata: "TEXT",
+};
+
+function parseMetadata(value) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    console.warn("Failed to parse audit log metadata.", error);
+    return null;
+  }
+}
+
 export async function ensureLogsTable(db) {
   if (!db) {
     throw new Error("Missing DB binding.");
   }
 
   await db.exec(CREATE_TABLE_SQL);
+  const { results } = await db.prepare("PRAGMA table_info(logs)").all();
+  const existingColumns = new Set((results || []).map((column) => column.name));
+  for (const [column, definition] of Object.entries(LOG_COLUMNS)) {
+    if (!existingColumns.has(column)) {
+      await db.exec(`ALTER TABLE logs ADD COLUMN ${column} ${definition}`);
+    }
+  }
   await db.exec(CREATE_INDEX_SQL);
 }
 
@@ -57,7 +84,7 @@ export async function listLogs(env, limit = 250) {
 
   return results.map((row) => ({
     ...row,
-    metadata: row.metadata ? JSON.parse(row.metadata) : null,
+    metadata: parseMetadata(row.metadata),
   }));
 }
 
@@ -79,6 +106,6 @@ export async function listLogsByAction(env, { area, action, limit = 25 } = {}) {
 
   return results.map((row) => ({
     ...row,
-    metadata: row.metadata ? JSON.parse(row.metadata) : null,
+    metadata: parseMetadata(row.metadata),
   }));
 }

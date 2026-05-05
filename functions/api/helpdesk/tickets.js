@@ -343,23 +343,28 @@ async function autoMergeDuplicateOpenTickets(context, auth, timezoneOffsetMinute
 }
 
 async function mergeLogs(env) {
-  const [autoLogs, manualLogs] = await Promise.all([
-    listLogsByAction(env, {
-      area: "helpdesk",
-      action: AUTO_MERGE_ACTION,
-      limit: 12,
-    }),
-    listLogsByAction(env, {
-      area: "helpdesk",
-      action: "merge_tickets",
-      limit: 12,
-    }),
-  ]);
+  try {
+    const [autoLogs, manualLogs] = await Promise.all([
+      listLogsByAction(env, {
+        area: "helpdesk",
+        action: AUTO_MERGE_ACTION,
+        limit: 12,
+      }),
+      listLogsByAction(env, {
+        area: "helpdesk",
+        action: "merge_tickets",
+        limit: 12,
+      }),
+    ]);
 
-  return [...autoLogs, ...manualLogs]
-    .filter((entry) => entry.status === "success")
-    .sort((left, right) => `${right.created_at || ""}`.localeCompare(`${left.created_at || ""}`))
-    .slice(0, 12);
+    return [...autoLogs, ...manualLogs]
+      .filter((entry) => entry.status === "success")
+      .sort((left, right) => `${right.created_at || ""}`.localeCompare(`${left.created_at || ""}`))
+      .slice(0, 12);
+  } catch (error) {
+    console.error("Failed to load HelpDesk merge logs.", error);
+    return [];
+  }
 }
 
 async function ticketCount(env, { status, silo, filters }) {
