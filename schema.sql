@@ -60,6 +60,18 @@ CREATE TABLE IF NOT EXISTS admin_users (
 
 CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users (username);
 
+CREATE TABLE IF NOT EXISTS admin_login_rate_limits (
+  key TEXT PRIMARY KEY,
+  scope TEXT NOT NULL,
+  identifier_hash TEXT NOT NULL,
+  failed_attempts INTEGER NOT NULL DEFAULT 0,
+  first_failed_at TEXT,
+  locked_until TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_login_rate_limits_updated_at ON admin_login_rate_limits (updated_at);
+
 CREATE TABLE IF NOT EXISTS analytics_agent_daily (
   date TEXT NOT NULL,
   agent_scope TEXT NOT NULL,

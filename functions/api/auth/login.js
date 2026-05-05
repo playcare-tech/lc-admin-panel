@@ -2,11 +2,14 @@ import { createCsrfToken, createSessionCookie } from "../../_lib/auth.js";
 import {
   adminPermissions,
   buildTotpUri,
+  clearAdminLoginRateLimit,
   clearTotpRateLimit,
   enableAdminTotp,
   findAdminUserByUsername,
   generateTotpSecret,
+  getAdminLoginRateLimitState,
   getTotpRateLimitState,
+  recordAdminLoginFailure,
   recordTotpFailure,
   updateAdminPassword,
   validateAdminPassword,
@@ -20,6 +23,17 @@ function totpRateLimitResponse() {
   return json(
     {
       error: "Too many 2FA attempts. Try later.",
+    },
+    {
+      status: 429,
+    },
+  );
+}
+
+function loginRateLimitResponse() {
+  return json(
+    {
+      error: "Too many login attempts. Try later.",
     },
     {
       status: 429,
@@ -42,6 +56,7 @@ export async function onRequest(context) {
 
     let user = null;
     const existingUser = username ? await findAdminUserByUsername(context.env, username) : null;
+    const loginRateLimit = await getAdminLoginRateLimitState(context.env, context.request, username);
     let authenticated = false;
     try {
       user = await verifyAdminCredentials(context.env, username, password, existingUser);
@@ -50,14 +65,31 @@ export async function onRequest(context) {
       authenticated = false;
     }
 
-    if (!authenticated) {
+    if (loginRateLimit.locked) {
       await writeLogSafely(context.env, {
         actor: username || "unknown",
         area: "auth",
         action: "login",
         status: "error",
-        details: "Invalid admin credentials.",
+        details: "Login rate limit exceeded.",
+        metadata: { scope: loginRateLimit.scope },
       });
+      return loginRateLimitResponse();
+    }
+
+    if (!authenticated) {
+      const rateLimit = await recordAdminLoginFailure(context.env, context.request, username);
+      await writeLogSafely(context.env, {
+        actor: username || "unknown",
+        area: "auth",
+        action: "login",
+        status: "error",
+        details: rateLimit.locked ? "Invalid admin credentials; login rate limit exceeded." : "Invalid admin credentials.",
+        metadata: rateLimit.locked ? { scope: rateLimit.scope } : undefined,
+      });
+      if (rateLimit.locked) {
+        return loginRateLimitResponse();
+      }
       return errorResponse("Invalid username or password.", 401);
     }
 
@@ -72,6 +104,7 @@ export async function onRequest(context) {
       return errorResponse("This admin account is disabled.", 403);
     }
 
+    await clearAdminLoginRateLimit(context.env, context.request, username);
     const needsPasswordChange = Boolean(user.password_reset_required);
     const needsTotpSetup = !Number(user.totp_enabled) || Boolean(user.totp_setup_required);
     const totpRateLimit = getTotpRateLimitState(user);

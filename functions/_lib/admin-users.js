@@ -4,9 +4,20 @@ const CREATE_ADMIN_USERS_SQL =
 const CREATE_ADMIN_USERS_INDEX_SQL =
   "CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users (username)";
 
+const CREATE_ADMIN_LOGIN_RATE_LIMITS_SQL =
+  "CREATE TABLE IF NOT EXISTS admin_login_rate_limits (key TEXT PRIMARY KEY, scope TEXT NOT NULL, identifier_hash TEXT NOT NULL, failed_attempts INTEGER NOT NULL DEFAULT 0, first_failed_at TEXT, locked_until TEXT, updated_at TEXT NOT NULL)";
+
+const CREATE_ADMIN_LOGIN_RATE_LIMITS_UPDATED_INDEX_SQL =
+  "CREATE INDEX IF NOT EXISTS idx_admin_login_rate_limits_updated_at ON admin_login_rate_limits (updated_at)";
+
 const PBKDF2_ITERATIONS = 100000;
 const DUMMY_PASSWORD_SALT = "LC_ADMIN_DUMMY_PASSWORD_SALT_V1";
 const DUMMY_PASSWORD_HASH = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const LOGIN_RATE_LIMIT_USERNAME_MAX_ATTEMPTS = 10;
+const LOGIN_RATE_LIMIT_IP_MAX_ATTEMPTS = 30;
+const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_RATE_LIMIT_LOCK_MS = 15 * 60 * 1000;
+const LOGIN_RATE_LIMIT_RETENTION_MS = 24 * 60 * 60 * 1000;
 const TOTP_STEP_SECONDS = 30;
 const TOTP_DIGITS = 6;
 const TOTP_RATE_LIMIT_MAX_ATTEMPTS = 5;
@@ -20,6 +31,10 @@ function bytesToBase64(bytes) {
     binary += String.fromCharCode(byte);
   }
   return btoa(binary);
+}
+
+function bytesToBase64Url(bytes) {
+  return bytesToBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function base64ToBytes(value) {
@@ -109,15 +124,86 @@ async function hashPassword(password, salt) {
   return bytesToBase64(new Uint8Array(bits));
 }
 
+async function hashRateLimitIdentifier(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return bytesToBase64Url(new Uint8Array(digest));
+}
+
 async function ensureColumn(db, existingColumns, name, definition) {
   if (existingColumns.has(name)) return false;
   await db.prepare(`ALTER TABLE admin_users ADD COLUMN ${name} ${definition}`).run();
   return true;
 }
 
+async function ensureAdminLoginRateLimitsTable(db) {
+  if (!db) {
+    throw new Error("Missing DB binding.");
+  }
+
+  await db.exec(CREATE_ADMIN_LOGIN_RATE_LIMITS_SQL);
+  await db.exec(CREATE_ADMIN_LOGIN_RATE_LIMITS_UPDATED_INDEX_SQL);
+}
+
 function createSalt() {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   return bytesToBase64(bytes);
+}
+
+function clientIpFromRequest(request) {
+  const cfIp = request?.headers?.get("CF-Connecting-IP") || "";
+  if (cfIp.trim()) return cfIp.trim();
+
+  const forwardedFor = request?.headers?.get("X-Forwarded-For") || "";
+  return forwardedFor.split(",")[0]?.trim() || "";
+}
+
+async function loginRateLimitDescriptors(request, username) {
+  const normalizedUsername = `${username || ""}`.trim().toLowerCase() || "<empty>";
+  const descriptors = [
+    {
+      scope: "username",
+      identifier: normalizedUsername,
+      maxAttempts: LOGIN_RATE_LIMIT_USERNAME_MAX_ATTEMPTS,
+    },
+  ];
+
+  const ip = clientIpFromRequest(request);
+  if (ip) {
+    descriptors.push({
+      scope: "ip",
+      identifier: ip,
+      maxAttempts: LOGIN_RATE_LIMIT_IP_MAX_ATTEMPTS,
+    });
+  }
+
+  return Promise.all(
+    descriptors.map(async (descriptor) => {
+      const identifierHash = await hashRateLimitIdentifier(`${descriptor.scope}:${descriptor.identifier}`);
+      return {
+        ...descriptor,
+        identifierHash,
+        key: `${descriptor.scope}:${identifierHash}`,
+      };
+    }),
+  );
+}
+
+function loginRateLimitLockState(row, timestamp = Date.now()) {
+  const lockedUntilMs = row?.locked_until ? Date.parse(row.locked_until) : 0;
+  if (Number.isFinite(lockedUntilMs) && lockedUntilMs > timestamp) {
+    return {
+      locked: true,
+      scope: row.scope || "",
+      lockedUntil: new Date(lockedUntilMs).toISOString(),
+    };
+  }
+
+  return { locked: false, scope: "", lockedUntil: "" };
+}
+
+async function cleanupOldLoginRateLimits(env, timestamp = Date.now()) {
+  const cutoff = new Date(timestamp - LOGIN_RATE_LIMIT_RETENTION_MS).toISOString();
+  await env.DB.prepare("DELETE FROM admin_login_rate_limits WHERE updated_at < ?").bind(cutoff).run();
 }
 
 export function validateAdminPassword(password) {
@@ -228,6 +314,93 @@ export async function verifyAdminCredentials(env, username, password, preloadedU
 
   const hash = await hashPassword(password, user.password_salt);
   return safeEqualBase64(hash, user.password_hash) ? user : null;
+}
+
+export async function getAdminLoginRateLimitState(env, request, username, timestamp = Date.now()) {
+  await ensureAdminLoginRateLimitsTable(env.DB);
+  const descriptors = await loginRateLimitDescriptors(request, username);
+  for (const descriptor of descriptors) {
+    const row = await env.DB.prepare(
+      `
+        SELECT key, scope, failed_attempts, first_failed_at, locked_until
+        FROM admin_login_rate_limits
+        WHERE key = ?
+        LIMIT 1
+      `,
+    )
+      .bind(descriptor.key)
+      .first();
+    const state = loginRateLimitLockState(row, timestamp);
+    if (state.locked) return state;
+  }
+
+  return { locked: false, scope: "", lockedUntil: "" };
+}
+
+export async function recordAdminLoginFailure(env, request, username, timestamp = Date.now()) {
+  await ensureAdminLoginRateLimitsTable(env.DB);
+  await cleanupOldLoginRateLimits(env, timestamp);
+  const descriptors = await loginRateLimitDescriptors(request, username);
+  let lockedState = { locked: false, scope: "", lockedUntil: "" };
+
+  for (const descriptor of descriptors) {
+    const row = await env.DB.prepare(
+      `
+        SELECT key, scope, failed_attempts, first_failed_at, locked_until
+        FROM admin_login_rate_limits
+        WHERE key = ?
+        LIMIT 1
+      `,
+    )
+      .bind(descriptor.key)
+      .first();
+    const existingLock = loginRateLimitLockState(row, timestamp);
+    if (existingLock.locked) {
+      lockedState = existingLock;
+      continue;
+    }
+
+    const firstFailedMs = row?.first_failed_at ? Date.parse(row.first_failed_at) : 0;
+    const withinWindow =
+      Number.isFinite(firstFailedMs) && firstFailedMs > 0 && timestamp - firstFailedMs < LOGIN_RATE_LIMIT_WINDOW_MS;
+    const attempts = withinWindow ? Number(row?.failed_attempts || 0) + 1 : 1;
+    const firstFailedAt = withinWindow ? row.first_failed_at : new Date(timestamp).toISOString();
+    const lockedUntil = attempts >= descriptor.maxAttempts ? new Date(timestamp + LOGIN_RATE_LIMIT_LOCK_MS).toISOString() : null;
+    const updatedAt = new Date(timestamp).toISOString();
+
+    await env.DB.prepare(
+      `
+        INSERT INTO admin_login_rate_limits
+          (key, scope, identifier_hash, failed_attempts, first_failed_at, locked_until, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          failed_attempts = excluded.failed_attempts,
+          first_failed_at = excluded.first_failed_at,
+          locked_until = excluded.locked_until,
+          updated_at = excluded.updated_at
+      `,
+    )
+      .bind(descriptor.key, descriptor.scope, descriptor.identifierHash, attempts, firstFailedAt, lockedUntil, updatedAt)
+      .run();
+
+    if (lockedUntil && !lockedState.locked) {
+      lockedState = {
+        locked: true,
+        scope: descriptor.scope,
+        lockedUntil,
+      };
+    }
+  }
+
+  return lockedState;
+}
+
+export async function clearAdminLoginRateLimit(env, request, username) {
+  await ensureAdminLoginRateLimitsTable(env.DB);
+  const descriptors = await loginRateLimitDescriptors(request, username);
+  for (const descriptor of descriptors) {
+    await env.DB.prepare("DELETE FROM admin_login_rate_limits WHERE key = ?").bind(descriptor.key).run();
+  }
 }
 
 export function adminPermissions(user) {
