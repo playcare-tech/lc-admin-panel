@@ -2600,9 +2600,9 @@ function mergeLogSummary(entry) {
 function mergeLogSubtext(entry) {
   const metadata = entry.metadata || {};
   const requester = metadata.requesterEmail || "";
-  const date = metadata.createdDate || "";
+  const criteria = metadata.duplicateContentPreview ? "matching content" : metadata.createdDate || "";
   const mode = metadata.mode === "automatic" ? "Auto" : "Manual";
-  return [mode, requester, date].filter(Boolean).join(" · ");
+  return [mode, requester, criteria].filter(Boolean).join(" · ");
 }
 
 function renderHelpdeskTicketMergeLogs() {
@@ -2953,7 +2953,7 @@ function helpdeskWorkflowTypeLabel(type) {
 function helpdeskWorkflowConfigText(workflow) {
   const config = workflow.config || {};
   if (workflow.type === "auto_merge_duplicates") {
-    return "Duplicate open tickets from the same requester and same local day.";
+    return "Duplicate open tickets from the same requester with matching email content.";
   }
   if (workflow.type === "auto_resolve_requester") {
     const tags = (config.tagNames || []).length ? ` · tags: ${(config.tagNames || []).join(", ")}` : "";

@@ -156,12 +156,6 @@ function normalizeCursor(url) {
   return { direction, value, id };
 }
 
-function dateKey(value, timezoneOffsetMinutes = 0) {
-  const date = value ? new Date(value) : null;
-  if (!date || Number.isNaN(date.getTime())) return "";
-  return new Date(date.getTime() - timezoneOffsetMinutes * 60000).toISOString().slice(0, 10);
-}
-
 function requesterKey(ticket) {
   return `${ticket.requesterEmail || ticket.requester?.email || ""}`.trim().toLowerCase();
 }
@@ -389,8 +383,27 @@ function eventPublicMessageText(event) {
   return stripHtml(event.text || event.html || "");
 }
 
+function isRequesterMessageAuthor(event) {
+  const authorType = `${event.author_type || ""}`.trim().toLowerCase();
+  return ["client", "requester", "customer"].includes(authorType);
+}
+
 function normalizedMessageText(value) {
   return stripHtml(value).replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function duplicateEmailContent(ticketDetail, agentDirectory = new Map()) {
+  const events = normalizeHelpDeskConversationEvents(ticketDetail, agentDirectory);
+  const firstRequesterMessage = events.find((event) => {
+    return isRequesterMessageAuthor(event) && eventPublicMessageText(event);
+  });
+  const messageText = normalizedMessageText(eventPublicMessageText(firstRequesterMessage || {}));
+  if (!messageText) return null;
+
+  return {
+    key: messageText,
+    preview: eventPublicMessageText(firstRequesterMessage).slice(0, 1000),
+  };
 }
 
 function ticketAlreadyHasAutoReply(events, messageText) {
@@ -473,8 +486,8 @@ async function runAutoReplyWorkflow(context, workflow, openTickets) {
   };
 }
 
-async function runAutoMergeWorkflow(context, auth, workflow, timezoneOffsetMinutes) {
-  const result = await autoMergeDuplicateOpenTickets(context, auth, timezoneOffsetMinutes);
+async function runAutoMergeWorkflow(context, auth, workflow) {
+  const result = await autoMergeDuplicateOpenTickets(context, auth);
   return {
     details: `Auto-merged ${result.merged.length} duplicate ticket(s).`,
     metadata: {
@@ -489,7 +502,7 @@ async function runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes,
   try {
     let result;
     if (workflow.type === AUTO_MERGE_WORKFLOW_TYPE) {
-      result = await runAutoMergeWorkflow(context, auth, workflow, timezoneOffsetMinutes);
+      result = await runAutoMergeWorkflow(context, auth, workflow);
     } else if (workflow.type === AUTO_REPLY_WORKFLOW_TYPE) {
       result = await runAutoReplyWorkflow(context, workflow, openTickets);
     } else {
@@ -577,7 +590,7 @@ async function runEnabledHelpdeskWorkflows(context, auth, timezoneOffsetMinutes)
 
   let openTickets = null;
   if (dueWorkflows.some((workflow) => [AUTO_RESOLVE_WORKFLOW_TYPE, AUTO_REPLY_WORKFLOW_TYPE].includes(workflow.type))) {
-    openTickets = await fetchOpenTicketsForAutoMerge(context.env, timezoneOffsetMinutes);
+    openTickets = await fetchOpenTicketsForAutoMerge(context.env);
   }
 
   const runs = [];
@@ -588,7 +601,7 @@ async function runEnabledHelpdeskWorkflows(context, auth, timezoneOffsetMinutes)
   return runs;
 }
 
-async function fetchOpenTicketsForAutoMerge(env, timezoneOffsetMinutes) {
+async function fetchOpenTicketsForAutoMerge(env) {
   const tickets = [];
   let cursor = null;
 
@@ -614,48 +627,81 @@ async function fetchOpenTicketsForAutoMerge(env, timezoneOffsetMinutes) {
   }
 
   return tickets.filter((ticket) => {
-    return ticket.status === "open" && ticket.silo === "tickets" && !ticket.parentTicket && requesterKey(ticket) && dateKey(ticket.createdAt, timezoneOffsetMinutes);
+    return ticket.status === "open" && ticket.silo === "tickets" && !ticket.parentTicket && requesterKey(ticket);
   });
 }
 
-function duplicateGroups(tickets, timezoneOffsetMinutes) {
+function requesterTicketGroups(tickets) {
   const groups = new Map();
   for (const ticket of tickets) {
-    const key = `${requesterKey(ticket)}|${dateKey(ticket.createdAt, timezoneOffsetMinutes)}`;
+    const key = requesterKey(ticket);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(ticket);
   }
 
   return Array.from(groups.entries())
-    .map(([key, groupTickets]) => {
-      const [requesterEmail, createdDate] = key.split("|");
-      const sorted = [...groupTickets].sort((left, right) => ticketCreatedTime(left) - ticketCreatedTime(right));
-      return {
-        requesterEmail,
-        createdDate,
-        parent: sorted[0],
-        children: sorted.slice(1),
-      };
-    })
-    .filter((group) => group.children.length);
+    .map(([requesterEmail, groupTickets]) => ({ requesterEmail, tickets: groupTickets }))
+    .filter((group) => group.tickets.length > 1);
 }
 
-async function autoMergeDuplicateOpenTickets(context, auth, timezoneOffsetMinutes) {
-  const tickets = await fetchOpenTicketsForAutoMerge(context.env, timezoneOffsetMinutes);
-  const groups = duplicateGroups(tickets, timezoneOffsetMinutes);
+async function duplicateGroupsByRequesterAndContent(context, tickets, agentDirectory) {
+  const groups = [];
+  const requesterGroups = requesterTicketGroups(tickets);
+
+  for (const requesterGroup of requesterGroups) {
+    const contentGroups = new Map();
+    const sortedTickets = [...requesterGroup.tickets].sort((left, right) => ticketCreatedTime(left) - ticketCreatedTime(right));
+
+    for (const ticket of sortedTickets) {
+      const detail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(ticket.id)}`);
+      const normalizedTicket = normalizeHelpDeskTicketSummary(detail, agentDirectory);
+      if (normalizedTicket.status !== "open" || normalizedTicket.parentTicket || requesterKey(normalizedTicket) !== requesterGroup.requesterEmail) {
+        continue;
+      }
+
+      const content = duplicateEmailContent(detail, agentDirectory);
+      if (!content?.key) continue;
+
+      if (!contentGroups.has(content.key)) contentGroups.set(content.key, []);
+      contentGroups.get(content.key).push({
+        detail,
+        ticket: normalizedTicket,
+        contentPreview: content.preview,
+      });
+    }
+
+    for (const [contentKey, contentTickets] of contentGroups.entries()) {
+      if (contentTickets.length < 2) continue;
+      const sorted = [...contentTickets].sort((left, right) => ticketCreatedTime(left.ticket) - ticketCreatedTime(right.ticket));
+      groups.push({
+        requesterEmail: requesterGroup.requesterEmail,
+        contentKey,
+        contentPreview: sorted[0].contentPreview,
+        parent: sorted[0],
+        children: sorted.slice(1),
+      });
+    }
+  }
+
+  return groups;
+}
+
+async function autoMergeDuplicateOpenTickets(context, auth) {
+  const tickets = await fetchOpenTicketsForAutoMerge(context.env);
   const dashboard = await getHelpDeskDashboard(context.env);
   const agentDirectory = buildHelpDeskAgentDirectory(dashboard);
+  const groups = await duplicateGroupsByRequesterAndContent(context, tickets, agentDirectory);
   const merged = [];
 
   for (const group of groups) {
-    const parentDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(group.parent.id)}`);
-    const parentTicket = normalizeHelpDeskTicketSummary(parentDetail, agentDirectory);
+    const parentDetail = group.parent.detail;
+    const parentTicket = group.parent.ticket;
     if (parentTicket.status !== "open" || parentTicket.parentTicket) continue;
 
     for (const child of group.children) {
       try {
-        const childDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(child.id)}`);
-        const childTicket = normalizeHelpDeskTicketSummary(childDetail, agentDirectory);
+        const childDetail = child.detail;
+        const childTicket = child.ticket;
         if (childTicket.parentTicket || childTicket.status !== "open") continue;
 
         const childContent = mergedTicketContent(childDetail, agentDirectory);
@@ -664,7 +710,7 @@ async function autoMergeDuplicateOpenTickets(context, auth, timezoneOffsetMinute
         const logMetadata = {
           mode: "automatic",
           requesterEmail: group.requesterEmail,
-          createdDate: group.createdDate,
+          duplicateContentPreview: group.contentPreview,
           parentTicketId: parentTicket.id,
           parentShortId: parentTicket.short_id || parentTicket.shortID,
           parentSubject: parentTicket.subject || "",
@@ -688,19 +734,19 @@ async function autoMergeDuplicateOpenTickets(context, auth, timezoneOffsetMinute
 
         merged.push(logMetadata);
       } catch (error) {
+        const parentId = group.parent.ticket?.id || group.parent.detail?.id || "unknown";
         await writeLogSafely(context.env, {
           actor: auth.session.user,
           area: "helpdesk",
           action: AUTO_MERGE_ACTION,
-          target: group.parent.id,
+          target: parentId,
           status: "error",
           details: "Failed to auto-merge duplicate HelpDesk ticket.",
           metadata: {
             mode: "automatic",
             requesterEmail: group.requesterEmail,
-            createdDate: group.createdDate,
-            parentTicketId: group.parent.id,
-            childTicketId: child.id,
+            parentTicketId: parentId,
+            childTicketId: child.ticket?.id || "unknown",
           },
         });
       }
