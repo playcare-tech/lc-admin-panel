@@ -15,6 +15,12 @@ const STATUSES = new Set(["open", "pending", "onhold", "solved", "closed"]);
 const AUTO_RESOLVE_WORKFLOW_TYPE = "auto_resolve_requester";
 const AUTO_REPLY_WORKFLOW_TYPE = "auto_reply_new_requester_ticket";
 const AUTO_MERGE_WORKFLOW_TYPE = "auto_merge_duplicates";
+const AUTO_MARKETING_SPAM_WORKFLOW_TYPE = "auto_resolve_marketing_spam";
+const MANUAL_RUN_WORKFLOW_TYPES = new Set([
+  AUTO_RESOLVE_WORKFLOW_TYPE,
+  AUTO_MERGE_WORKFLOW_TYPE,
+  AUTO_MARKETING_SPAM_WORKFLOW_TYPE,
+]);
 
 function splitTags(value) {
   const tags = Array.isArray(value) ? value : `${value || ""}`.split(",");
@@ -167,8 +173,8 @@ async function runWorkflow(context, auth, body) {
   const workflows = await listHelpdeskWorkflows(context.env);
   const workflow = workflows.find((item) => item.id === workflowId);
   if (!workflow) return errorResponse("Workflow not found.", 404);
-  if (workflow.type !== AUTO_MERGE_WORKFLOW_TYPE) {
-    return errorResponse("Manual run is only available for auto-merge workflows.", 400);
+  if (!MANUAL_RUN_WORKFLOW_TYPES.has(workflow.type)) {
+    return errorResponse("Manual run is not available for this workflow.", 400);
   }
 
   const timezoneOffsetMinutes = Number(body.tzOffset || body.timezoneOffsetMinutes || 0);

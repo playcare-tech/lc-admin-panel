@@ -26,19 +26,100 @@ const WORKFLOW_OPEN_TICKETS_MAX_PAGES = 10;
 const AUTO_MERGE_MAX_PAGES = 5;
 const AUTO_MERGE_DETAIL_LOOKUP_LIMIT = 12;
 const AUTO_MERGE_MAX_MERGES_PER_RUN = 2;
+const AUTO_RESOLVE_PAGE_SIZE = 100;
+const AUTO_RESOLVE_SOURCE_STATUSES = ["open", "pending", "onhold", "solved"];
+const AUTO_RESOLVE_MAX_CHANGES_PER_RUN = 20;
+const MARKETING_SPAM_TAG_NAME = "wf_spam";
 const AUTO_MERGE_ACTION = "auto_merge_duplicate_tickets";
 const AUTO_RESOLVE_WORKFLOW_TYPE = "auto_resolve_requester";
 const AUTO_REPLY_WORKFLOW_TYPE = "auto_reply_new_requester_ticket";
 const AUTO_MERGE_WORKFLOW_TYPE = "auto_merge_duplicates";
-const RUNNABLE_WORKFLOW_TYPES = new Set([AUTO_RESOLVE_WORKFLOW_TYPE, AUTO_REPLY_WORKFLOW_TYPE, AUTO_MERGE_WORKFLOW_TYPE]);
+const AUTO_MARKETING_SPAM_WORKFLOW_TYPE = "auto_resolve_marketing_spam";
+const RUNNABLE_WORKFLOW_TYPES = new Set([
+  AUTO_RESOLVE_WORKFLOW_TYPE,
+  AUTO_REPLY_WORKFLOW_TYPE,
+  AUTO_MERGE_WORKFLOW_TYPE,
+  AUTO_MARKETING_SPAM_WORKFLOW_TYPE,
+]);
 const WORKFLOW_TYPE_ORDER = {
   [AUTO_RESOLVE_WORKFLOW_TYPE]: 0,
-  [AUTO_REPLY_WORKFLOW_TYPE]: 1,
-  [AUTO_MERGE_WORKFLOW_TYPE]: 2,
+  [AUTO_MARKETING_SPAM_WORKFLOW_TYPE]: 1,
+  [AUTO_REPLY_WORKFLOW_TYPE]: 2,
+  [AUTO_MERGE_WORKFLOW_TYPE]: 3,
 };
 const SORT_FIELDS = ["createdAt", "updatedAt", "lastMessageAt"];
 const PRIORITIES = new Set(["-10", "0", "10", "20"]);
 const STATUSES = new Set(["open", "pending", "onhold", "solved", "closed"]);
+const KNOWN_AUTO_REPLY_MESSAGE = [
+  "Dear player,",
+  "",
+  "Thank you for reaching out to us. This email confirms that we have received your request and will get back to you as soon as possible. Please note that our response time may be longer than usual due to a high volume of incoming requests.",
+  "",
+  "We appreciate your patience in the meantime.",
+  "",
+  "Best regards,",
+  "",
+  "Customer Support Team",
+].join("\n");
+const MARKETING_HIGH_CONFIDENCE_PHRASES = [
+  "backlink",
+  "link building",
+  "guest post",
+  "sponsored post",
+  "advertising opportunity",
+  "increase traffic",
+  "improve rankings",
+  "domain authority",
+  "casino backlinks",
+  "seo services",
+];
+const MARKETING_MEDIUM_CONFIDENCE_PHRASES = [
+  "seo",
+  "digital marketing",
+  "marketing services",
+  "content writing",
+  "outreach specialist",
+  "lead generation",
+  "write for you",
+  "partnership opportunity",
+  "web design services",
+  "app development services",
+];
+const MARKETING_LOW_CONFIDENCE_PHRASES = [
+  "i found your website",
+  "your website",
+  "collaboration",
+  "collaborate",
+  "promote your",
+  "high quality content",
+];
+const MARKETING_SPAM_SEARCH_TERMS = [
+  "seo",
+  "backlink",
+  "link building",
+  "guest post",
+  "sponsored post",
+  "advertising",
+  "marketing services",
+  "digital marketing",
+  "domain authority",
+  "lead generation",
+];
+const SUPPORT_EXCLUSION_PHRASES = [
+  "complaint",
+  "withdrawal",
+  "deposit",
+  "payment",
+  "refund",
+  "account",
+  "verification",
+  "kyc",
+  "bonus",
+  "login",
+  "blocked",
+  "self-exclusion",
+  "gambling problem",
+];
 
 function clampPageSize(value) {
   const parsed = Number.parseInt(value || "", 10);
@@ -88,6 +169,42 @@ function autoMergeLimits(workflow) {
 function appendDateRange(params, fromName, toName, fromValue, toValue) {
   if (fromValue) params.set(fromName, fromValue);
   if (toValue) params.set(toName, toValue);
+}
+
+async function helpdeskTags(env) {
+  const payload = await helpdeskRequest(env, "/tags");
+  return (Array.isArray(payload) ? payload : payload?.tags || payload?.data || payload?.items || [])
+    .map((tag) => ({
+      id: String(tag.ID || tag.id || ""),
+      name: tag.name || "",
+    }))
+    .filter((tag) => tag.id && tag.name);
+}
+
+async function resolveHelpdeskTagIds(env, tagNames) {
+  const names = [...new Set((tagNames || []).map((tag) => `${tag || ""}`.trim()).filter(Boolean))];
+  if (!names.length) return [];
+
+  const tags = await helpdeskTags(env);
+  const byName = new Map(tags.map((tag) => [tag.name.trim().toLowerCase(), tag.id]));
+  const byId = new Map(tags.map((tag) => [tag.id, tag.id]));
+  const tagIds = [];
+  const missing = [];
+
+  for (const tagName of names) {
+    const id = byName.get(tagName.toLowerCase()) || byId.get(tagName);
+    if (id) {
+      tagIds.push(id);
+    } else {
+      missing.push(tagName);
+    }
+  }
+
+  if (missing.length) {
+    throw new Error(`HelpDesk tag not found: ${missing.join(", ")}.`);
+  }
+
+  return [...new Set(tagIds)];
 }
 
 function ticketListParams({ status, silo, pageSize, sortBy, order, filters = {}, cursor = null }) {
@@ -185,6 +302,28 @@ function ticketCreatedTime(ticket) {
 
 function stripHtml(value) {
   return `${value || ""}`.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function textIncludesPhrase(text, phrase) {
+  const comparableText = ` ${normalizedComparableMessage(text)} `;
+  const comparablePhrase = ` ${normalizedComparableMessage(phrase)} `;
+  return comparableText.includes(comparablePhrase);
+}
+
+function textMatchingPhrases(text, phrases) {
+  return phrases.filter((phrase) => textIncludesPhrase(text, phrase));
+}
+
+function normalizedComparableMessage(value) {
+  return stripHtml(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isKnownAutoReplyText(value) {
+  return normalizedComparableMessage(value) === normalizedComparableMessage(KNOWN_AUTO_REPLY_MESSAGE);
 }
 
 function ticketLink(ticket) {
@@ -317,26 +456,120 @@ async function patchTicketStatusAndTags(env, ticket, status, tagIds) {
   };
 }
 
-async function runAutoResolveWorkflow(context, workflow, openTickets) {
+async function fetchAutoResolveTicketBatch(env, { status, email, cursor }) {
+  const params = new URLSearchParams({
+    status,
+    query: email,
+    pageSize: String(AUTO_RESOLVE_PAGE_SIZE),
+    order: "desc",
+    sortBy: "createdAt",
+    eventsScope: "none",
+  });
+
+  if (cursor?.value && cursor.id) {
+    params.set("next.value", cursor.value);
+    params.set("next.ID", cursor.id);
+  }
+
+  const payload = await helpdeskRequest(env, `/tickets?${params.toString()}`);
+  return normalizeHelpDeskTicketList(payload).map((ticket) => normalizeHelpDeskTicketSummary(ticket));
+}
+
+async function fetchRequesterTicketsForAutoResolve(env, requesterEmail, options = {}) {
+  const email = `${requesterEmail || ""}`.trim().toLowerCase();
+  const statuses = options.statuses || AUTO_RESOLVE_SOURCE_STATUSES;
+  const maxPagesPerStatus = safePositiveInteger(options.maxPagesPerStatus, 2, 5);
+  const tickets = [];
+
+  for (const status of statuses) {
+    let cursor = null;
+    for (let page = 0; page < maxPagesPerStatus; page += 1) {
+      const batch = await fetchAutoResolveTicketBatch(env, { status, email, cursor });
+      tickets.push(...batch);
+      const lastTicket = batch.at(-1);
+      if (!lastTicket || batch.length < AUTO_RESOLVE_PAGE_SIZE) break;
+      cursor = {
+        value: lastTicket.createdAt,
+        id: lastTicket.id,
+      };
+    }
+  }
+
+  const byId = new Map();
+  for (const ticket of tickets) {
+    if (
+      ticket.id &&
+      !byId.has(ticket.id) &&
+      requesterKey(ticket) === email &&
+      ticket.silo === "tickets" &&
+      !ticket.parentTicket
+    ) {
+      byId.set(ticket.id, ticket);
+    }
+  }
+
+  return Array.from(byId.values()).sort((left, right) => {
+    return (right.createdAt || "").localeCompare(left.createdAt || "");
+  });
+}
+
+async function fetchMarketingSpamCandidates(env, options = {}) {
+  const searchTerms = Array.isArray(options.searchTerms) && options.searchTerms.length
+    ? options.searchTerms
+    : MARKETING_SPAM_SEARCH_TERMS;
+  const maxSearchTerms = safePositiveInteger(options.maxSearchTerms, 8, MARKETING_SPAM_SEARCH_TERMS.length);
+  const pageSize = safePositiveInteger(options.pageSize, 50, 100);
+  const byId = new Map();
+
+  for (const term of searchTerms.slice(0, maxSearchTerms)) {
+    const params = new URLSearchParams({
+      status: "open",
+      query: term,
+      pageSize: String(pageSize),
+      order: "desc",
+      sortBy: "createdAt",
+      eventsScope: "none",
+    });
+    const payload = await helpdeskRequest(env, `/tickets?${params.toString()}`);
+    const tickets = normalizeHelpDeskTicketList(payload).map((ticket) => normalizeHelpDeskTicketSummary(ticket));
+    for (const ticket of tickets) {
+      if (ticket.id && ticket.status === "open" && ticket.silo === "tickets" && !ticket.parentTicket && !byId.has(ticket.id)) {
+        byId.set(ticket.id, ticket);
+      }
+    }
+  }
+
+  return Array.from(byId.values()).sort((left, right) => {
+    return (right.createdAt || "").localeCompare(left.createdAt || "");
+  });
+}
+
+async function runAutoResolveWorkflow(context, workflow) {
   const config = workflow.config || {};
   const requesterEmail = `${config.requesterEmail || ""}`.trim().toLowerCase();
   const status = `${config.status || "solved"}`.trim().toLowerCase();
-  const tagIds = Array.isArray(config.tagIds) ? config.tagIds.map(String).filter(Boolean) : [];
+  const configuredTagIds = Array.isArray(config.tagIds) ? config.tagIds.map(String).filter(Boolean) : [];
   const tagNames = Array.isArray(config.tagNames) ? config.tagNames : [];
+  const tagIds = configuredTagIds.length ? configuredTagIds : await resolveHelpdeskTagIds(context.env, tagNames);
+  const maxChangesPerRun = safePositiveInteger(config.maxChangesPerRun, AUTO_RESOLVE_MAX_CHANGES_PER_RUN, 40);
 
   if (!requesterEmail || !STATUSES.has(status)) {
     throw new Error("Auto-resolve workflow has invalid configuration.");
   }
 
+  const matches = await fetchRequesterTicketsForAutoResolve(context.env, requesterEmail, {
+    maxPagesPerStatus: config.maxPagesPerStatus,
+  });
   const changedTickets = [];
-  const matches = openTickets.filter((ticket) => requesterKey(ticket) === requesterEmail);
   for (const ticket of matches) {
+    if (changedTickets.length >= maxChangesPerRun) break;
     const changed = await patchTicketStatusAndTags(context.env, ticket, status, tagIds);
     if (changed) changedTickets.push(changed);
   }
+  const changeLimitReached = changedTickets.length >= maxChangesPerRun && matches.length > changedTickets.length;
 
   return {
-    details: `Auto-resolved ${changedTickets.length} ticket(s) for ${requesterEmail}.`,
+    details: `Auto-resolved ${changedTickets.length} ticket(s) for ${requesterEmail} after checking ${matches.length} matching ticket(s).${changeLimitReached ? " More matches will be processed on the next run." : ""}`,
     metadata: {
       type: workflow.type,
       requesterEmail,
@@ -345,6 +578,8 @@ async function runAutoResolveWorkflow(context, workflow, openTickets) {
       tagNames,
       matchedTickets: matches.length,
       changedTickets,
+      changeLimitReached,
+      maxChangesPerRun,
     },
   };
 }
@@ -428,6 +663,118 @@ function ticketAlreadyHasAutoReply(events, messageText) {
   const expected = normalizedMessageText(messageText);
   if (!expected) return false;
   return events.some((event) => !event.is_private && normalizedMessageText(event.text || event.html || "") === expected);
+}
+
+function marketingSpamMatch(ticket, events, threshold) {
+  const publicMessageEvents = events.filter((event) => eventPublicMessageText(event));
+  const firstPublicMessage = publicMessageEvents[0];
+  if (!firstPublicMessage || !isRequesterMessageAuthor(firstPublicMessage)) {
+    return {
+      matched: false,
+      reason: firstPublicMessage ? `first_public_author:${firstPublicMessage.author_type || "unknown"}` : "no_public_message",
+    };
+  }
+
+  const realAgentMessages = publicMessageEvents.filter((event) => {
+    return `${event.author_type || ""}`.trim().toLowerCase() === "agent" && !isKnownAutoReplyText(eventPublicMessageText(event));
+  });
+  if (realAgentMessages.length) {
+    return {
+      matched: false,
+      reason: "has_real_agent_reply",
+    };
+  }
+
+  const subjectAndMessage = `${ticket.subject || ""} ${eventPublicMessageText(firstPublicMessage)}`;
+  const supportExclusions = textMatchingPhrases(subjectAndMessage, SUPPORT_EXCLUSION_PHRASES);
+  if (supportExclusions.length) {
+    return {
+      matched: false,
+      reason: "support_terms",
+      supportExclusions,
+    };
+  }
+
+  const high = textMatchingPhrases(subjectAndMessage, MARKETING_HIGH_CONFIDENCE_PHRASES);
+  const medium = textMatchingPhrases(subjectAndMessage, MARKETING_MEDIUM_CONFIDENCE_PHRASES);
+  const low = textMatchingPhrases(subjectAndMessage, MARKETING_LOW_CONFIDENCE_PHRASES);
+  const score = high.length * 3 + medium.length * 2 + low.length;
+  const matchedPhrases = [...high, ...medium, ...low];
+
+  return {
+    matched: score >= threshold,
+    reason: score >= threshold ? "matched" : "score_below_threshold",
+    score,
+    matchedPhrases,
+    messagePreview: eventPublicMessageText(firstPublicMessage).slice(0, 500),
+  };
+}
+
+async function runMarketingSpamWorkflow(context, workflow) {
+  const config = workflow.config || {};
+  const status = `${config.status || "solved"}`.trim().toLowerCase();
+  const tagNames = Array.isArray(config.tagNames) && config.tagNames.length ? config.tagNames : [MARKETING_SPAM_TAG_NAME];
+  const configuredTagIds = Array.isArray(config.tagIds) ? config.tagIds.map(String).filter(Boolean) : [];
+  const tagIds = configuredTagIds.length ? configuredTagIds : await resolveHelpdeskTagIds(context.env, tagNames);
+  const scoreThreshold = safePositiveInteger(config.scoreThreshold, 4, 20);
+  const maxCandidatesPerRun = safePositiveInteger(config.maxCandidatesPerRun, 12, 25);
+  const tickets = await fetchMarketingSpamCandidates(context.env, {
+    maxSearchTerms: config.maxSearchTerms,
+    pageSize: config.searchPageSize,
+    searchTerms: config.searchTerms,
+  });
+  const candidates = tickets.slice(0, maxCandidatesPerRun);
+  const changedTickets = [];
+  const skippedTickets = [];
+
+  if (!STATUSES.has(status)) {
+    throw new Error("Marketing spam workflow has invalid status configuration.");
+  }
+
+  for (const candidate of candidates) {
+    const ticketDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(candidate.id)}`);
+    const ticket = normalizeHelpDeskTicketSummary(ticketDetail);
+    if (ticket.status !== "open" || ticket.parentTicket) continue;
+
+    const events = normalizeHelpDeskConversationEvents(ticketDetail);
+    const match = marketingSpamMatch(ticket, events, scoreThreshold);
+    if (!match.matched) {
+      skippedTickets.push({
+        ticketId: ticket.id,
+        shortId: ticket.short_id,
+        reason: match.reason,
+        score: match.score || 0,
+        matchedPhrases: match.matchedPhrases || [],
+      });
+      continue;
+    }
+
+    const changed = await patchTicketStatusAndTags(context.env, ticket, status, tagIds);
+    if (changed) {
+      changedTickets.push({
+        ...changed,
+        score: match.score,
+        matchedPhrases: match.matchedPhrases,
+        messagePreview: match.messagePreview,
+      });
+    }
+  }
+
+  const candidateLimitReached = tickets.length > candidates.length;
+  return {
+    details: `Auto-resolved ${changedTickets.length} marketing spam ticket(s) with ${tagNames.join(", ")}.${candidateLimitReached ? " More candidates will be checked on the next run." : ""}`,
+    metadata: {
+      type: workflow.type,
+      status,
+      tagIds,
+      tagNames,
+      scoreThreshold,
+      scannedTickets: candidates.length,
+      changedTickets,
+      skippedTickets,
+      candidateLimitReached,
+    },
+  };
 }
 
 async function runAutoReplyWorkflow(context, workflow, openTickets) {
@@ -529,10 +876,12 @@ async function runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes,
     let result;
     if (workflow.type === AUTO_MERGE_WORKFLOW_TYPE) {
       result = await runAutoMergeWorkflow(context, auth, workflow);
+    } else if (workflow.type === AUTO_MARKETING_SPAM_WORKFLOW_TYPE) {
+      result = await runMarketingSpamWorkflow(context, workflow);
     } else if (workflow.type === AUTO_REPLY_WORKFLOW_TYPE) {
       result = await runAutoReplyWorkflow(context, workflow, openTickets);
     } else {
-      result = await runAutoResolveWorkflow(context, workflow, openTickets);
+      result = await runAutoResolveWorkflow(context, workflow);
     }
     const finishedAt = new Date().toISOString();
 
@@ -619,7 +968,7 @@ async function runEnabledHelpdeskWorkflows(context, auth, timezoneOffsetMinutes)
   });
 
   let openTickets = null;
-  if (dueWorkflows.some((workflow) => [AUTO_RESOLVE_WORKFLOW_TYPE, AUTO_REPLY_WORKFLOW_TYPE].includes(workflow.type))) {
+  if (dueWorkflows.some((workflow) => workflow.type === AUTO_REPLY_WORKFLOW_TYPE)) {
     openTickets = await fetchOpenTicketsForAutoMerge(context.env);
   }
 

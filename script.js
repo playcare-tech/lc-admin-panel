@@ -2947,6 +2947,7 @@ function renderHelpdeskTickets() {
 function helpdeskWorkflowTypeLabel(type) {
   if (type === "auto_merge_duplicates") return "Auto-merge";
   if (type === "auto_resolve_requester") return "Auto-resolve";
+  if (type === "auto_resolve_marketing_spam") return "Auto-spam";
   if (type === "auto_reply_new_requester_ticket") return "Auto-reply";
   return type ? type.replaceAll("_", " ") : "Workflow";
 }
@@ -2963,6 +2964,9 @@ function helpdeskWorkflowConfigText(workflow) {
   if (workflow.type === "auto_reply_new_requester_ticket") {
     return `sender: ${config.senderName || config.senderAgentId || "agent"} · first author: ${config.firstAuthorType || "client"}`;
   }
+  if (workflow.type === "auto_resolve_marketing_spam") {
+    return `Marketing/SEO solicitations -> ${config.status || "solved"} · tags: ${(config.tagNames || ["wf_spam"]).join(", ")}`;
+  }
   return "";
 }
 
@@ -2974,7 +2978,7 @@ function renderHelpdeskWorkflowRows() {
 
   return workflows
     .map((workflow) => {
-      const isAutoMerge = workflow.type === "auto_merge_duplicates";
+      const canRun = ["auto_merge_duplicates", "auto_resolve_requester", "auto_resolve_marketing_spam"].includes(workflow.type);
       const isRunning = state.helpdeskWorkflows.runningWorkflowId === workflow.id;
       return `
         <tr>
@@ -2994,7 +2998,7 @@ function renderHelpdeskWorkflowRows() {
                 data-helpdesk-workflow-runs="${escapeHtml(workflow.id)}"
               >See runs</button>
               ${
-                isAutoMerge
+                canRun
                   ? `<button
                       class="btn btn-sm btn-primary"
                       type="button"

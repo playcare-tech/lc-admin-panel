@@ -33,6 +33,20 @@ const BUILT_IN_WORKFLOWS = [
       intervalMinutes: 30,
     },
   },
+  {
+    id: "auto_resolve_marketing_spam",
+    title: "Auto-resolve marketing spam",
+    type: "auto_resolve_marketing_spam",
+    enabled: 0,
+    config: {
+      intervalMinutes: 15,
+      status: "solved",
+      tagNames: ["wf_spam"],
+      scoreThreshold: 4,
+      maxSearchTerms: 8,
+      maxCandidatesPerRun: 12,
+    },
+  },
 ];
 
 let workflowTablesReady = false;
