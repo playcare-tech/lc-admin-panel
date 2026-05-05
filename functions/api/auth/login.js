@@ -3,7 +3,6 @@ import {
   adminPermissions,
   buildTotpUri,
   clearTotpRateLimit,
-  createOrUpdateFallbackAdminUser,
   enableAdminTotp,
   findAdminUserByUsername,
   generateTotpSecret,
@@ -12,7 +11,6 @@ import {
   updateAdminPassword,
   validateAdminPassword,
   verifyAdminCredentials,
-  verifyFallbackAdminCredentials,
   verifyTotpCode,
 } from "../../_lib/admin-users.js";
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
@@ -50,16 +48,6 @@ export async function onRequest(context) {
       authenticated = Boolean(user);
     } catch {
       authenticated = false;
-    }
-    const fallbackAuthenticated = authenticated ? false : await verifyFallbackAdminCredentials(context.env, username, password);
-
-    if (
-      !existingUser &&
-      !authenticated &&
-      fallbackAuthenticated
-    ) {
-      user = await createOrUpdateFallbackAdminUser(context.env, { username, password });
-      authenticated = Boolean(user);
     }
 
     if (!authenticated) {

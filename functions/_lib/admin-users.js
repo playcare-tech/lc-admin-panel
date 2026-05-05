@@ -230,38 +230,11 @@ export async function verifyAdminCredentials(env, username, password, preloadedU
   return safeEqualBase64(hash, user.password_hash) ? user : null;
 }
 
-export async function verifyFallbackAdminCredentials(env, username, password) {
-  const hasFallbackCredentials = Boolean(env.ADMIN_USERNAME && env.ADMIN_PASSWORD_HASH && env.ADMIN_PASSWORD_SALT);
-  // Run PBKDF2 even when fallback credentials are absent or the username differs.
-  const hash = await hashPassword(password, hasFallbackCredentials ? env.ADMIN_PASSWORD_SALT : DUMMY_PASSWORD_SALT);
-  const passwordMatches = safeEqualBase64(hash, hasFallbackCredentials ? env.ADMIN_PASSWORD_HASH : DUMMY_PASSWORD_HASH);
-  return hasFallbackCredentials && username === env.ADMIN_USERNAME && passwordMatches;
-}
-
 export function adminPermissions(user) {
   return {
     canManageUsers: Boolean(user?.can_manage_users),
     canManageAdmins: Boolean(user?.can_manage_admins),
   };
-}
-
-export async function createOrUpdateFallbackAdminUser(env, { username, password }) {
-  await ensureAdminUsersTable(env.DB);
-  const existing = await findAdminUserByUsername(env, username);
-  if (existing) return existing;
-
-  const salt = createSalt();
-  const hash = await hashPassword(password, salt);
-  await env.DB.prepare(
-    `
-      INSERT INTO admin_users
-        (username, password_salt, password_hash, created_at, created_by, password_reset_required, totp_setup_required, can_manage_users, can_manage_admins)
-      VALUES (?, ?, ?, ?, ?, 0, 1, 1, 1)
-    `,
-  )
-    .bind(username, salt, hash, new Date().toISOString(), "env-fallback")
-    .run();
-  return findAdminUserByUsername(env, username);
 }
 
 export function generateTotpSecret() {
