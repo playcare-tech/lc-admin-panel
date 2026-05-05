@@ -1,0 +1,9 @@
+name = "lc-admin-workflow-cron"
+main = "workers/workflow-cron.js"
+compatibility_date = "2026-04-22"
+
+[vars]
+WORKFLOW_CRON_URL = "https://lc-admin.pages.dev/api/helpdesk/workflow-cron"
+
+[triggers]
+crons = ["*/5 * * * *"]

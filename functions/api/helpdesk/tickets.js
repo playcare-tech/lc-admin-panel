@@ -972,35 +972,49 @@ export async function runHelpdeskWorkflowOnce(context, auth, workflow, timezoneO
   return runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes, []);
 }
 
-async function runEnabledHelpdeskWorkflows(context, auth, timezoneOffsetMinutes) {
-  if (!(await automaticWorkflowRunDue(context.env))) return [];
+export async function runNextAutomaticHelpdeskWorkflow(
+  context,
+  auth,
+  timezoneOffsetMinutes = 0,
+  { enforceGlobalInterval = false, forceOne = false } = {},
+) {
+  if (enforceGlobalInterval && !(await automaticWorkflowRunDue(context.env))) return [];
 
   const workflows = await listEnabledHelpdeskWorkflows(context.env);
   if (!workflows.length) return [];
 
+  const workflowInfos = [];
   const dueWorkflowInfos = [];
   for (const workflow of workflows) {
     if (!RUNNABLE_WORKFLOW_TYPES.has(workflow.type)) continue;
     const runInfo = await workflowRunInfo(context.env, workflow);
+    workflowInfos.push(runInfo);
     if (runInfo.due) {
       dueWorkflowInfos.push(runInfo);
     }
   }
-  if (!dueWorkflowInfos.length) return [];
-  dueWorkflowInfos.sort((left, right) => {
+  const candidates = dueWorkflowInfos.length ? dueWorkflowInfos : forceOne ? workflowInfos : [];
+  if (!candidates.length) return [];
+  candidates.sort((left, right) => {
     return (
       left.lastRunMs - right.lastRunMs ||
       (WORKFLOW_TYPE_ORDER[left.workflow.type] ?? 99) - (WORKFLOW_TYPE_ORDER[right.workflow.type] ?? 99)
     );
   });
 
-  const workflow = dueWorkflowInfos[0].workflow;
+  const workflow = candidates[0].workflow;
   let openTickets = null;
   if (workflow.type === AUTO_REPLY_WORKFLOW_TYPE) {
     openTickets = await fetchOpenTicketsForAutoMerge(context.env);
   }
 
   return [await runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes, openTickets || [])];
+}
+
+async function runEnabledHelpdeskWorkflows(context, auth, timezoneOffsetMinutes) {
+  return runNextAutomaticHelpdeskWorkflow(context, auth, timezoneOffsetMinutes, {
+    enforceGlobalInterval: true,
+  });
 }
 
 async function fetchOpenTicketsForAutoMerge(env, maxPages = WORKFLOW_OPEN_TICKETS_MAX_PAGES) {
@@ -1306,7 +1320,7 @@ async function listTickets(context, auth) {
   const includeCounts = url.searchParams.get("includeCounts") !== "0";
   const timezoneOffsetMinutes = Number(url.searchParams.get("tzOffset") || 0);
   const shouldRunWorkflows =
-    url.searchParams.get("workflows") !== "0" && status === "open" && silo === "tickets" && !cursor;
+    url.searchParams.get("workflows") === "1" && status === "open" && silo === "tickets" && !cursor;
 
   let workflowRuns = [];
   if (shouldRunWorkflows) {

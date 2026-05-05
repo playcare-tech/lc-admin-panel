@@ -4521,7 +4521,7 @@ function helpdeskTicketsQueryParams({ includeCounts = true } = {}) {
     order: filters.order || "desc",
     includeCounts: includeCounts ? "1" : "0",
     autoMerge: "0",
-    workflows: "1",
+    workflows: "0",
     tzOffset: String(new Date().getTimezoneOffset()),
   });
   const cursor = helpdeskTicketsCurrentCursor();
