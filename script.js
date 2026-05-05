@@ -3080,7 +3080,7 @@ function renderHelpdeskWorkflowCreateForm() {
       <div class="tickets-toolbar">
         <div>
           <div class="section-title">New workflow</div>
-          <div class="subtle">Incoming tickets are processed when the open queue refreshes.</div>
+          <div class="subtle">Enabled workflows run one at a time, at most once every 5 minutes.</div>
         </div>
       </div>
       <div class="workflow-form-grid">

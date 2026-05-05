@@ -11,6 +11,7 @@ import {
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import { listLogsByAction, writeLog, writeLogSafely } from "../../_lib/logs.js";
 import {
+  lastAnyHelpdeskWorkflowRunAt,
   lastHelpdeskWorkflowRunAt,
   listEnabledHelpdeskWorkflows,
   recordHelpdeskWorkflowRun,
@@ -29,6 +30,7 @@ const AUTO_MERGE_MAX_MERGES_PER_RUN = 2;
 const AUTO_RESOLVE_PAGE_SIZE = 100;
 const AUTO_RESOLVE_SOURCE_STATUSES = ["open", "pending", "onhold", "solved"];
 const AUTO_RESOLVE_MAX_CHANGES_PER_RUN = 20;
+const WORKFLOW_AUTOMATIC_RUN_INTERVAL_MINUTES = 5;
 const MARKETING_SPAM_TAG_NAME = "wf_spam";
 const AUTO_MERGE_ACTION = "auto_merge_duplicate_tickets";
 const AUTO_RESOLVE_WORKFLOW_TYPE = "auto_resolve_requester";
@@ -414,15 +416,33 @@ async function mergeChildTicketPreservingTeam(env, parentDetail, parentTicket, c
 function workflowIntervalMinutes(workflow) {
   const configured = Number(workflow.config?.intervalMinutes);
   if (Number.isFinite(configured) && configured > 0) return configured;
-  return workflow.type === AUTO_MERGE_WORKFLOW_TYPE ? 30 : 5;
+  return WORKFLOW_AUTOMATIC_RUN_INTERVAL_MINUTES;
 }
 
-async function workflowRunDue(env, workflow) {
+function dateMs(value) {
+  const parsed = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function elapsedMinutesSince(value) {
+  const lastMs = dateMs(value);
+  if (!lastMs) return Number.POSITIVE_INFINITY;
+  return (Date.now() - lastMs) / 60000;
+}
+
+async function workflowRunInfo(env, workflow) {
   const lastRunAt = await lastHelpdeskWorkflowRunAt(env, workflow.id);
-  if (!lastRunAt) return true;
-  const lastRunMs = new Date(lastRunAt).getTime();
-  if (!Number.isFinite(lastRunMs)) return true;
-  return Date.now() - lastRunMs >= workflowIntervalMinutes(workflow) * 60 * 1000;
+  return {
+    workflow,
+    lastRunAt,
+    lastRunMs: dateMs(lastRunAt),
+    due: elapsedMinutesSince(lastRunAt) >= workflowIntervalMinutes(workflow),
+  };
+}
+
+async function automaticWorkflowRunDue(env) {
+  const lastRunAt = await lastAnyHelpdeskWorkflowRunAt(env);
+  return elapsedMinutesSince(lastRunAt) >= WORKFLOW_AUTOMATIC_RUN_INTERVAL_MINUTES;
 }
 
 async function patchTicketStatusAndTags(env, ticket, status, tagIds) {
@@ -953,31 +973,34 @@ export async function runHelpdeskWorkflowOnce(context, auth, workflow, timezoneO
 }
 
 async function runEnabledHelpdeskWorkflows(context, auth, timezoneOffsetMinutes) {
+  if (!(await automaticWorkflowRunDue(context.env))) return [];
+
   const workflows = await listEnabledHelpdeskWorkflows(context.env);
   if (!workflows.length) return [];
 
-  const dueWorkflows = [];
+  const dueWorkflowInfos = [];
   for (const workflow of workflows) {
-    if (RUNNABLE_WORKFLOW_TYPES.has(workflow.type) && (await workflowRunDue(context.env, workflow))) {
-      dueWorkflows.push(workflow);
+    if (!RUNNABLE_WORKFLOW_TYPES.has(workflow.type)) continue;
+    const runInfo = await workflowRunInfo(context.env, workflow);
+    if (runInfo.due) {
+      dueWorkflowInfos.push(runInfo);
     }
   }
-  if (!dueWorkflows.length) return [];
-  dueWorkflows.sort((left, right) => {
-    return (WORKFLOW_TYPE_ORDER[left.type] ?? 99) - (WORKFLOW_TYPE_ORDER[right.type] ?? 99);
+  if (!dueWorkflowInfos.length) return [];
+  dueWorkflowInfos.sort((left, right) => {
+    return (
+      left.lastRunMs - right.lastRunMs ||
+      (WORKFLOW_TYPE_ORDER[left.workflow.type] ?? 99) - (WORKFLOW_TYPE_ORDER[right.workflow.type] ?? 99)
+    );
   });
 
+  const workflow = dueWorkflowInfos[0].workflow;
   let openTickets = null;
-  if (dueWorkflows.some((workflow) => workflow.type === AUTO_REPLY_WORKFLOW_TYPE)) {
+  if (workflow.type === AUTO_REPLY_WORKFLOW_TYPE) {
     openTickets = await fetchOpenTicketsForAutoMerge(context.env);
   }
 
-  const runs = [];
-  for (const workflow of dueWorkflows) {
-    runs.push(await runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes, openTickets || []));
-  }
-
-  return runs;
+  return [await runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes, openTickets || [])];
 }
 
 async function fetchOpenTicketsForAutoMerge(env, maxPages = WORKFLOW_OPEN_TICKETS_MAX_PAGES) {

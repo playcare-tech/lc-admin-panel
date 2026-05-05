@@ -30,7 +30,7 @@ const BUILT_IN_WORKFLOWS = [
     type: "auto_merge_duplicates",
     enabled: 0,
     config: {
-      intervalMinutes: 30,
+      intervalMinutes: 5,
     },
   },
   {
@@ -39,7 +39,7 @@ const BUILT_IN_WORKFLOWS = [
     type: "auto_resolve_marketing_spam",
     enabled: 0,
     config: {
-      intervalMinutes: 15,
+      intervalMinutes: 5,
       status: "solved",
       tagNames: ["wf_spam"],
       scoreThreshold: 4,
@@ -222,6 +222,20 @@ export async function lastHelpdeskWorkflowRunAt(env, workflowId) {
   )
     .bind(workflowId)
     .first();
+
+  return row?.started_at || "";
+}
+
+export async function lastAnyHelpdeskWorkflowRunAt(env) {
+  await ensureHelpdeskWorkflowTables(env.DB);
+  const row = await env.DB.prepare(
+    `
+      SELECT started_at
+      FROM helpdesk_workflow_runs
+      ORDER BY started_at DESC
+      LIMIT 1
+    `,
+  ).first();
 
   return row?.started_at || "";
 }
