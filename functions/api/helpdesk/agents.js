@@ -1,7 +1,30 @@
 import { requireAuth } from "../../_lib/auth.js";
 import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
-import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
-import { writeLog } from "../../_lib/logs.js";
+import { errorResponse, json, methodNotAllowed, readJson } from "../../_lib/http.js";
+import { writeLogSafely } from "../../_lib/logs.js";
+
+function upstreamStatus(error) {
+  const status = Number(error?.status || 0);
+  return Number.isFinite(status) && status >= 400 ? status : 0;
+}
+
+function createAgentErrorResponse(error) {
+  const message = error?.message || "Failed to create HelpDesk agent.";
+  const status = upstreamStatus(error);
+  const responseStatus = status >= 400 && status < 500 ? status : 502;
+  return errorResponse(`Failed to create HelpDesk agent: ${message}`, responseStatus);
+}
+
+async function teamNameMapForLog(env, teamIds) {
+  if (!teamIds.length) return new Map();
+  try {
+    const dashboard = await getHelpDeskDashboard(env);
+    return new Map(dashboard.teams.map((team) => [team.id, team.name]));
+  } catch (error) {
+    console.error("Failed to load HelpDesk teams for create-agent audit log.", error);
+    return new Map();
+  }
+}
 
 export async function onRequest(context) {
   if (context.request.method !== "POST") {
@@ -13,10 +36,13 @@ export async function onRequest(context) {
     return auth.error;
   }
 
+  let targetEmail = "unknown";
+
   try {
     const body = await readJson(context.request);
     const name = `${body.name || ""}`.trim();
     const email = `${body.email || ""}`.trim().toLowerCase();
+    targetEmail = email || targetEmail;
     const jobTitle = `${body.jobTitle || ""}`.trim();
     const avatar = `${body.avatar || ""}`.trim();
     const teamIds = Array.isArray(body.teamIds) ? body.teamIds.filter(Boolean).map(String) : [];
@@ -49,10 +75,9 @@ export async function onRequest(context) {
       body: payload,
     });
 
-    const dashboard = await getHelpDeskDashboard(context.env);
-    const teamNameById = new Map(dashboard.teams.map((team) => [team.id, team.name]));
+    const teamNameById = await teamNameMapForLog(context.env, teamIds);
 
-    await writeLog(context.env, {
+    await writeLogSafely(context.env, {
       actor: auth.session.user,
       area: "helpdesk",
       action: "create_agent",
@@ -71,14 +96,17 @@ export async function onRequest(context) {
 
     return json({ ok: true, agent });
   } catch (error) {
-    await writeLog(context.env, {
+    await writeLogSafely(context.env, {
       actor: auth.session.user,
       area: "helpdesk",
       action: "create_agent",
-      target: "unknown",
+      target: targetEmail,
       status: "error",
-      details: "Failed to create HelpDesk agent.",
+      details: error.message || "Failed to create HelpDesk agent.",
+      metadata: {
+        upstreamStatus: upstreamStatus(error) || null,
+      },
     });
-    return serverErrorResponse(error, "Failed to create HelpDesk agent.");
+    return createAgentErrorResponse(error);
   }
 }

@@ -53,10 +53,20 @@ export async function helpdeskRequestWithMeta(env, path, options = {}) {
   });
 
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : null;
+  let payload = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch (_error) {
+      payload = text;
+    }
+  }
 
   if (!response.ok) {
-    throw new Error(extractErrorMessage(payload, `HelpDesk ${path} failed.`));
+    const error = new Error(extractErrorMessage(payload, `HelpDesk ${path} failed.`));
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
 
   return {
