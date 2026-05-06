@@ -85,7 +85,7 @@ const BUILT_IN_WORKFLOWS = [
     id: "auto_reply_empty_requester_ticket",
     title: "Auto-reply empty requester tickets",
     type: "auto_reply_empty_requester_ticket",
-    enabled: 0,
+    enabled: 1,
     config: {
       intervalMinutes: 5,
       status: "solved",
