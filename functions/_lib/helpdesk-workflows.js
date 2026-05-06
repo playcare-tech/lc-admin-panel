@@ -38,7 +38,7 @@ const MARKETING_SPAM_DEFAULT_KEYWORDS = [
 const EMPTY_REQUESTER_REPLY_MESSAGE = [
   "Hello dear player,",
   "",
-  "Thanks for contacting Casino Support Team.",
+  "Thanks for contacting Customer Support Team.",
   "",
   "How may we help you today?",
 ].join("\n");
