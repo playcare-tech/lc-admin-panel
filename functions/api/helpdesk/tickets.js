@@ -253,13 +253,13 @@ async function resolveHelpdeskTagIds(env, tagNames) {
   return [...new Set(tagIds)];
 }
 
-function ticketListParams({ status, silo, pageSize, sortBy, order, filters = {}, cursor = null }) {
+function ticketListParams({ status, silo, pageSize, sortBy, order, filters = {}, cursor = null, eventsScope = "none" }) {
   const params = new URLSearchParams({
     pageSize: String(pageSize),
     order,
     sortBy,
-    eventsScope: "none",
   });
+  if (eventsScope) params.set("eventsScope", eventsScope);
 
   if (status && status !== "all") params.set("status", status);
   if (silo && silo !== "tickets") params.set("silo", silo);
@@ -871,7 +871,6 @@ async function replyAndSetTicketStatus(env, ticket, senderAgent, messageText, st
       status,
       author: {
         type: "agent",
-        ID: senderAgent.id,
       },
       message: {
         text: messageText,
@@ -1065,7 +1064,6 @@ async function runAutoReplyWorkflow(context, workflow, openTickets) {
       body: {
         author: {
           type: "agent",
-          ID: senderAgent.id,
         },
         message: {
           text: messageText,
@@ -1099,8 +1097,8 @@ async function runEmptyRequesterReplyWorkflow(context, workflow) {
   const config = workflow.config || {};
   const messageText = `${config.messageText || config.message || ""}`.trim();
   const status = `${config.status || "solved"}`.trim().toLowerCase();
-  const maxPages = safePositiveInteger(config.maxPages, 3, 5);
-  const maxCandidatesPerRun = safePositiveInteger(config.maxCandidatesPerRun, 10, 15);
+  const maxPages = safePositiveInteger(config.maxPages, WORKFLOW_OPEN_TICKETS_MAX_PAGES, WORKFLOW_OPEN_TICKETS_MAX_PAGES);
+  const maxRepliesPerRun = safePositiveInteger(config.maxRepliesPerRun || config.maxCandidatesPerRun, 15, 25);
 
   if (!messageText) {
     throw new Error("Empty requester workflow has no message text configured.");
@@ -1110,19 +1108,23 @@ async function runEmptyRequesterReplyWorkflow(context, workflow) {
   }
 
   const senderAgent = await resolveWorkflowAgent(context.env, config);
-  const tickets = await fetchOpenTicketsForAutoMerge(context.env, maxPages);
-  const candidates = tickets.slice(0, maxCandidatesPerRun);
+  const candidates = await fetchOpenTicketEntriesWithEvents(context.env, maxPages);
   const repliedTickets = [];
   const skippedTickets = [];
+  let replyLimitReached = false;
 
   for (const candidate of candidates) {
-    const ticketDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(candidate.id)}`);
-    const normalizedTicket = normalizeHelpDeskTicketSummary(ticketDetail);
+    if (repliedTickets.length >= maxRepliesPerRun) {
+      replyLimitReached = true;
+      break;
+    }
+
+    const normalizedTicket = candidate.ticket;
     if (normalizedTicket.status !== "open" || normalizedTicket.parentTicket) {
       continue;
     }
 
-    const events = normalizeHelpDeskConversationEvents(ticketDetail);
+    const events = normalizeHelpDeskConversationEvents(candidate.detail);
     const match = emptyRequesterTicketMatch(normalizedTicket, events, messageText);
     if (!match.matched) {
       skippedTickets.push({
@@ -1144,9 +1146,9 @@ async function runEmptyRequesterReplyWorkflow(context, workflow) {
     });
   }
 
-  const candidateLimitReached = tickets.length > candidates.length;
+  const replyLimitText = replyLimitReached ? " More matching tickets will be processed on the next run." : "";
   return {
-    details: `Auto-replied to and ${status} ${repliedTickets.length} empty requester ticket(s).${candidateLimitReached ? " More candidates will be checked on the next run." : ""}`,
+    details: `Auto-replied to and ${status} ${repliedTickets.length} empty requester ticket(s) after scanning ${candidates.length} open ticket(s).${replyLimitText}`,
     metadata: {
       type: workflow.type,
       status,
@@ -1154,9 +1156,11 @@ async function runEmptyRequesterReplyWorkflow(context, workflow) {
       senderName: senderAgent.name,
       senderEmail: senderAgent.email,
       candidates: candidates.length,
+      scannedTickets: candidates.length,
       repliedTickets,
       skippedTickets,
-      candidateLimitReached,
+      replyLimitReached,
+      maxRepliesPerRun,
     },
   };
 }
@@ -1519,6 +1523,41 @@ async function fetchOpenTicketsForAutoMerge(env, maxPages = WORKFLOW_OPEN_TICKET
   return tickets.filter((ticket) => {
     return ticket.status === "open" && ticket.silo === "tickets" && !ticket.parentTicket && requesterKey(ticket);
   });
+}
+
+async function fetchOpenTicketEntriesWithEvents(env, maxPages = WORKFLOW_OPEN_TICKETS_MAX_PAGES) {
+  const tickets = [];
+  let cursor = null;
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const batch = await fetchTicketBatch(env, {
+      status: "open",
+      silo: "tickets",
+      pageSize: AUTO_MERGE_PAGE_SIZE,
+      sortBy: "createdAt",
+      order: "desc",
+      filters: {},
+      cursor,
+      eventsScope: "",
+    });
+    const summaries = batch.tickets.map((ticket) => normalizeHelpDeskTicketSummary(ticket));
+    batch.tickets.forEach((detail, index) => {
+      const ticket = summaries[index];
+      if (ticket.status === "open" && ticket.silo === "tickets" && !ticket.parentTicket && requesterKey(ticket)) {
+        tickets.push({ ticket, detail });
+      }
+    });
+
+    const lastTicket = summaries.at(-1);
+    if (!lastTicket || summaries.length < AUTO_MERGE_PAGE_SIZE) break;
+    cursor = {
+      direction: "next",
+      value: lastTicket.createdAt,
+      id: lastTicket.id,
+    };
+  }
+
+  return tickets;
 }
 
 function requesterTicketGroups(tickets) {

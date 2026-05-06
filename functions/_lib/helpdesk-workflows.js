@@ -92,8 +92,8 @@ const BUILT_IN_WORKFLOWS = [
       senderName: "Axel",
       senderEmail: "igar.k@playcare.tech",
       messageText: EMPTY_REQUESTER_REPLY_MESSAGE,
-      maxPages: 3,
-      maxCandidatesPerRun: 10,
+      maxPages: 10,
+      maxRepliesPerRun: 15,
     },
   },
 ];
