@@ -35,6 +35,14 @@ const MARKETING_SPAM_DEFAULT_KEYWORDS = [
   "affiliates",
 ];
 
+const EMPTY_REQUESTER_REPLY_MESSAGE = [
+  "Hello dear player,",
+  "",
+  "Thanks for contacting Casino Support Team.",
+  "",
+  "How may we help you today?",
+].join("\n");
+
 const BUILT_IN_WORKFLOWS = [
   {
     id: "auto_merge_duplicates",
@@ -71,6 +79,21 @@ const BUILT_IN_WORKFLOWS = [
       scoreThreshold: 4,
       maxSearchTerms: 8,
       maxCandidatesPerRun: 12,
+    },
+  },
+  {
+    id: "auto_reply_empty_requester_ticket",
+    title: "Auto-reply empty requester tickets",
+    type: "auto_reply_empty_requester_ticket",
+    enabled: 0,
+    config: {
+      intervalMinutes: 5,
+      status: "solved",
+      senderName: "Axel",
+      senderEmail: "igar.k@playcare.tech",
+      messageText: EMPTY_REQUESTER_REPLY_MESSAGE,
+      maxPages: 3,
+      maxCandidatesPerRun: 10,
     },
   },
 ];
@@ -184,7 +207,7 @@ export async function listHelpdeskWorkflows(env) {
       `
         SELECT id, title, type, enabled, config_json, created_at, updated_at
         FROM helpdesk_workflows
-        ORDER BY CASE type WHEN 'auto_merge_duplicates' THEN 0 WHEN 'auto_merge_6h_rule' THEN 1 ELSE 2 END, created_at ASC
+        ORDER BY CASE type WHEN 'auto_merge_duplicates' THEN 0 WHEN 'auto_merge_6h_rule' THEN 1 WHEN 'auto_reply_empty_requester_ticket' THEN 2 ELSE 3 END, created_at ASC
       `,
     ).all(),
     env.DB.prepare(
@@ -210,7 +233,7 @@ export async function listEnabledHelpdeskWorkflows(env) {
       SELECT id, title, type, enabled, config_json, created_at, updated_at
       FROM helpdesk_workflows
       WHERE enabled = 1
-      ORDER BY CASE type WHEN 'auto_merge_duplicates' THEN 0 WHEN 'auto_merge_6h_rule' THEN 1 ELSE 2 END, created_at ASC
+      ORDER BY CASE type WHEN 'auto_merge_duplicates' THEN 0 WHEN 'auto_merge_6h_rule' THEN 1 WHEN 'auto_reply_empty_requester_ticket' THEN 2 ELSE 3 END, created_at ASC
     `,
   ).all();
 

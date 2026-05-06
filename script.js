@@ -3004,6 +3004,7 @@ function helpdeskWorkflowTypeLabel(type) {
   if (type === "auto_merge_6h_rule") return "Auto-merge 6h";
   if (type === "auto_resolve_requester") return "Auto-resolve";
   if (type === "auto_resolve_marketing_spam") return "Auto-spam";
+  if (type === "auto_reply_empty_requester_ticket") return "Empty-ticket reply";
   if (type === "auto_reply_new_requester_ticket") return "Auto-reply";
   return type ? type.replaceAll("_", " ") : "Workflow";
 }
@@ -3022,6 +3023,9 @@ function helpdeskWorkflowConfigText(workflow) {
   }
   if (workflow.type === "auto_reply_new_requester_ticket") {
     return `sender: ${config.senderName || config.senderAgentId || "agent"} · first author: ${config.firstAuthorType || "client"}`;
+  }
+  if (workflow.type === "auto_reply_empty_requester_ticket") {
+    return `empty requester message -> ${config.status || "solved"} · sender: ${config.senderName || config.senderEmail || config.senderAgentId || "agent"}`;
   }
   if (workflow.type === "auto_resolve_marketing_spam") {
     const keywordText = workflowMarketingSpamKeywordsValue(workflow);
@@ -3045,7 +3049,7 @@ function renderHelpdeskWorkflowRows() {
 
   return workflows
     .map((workflow) => {
-      const canRun = ["auto_merge_duplicates", "auto_merge_6h_rule", "auto_resolve_requester", "auto_resolve_marketing_spam"].includes(workflow.type);
+      const canRun = ["auto_merge_duplicates", "auto_merge_6h_rule", "auto_resolve_requester", "auto_resolve_marketing_spam", "auto_reply_empty_requester_ticket"].includes(workflow.type);
       const isRunning = state.helpdeskWorkflows.runningWorkflowId === workflow.id;
       const isSaving = state.helpdeskWorkflows.savingWorkflowId === workflow.id;
       const isMarketingSpam = workflow.type === "auto_resolve_marketing_spam";

@@ -38,12 +38,14 @@ const MARKETING_SPAM_MIN_CANDIDATES_PER_RUN = 15;
 const AUTO_MERGE_ACTION = "auto_merge_duplicate_tickets";
 const AUTO_RESOLVE_WORKFLOW_TYPE = "auto_resolve_requester";
 const AUTO_REPLY_WORKFLOW_TYPE = "auto_reply_new_requester_ticket";
+const AUTO_REPLY_EMPTY_REQUESTER_WORKFLOW_TYPE = "auto_reply_empty_requester_ticket";
 const AUTO_MERGE_WORKFLOW_TYPE = "auto_merge_duplicates";
 const AUTO_MERGE_6H_WORKFLOW_TYPE = "auto_merge_6h_rule";
 const AUTO_MARKETING_SPAM_WORKFLOW_TYPE = "auto_resolve_marketing_spam";
 const RUNNABLE_WORKFLOW_TYPES = new Set([
   AUTO_RESOLVE_WORKFLOW_TYPE,
   AUTO_REPLY_WORKFLOW_TYPE,
+  AUTO_REPLY_EMPTY_REQUESTER_WORKFLOW_TYPE,
   AUTO_MERGE_WORKFLOW_TYPE,
   AUTO_MERGE_6H_WORKFLOW_TYPE,
   AUTO_MARKETING_SPAM_WORKFLOW_TYPE,
@@ -52,8 +54,9 @@ const WORKFLOW_TYPE_ORDER = {
   [AUTO_RESOLVE_WORKFLOW_TYPE]: 0,
   [AUTO_MARKETING_SPAM_WORKFLOW_TYPE]: 1,
   [AUTO_REPLY_WORKFLOW_TYPE]: 2,
-  [AUTO_MERGE_WORKFLOW_TYPE]: 3,
-  [AUTO_MERGE_6H_WORKFLOW_TYPE]: 4,
+  [AUTO_REPLY_EMPTY_REQUESTER_WORKFLOW_TYPE]: 3,
+  [AUTO_MERGE_WORKFLOW_TYPE]: 4,
+  [AUTO_MERGE_6H_WORKFLOW_TYPE]: 5,
 };
 const SORT_FIELDS = ["createdAt", "updatedAt", "lastMessageAt"];
 const PRIORITIES = new Set(["-10", "0", "10", "20"]);
@@ -745,8 +748,9 @@ function comparableAgentValue(value) {
 
 async function resolveWorkflowAgent(env, config) {
   const senderAgentId = `${config.senderAgentId || ""}`.trim();
+  const senderEmail = `${config.senderEmail || config.senderAgentEmail || ""}`.trim().toLowerCase();
   const senderName = `${config.senderName || config.sender || ""}`.trim();
-  if (!senderAgentId && !senderName) {
+  if (!senderAgentId && !senderEmail && !senderName) {
     throw new Error("Auto-reply workflow has no sender configured.");
   }
 
@@ -757,7 +761,12 @@ async function resolveWorkflowAgent(env, config) {
     if (exactAgent) return exactAgent;
   }
 
-  const senderKey = comparableAgentValue(senderName || senderAgentId);
+  if (senderEmail) {
+    const exactAgent = agents.find((agent) => comparableAgentValue(agent.email) === senderEmail);
+    if (exactAgent) return exactAgent;
+  }
+
+  const senderKey = comparableAgentValue(senderName || senderEmail || senderAgentId);
   const exactMatches = agents.filter((agent) => {
     return [agent.id, agent.email, agent.name].some((value) => comparableAgentValue(value) === senderKey);
   });
@@ -772,7 +781,7 @@ async function resolveWorkflowAgent(env, config) {
     throw new Error(`Auto-reply sender "${senderName}" matches multiple HelpDesk agents.`);
   }
 
-  throw new Error(`Auto-reply sender "${senderName || senderAgentId}" was not found in HelpDesk agents.`);
+  throw new Error(`Auto-reply sender "${senderName || senderEmail || senderAgentId}" was not found in HelpDesk agents.`);
 }
 
 function eventPublicMessageText(event) {
@@ -807,6 +816,70 @@ function ticketAlreadyHasAutoReply(events, messageText) {
   const expected = normalizedMessageText(messageText);
   if (!expected) return false;
   return events.some((event) => !event.is_private && normalizedMessageText(event.text || event.html || "") === expected);
+}
+
+function emptyRequesterTicketMatch(ticket, events, messageText) {
+  if (ticketAlreadyHasAutoReply(events, messageText)) {
+    return {
+      matched: false,
+      reason: "already_replied",
+    };
+  }
+
+  const publicEvents = events.filter((event) => !event.is_private);
+  const publicMessageEvents = publicEvents.filter((event) => eventPublicMessageText(event));
+  const publicAgentMessages = publicMessageEvents.filter((event) => `${event.author_type || ""}`.trim().toLowerCase() === "agent");
+  if (publicAgentMessages.length) {
+    return {
+      matched: false,
+      reason: "has_agent_reply",
+    };
+  }
+
+  const requesterEvents = publicEvents.filter((event) => isRequesterMessageAuthor(event));
+  const requesterMessageTexts = requesterEvents.map((event) => eventPublicMessageText(event)).filter(Boolean);
+  if (requesterMessageTexts.length) {
+    return {
+      matched: false,
+      reason: "requester_message_not_empty",
+      messagePreview: requesterMessageTexts.join("\n\n").slice(0, 500),
+    };
+  }
+
+  const nonSystemPublicEvents = publicEvents.filter((event) => {
+    const authorType = `${event.author_type || ""}`.trim().toLowerCase();
+    return authorType && authorType !== "system";
+  });
+  if (requesterEvents.length || (!publicMessageEvents.length && !nonSystemPublicEvents.length && requesterKey(ticket))) {
+    return {
+      matched: true,
+      reason: requesterEvents.length ? "empty_requester_message" : "no_public_message_text",
+    };
+  }
+
+  const firstPublicMessage = publicMessageEvents[0];
+  return {
+    matched: false,
+    reason: firstPublicMessage ? `first_public_author:${firstPublicMessage.author_type || "unknown"}` : "no_requester_event",
+  };
+}
+
+async function replyAndSetTicketStatus(env, ticket, senderAgent, messageText, status) {
+  await helpdeskRequest(env, `/tickets/${encodeURIComponent(ticket.id)}`, {
+    method: "PATCH",
+    body: {
+      status,
+      author: {
+        type: "agent",
+        ID: senderAgent.id,
+      },
+      message: {
+        text: messageText,
+      },
+      isPrivate: false,
+      ...preserveTeamPayload(ticket),
+    },
+  });
 }
 
 function marketingSpamMatch(ticket, events, threshold, configuredKeywords = []) {
@@ -1022,6 +1095,72 @@ async function runAutoReplyWorkflow(context, workflow, openTickets) {
   };
 }
 
+async function runEmptyRequesterReplyWorkflow(context, workflow) {
+  const config = workflow.config || {};
+  const messageText = `${config.messageText || config.message || ""}`.trim();
+  const status = `${config.status || "solved"}`.trim().toLowerCase();
+  const maxPages = safePositiveInteger(config.maxPages, 3, 5);
+  const maxCandidatesPerRun = safePositiveInteger(config.maxCandidatesPerRun, 10, 15);
+
+  if (!messageText) {
+    throw new Error("Empty requester workflow has no message text configured.");
+  }
+  if (!STATUSES.has(status)) {
+    throw new Error("Empty requester workflow has invalid status configuration.");
+  }
+
+  const senderAgent = await resolveWorkflowAgent(context.env, config);
+  const tickets = await fetchOpenTicketsForAutoMerge(context.env, maxPages);
+  const candidates = tickets.slice(0, maxCandidatesPerRun);
+  const repliedTickets = [];
+  const skippedTickets = [];
+
+  for (const candidate of candidates) {
+    const ticketDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(candidate.id)}`);
+    const normalizedTicket = normalizeHelpDeskTicketSummary(ticketDetail);
+    if (normalizedTicket.status !== "open" || normalizedTicket.parentTicket) {
+      continue;
+    }
+
+    const events = normalizeHelpDeskConversationEvents(ticketDetail);
+    const match = emptyRequesterTicketMatch(normalizedTicket, events, messageText);
+    if (!match.matched) {
+      skippedTickets.push({
+        ticketId: normalizedTicket.id,
+        shortId: normalizedTicket.short_id,
+        reason: match.reason,
+        messagePreview: match.messagePreview || "",
+      });
+      continue;
+    }
+
+    await replyAndSetTicketStatus(context.env, normalizedTicket, senderAgent, messageText, status);
+    repliedTickets.push({
+      ticketId: normalizedTicket.id,
+      shortId: normalizedTicket.short_id,
+      link: ticketLink(normalizedTicket),
+      requesterEmail: normalizedTicket.requesterEmail,
+      reason: match.reason,
+    });
+  }
+
+  const candidateLimitReached = tickets.length > candidates.length;
+  return {
+    details: `Auto-replied to and ${status} ${repliedTickets.length} empty requester ticket(s).${candidateLimitReached ? " More candidates will be checked on the next run." : ""}`,
+    metadata: {
+      type: workflow.type,
+      status,
+      senderAgentId: senderAgent.id,
+      senderName: senderAgent.name,
+      senderEmail: senderAgent.email,
+      candidates: candidates.length,
+      repliedTickets,
+      skippedTickets,
+      candidateLimitReached,
+    },
+  };
+}
+
 async function runAutoMergeWorkflow(context, auth, workflow) {
   const result = await autoMergeDuplicateOpenTickets(context, auth, workflow);
   const limitText = result.detailLimitReached || result.mergeLimitReached ? " More candidates will be checked on the next run." : "";
@@ -1233,6 +1372,8 @@ async function runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes,
       result = await runMarketingSpamWorkflow(context, workflow);
     } else if (workflow.type === AUTO_REPLY_WORKFLOW_TYPE) {
       result = await runAutoReplyWorkflow(context, workflow, openTickets);
+    } else if (workflow.type === AUTO_REPLY_EMPTY_REQUESTER_WORKFLOW_TYPE) {
+      result = await runEmptyRequesterReplyWorkflow(context, workflow);
     } else {
       result = await runAutoResolveWorkflow(context, workflow);
     }
