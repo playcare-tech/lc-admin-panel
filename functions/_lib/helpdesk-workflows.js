@@ -34,6 +34,19 @@ const BUILT_IN_WORKFLOWS = [
     },
   },
   {
+    id: "auto_merge_6h_rule",
+    title: "Auto-merge 6h rule",
+    type: "auto_merge_6h_rule",
+    enabled: 0,
+    config: {
+      intervalMinutes: 5,
+      windowHours: 6,
+      maxPages: 5,
+      maxMergesPerRun: 3,
+      maxGroupsPerRun: 3,
+    },
+  },
+  {
     id: "auto_resolve_marketing_spam",
     title: "Auto-resolve marketing spam",
     type: "auto_resolve_marketing_spam",
@@ -158,7 +171,7 @@ export async function listHelpdeskWorkflows(env) {
       `
         SELECT id, title, type, enabled, config_json, created_at, updated_at
         FROM helpdesk_workflows
-        ORDER BY type = 'auto_merge_duplicates' DESC, created_at ASC
+        ORDER BY CASE type WHEN 'auto_merge_duplicates' THEN 0 WHEN 'auto_merge_6h_rule' THEN 1 ELSE 2 END, created_at ASC
       `,
     ).all(),
     env.DB.prepare(
@@ -184,7 +197,7 @@ export async function listEnabledHelpdeskWorkflows(env) {
       SELECT id, title, type, enabled, config_json, created_at, updated_at
       FROM helpdesk_workflows
       WHERE enabled = 1
-      ORDER BY type = 'auto_merge_duplicates' DESC, created_at ASC
+      ORDER BY CASE type WHEN 'auto_merge_duplicates' THEN 0 WHEN 'auto_merge_6h_rule' THEN 1 ELSE 2 END, created_at ASC
     `,
   ).all();
 

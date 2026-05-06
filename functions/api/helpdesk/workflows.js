@@ -15,10 +15,12 @@ const STATUSES = new Set(["open", "pending", "onhold", "solved", "closed"]);
 const AUTO_RESOLVE_WORKFLOW_TYPE = "auto_resolve_requester";
 const AUTO_REPLY_WORKFLOW_TYPE = "auto_reply_new_requester_ticket";
 const AUTO_MERGE_WORKFLOW_TYPE = "auto_merge_duplicates";
+const AUTO_MERGE_6H_WORKFLOW_TYPE = "auto_merge_6h_rule";
 const AUTO_MARKETING_SPAM_WORKFLOW_TYPE = "auto_resolve_marketing_spam";
 const MANUAL_RUN_WORKFLOW_TYPES = new Set([
   AUTO_RESOLVE_WORKFLOW_TYPE,
   AUTO_MERGE_WORKFLOW_TYPE,
+  AUTO_MERGE_6H_WORKFLOW_TYPE,
   AUTO_MARKETING_SPAM_WORKFLOW_TYPE,
 ]);
 

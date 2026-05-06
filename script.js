@@ -2645,7 +2645,7 @@ function mergeLogSubtext(entry) {
   const metadata = entry.metadata || {};
   const requester = metadata.requesterEmail || "";
   const criteria = metadata.duplicateContentPreview ? "matching content" : metadata.createdDate || "";
-  const mode = metadata.mode === "automatic" ? "Auto" : "Manual";
+  const mode = metadata.mode === "automatic_6h_rule" ? "Auto 6h" : metadata.mode === "automatic" ? "Auto" : "Manual";
   return [mode, requester, criteria].filter(Boolean).join(" · ");
 }
 
@@ -2989,6 +2989,7 @@ function renderHelpdeskTickets() {
 
 function helpdeskWorkflowTypeLabel(type) {
   if (type === "auto_merge_duplicates") return "Auto-merge";
+  if (type === "auto_merge_6h_rule") return "Auto-merge 6h";
   if (type === "auto_resolve_requester") return "Auto-resolve";
   if (type === "auto_resolve_marketing_spam") return "Auto-spam";
   if (type === "auto_reply_new_requester_ticket") return "Auto-reply";
@@ -2999,6 +3000,9 @@ function helpdeskWorkflowConfigText(workflow) {
   const config = workflow.config || {};
   if (workflow.type === "auto_merge_duplicates") {
     return "Duplicate open tickets from the same requester with matching email content.";
+  }
+  if (workflow.type === "auto_merge_6h_rule") {
+    return `Open tickets from the same requester created within ${config.windowHours || 6}h of their latest ticket; oldest remains open.`;
   }
   if (workflow.type === "auto_resolve_requester") {
     const tags = (config.tagNames || []).length ? ` · tags: ${(config.tagNames || []).join(", ")}` : "";
@@ -3021,7 +3025,7 @@ function renderHelpdeskWorkflowRows() {
 
   return workflows
     .map((workflow) => {
-      const canRun = ["auto_merge_duplicates", "auto_resolve_requester", "auto_resolve_marketing_spam"].includes(workflow.type);
+      const canRun = ["auto_merge_duplicates", "auto_merge_6h_rule", "auto_resolve_requester", "auto_resolve_marketing_spam"].includes(workflow.type);
       const isRunning = state.helpdeskWorkflows.runningWorkflowId === workflow.id;
       return `
         <tr>

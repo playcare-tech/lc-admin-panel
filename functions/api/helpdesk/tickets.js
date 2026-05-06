@@ -36,11 +36,13 @@ const AUTO_MERGE_ACTION = "auto_merge_duplicate_tickets";
 const AUTO_RESOLVE_WORKFLOW_TYPE = "auto_resolve_requester";
 const AUTO_REPLY_WORKFLOW_TYPE = "auto_reply_new_requester_ticket";
 const AUTO_MERGE_WORKFLOW_TYPE = "auto_merge_duplicates";
+const AUTO_MERGE_6H_WORKFLOW_TYPE = "auto_merge_6h_rule";
 const AUTO_MARKETING_SPAM_WORKFLOW_TYPE = "auto_resolve_marketing_spam";
 const RUNNABLE_WORKFLOW_TYPES = new Set([
   AUTO_RESOLVE_WORKFLOW_TYPE,
   AUTO_REPLY_WORKFLOW_TYPE,
   AUTO_MERGE_WORKFLOW_TYPE,
+  AUTO_MERGE_6H_WORKFLOW_TYPE,
   AUTO_MARKETING_SPAM_WORKFLOW_TYPE,
 ]);
 const WORKFLOW_TYPE_ORDER = {
@@ -48,6 +50,7 @@ const WORKFLOW_TYPE_ORDER = {
   [AUTO_MARKETING_SPAM_WORKFLOW_TYPE]: 1,
   [AUTO_REPLY_WORKFLOW_TYPE]: 2,
   [AUTO_MERGE_WORKFLOW_TYPE]: 3,
+  [AUTO_MERGE_6H_WORKFLOW_TYPE]: 4,
 };
 const SORT_FIELDS = ["createdAt", "updatedAt", "lastMessageAt"];
 const PRIORITIES = new Set(["-10", "0", "10", "20"]);
@@ -165,6 +168,16 @@ function autoMergeLimits(workflow) {
     maxPages: safePositiveInteger(config.maxPages, AUTO_MERGE_MAX_PAGES, 10),
     maxDetailLookups: safePositiveInteger(config.maxDetailLookups, AUTO_MERGE_DETAIL_LOOKUP_LIMIT, 25),
     maxMergesPerRun: safePositiveInteger(config.maxMergesPerRun, AUTO_MERGE_MAX_MERGES_PER_RUN, 5),
+  };
+}
+
+function autoMergeSixHourLimits(workflow) {
+  const config = workflow?.config || {};
+  return {
+    maxPages: safePositiveInteger(config.maxPages, AUTO_MERGE_MAX_PAGES, 10),
+    maxGroupsPerRun: safePositiveInteger(config.maxGroupsPerRun, 3, 10),
+    maxMergesPerRun: safePositiveInteger(config.maxMergesPerRun, 3, 10),
+    windowHours: safePositiveInteger(config.windowHours, 6, 24),
   };
 }
 
@@ -370,7 +383,12 @@ function mergedTicketContent(ticket, agentDirectory) {
 
 function internalMergeNote(parentTicket, childTicket, childContent, mode = "automatic") {
   const childId = childTicket.short_id || childTicket.id;
-  const mergeLabel = mode === "manual" ? "Manual duplicate merge" : "Automatic duplicate merge";
+  const mergeLabel =
+    mode === "manual"
+      ? "Manual duplicate merge"
+      : mode === "automatic_6h_rule"
+        ? "Automatic 6h requester merge"
+        : "Automatic duplicate merge";
   return [
     `${mergeLabel} from ticket ${childId}.`,
     `Merged ticket link: ${ticketLink(childTicket)}`,
@@ -890,12 +908,194 @@ async function runAutoMergeWorkflow(context, auth, workflow) {
   };
 }
 
+function sixHourRequesterMergeGroups(tickets, limits) {
+  const groups = [];
+  const windowMs = limits.windowHours * 60 * 60 * 1000;
+  const requesterGroups = requesterTicketGroups(tickets);
+
+  for (const requesterGroup of requesterGroups) {
+    const sorted = [...requesterGroup.tickets]
+      .filter((ticket) => ticketCreatedTime(ticket) > 0)
+      .sort((left, right) => ticketCreatedTime(left) - ticketCreatedTime(right));
+    if (sorted.length < 2) continue;
+
+    const latestTicket = sorted.at(-1);
+    const latestCreatedMs = ticketCreatedTime(latestTicket);
+    const windowStartMs = latestCreatedMs - windowMs;
+    const windowTickets = sorted.filter((ticket) => {
+      const createdMs = ticketCreatedTime(ticket);
+      return createdMs >= windowStartMs && createdMs <= latestCreatedMs;
+    });
+
+    if (windowTickets.length < 2) continue;
+    groups.push({
+      requesterEmail: requesterGroup.requesterEmail,
+      windowStart: new Date(windowStartMs).toISOString(),
+      windowEnd: new Date(latestCreatedMs).toISOString(),
+      parent: windowTickets[0],
+      children: windowTickets.slice(1),
+    });
+  }
+
+  return groups;
+}
+
+async function autoMergeSixHourRequesterTickets(context, auth, workflow) {
+  const limits = autoMergeSixHourLimits(workflow);
+  const tickets = await fetchOpenTicketsForAutoMerge(context.env, limits.maxPages);
+  const groups = sixHourRequesterMergeGroups(tickets, limits);
+  const agentDirectory = new Map();
+  const merged = [];
+  const mergeErrors = [];
+  let mergeLimitReached = false;
+  let groupLimitReached = false;
+  let processedGroups = 0;
+
+  groupLoop:
+  for (const group of groups) {
+    if (processedGroups >= limits.maxGroupsPerRun) {
+      groupLimitReached = true;
+      break;
+    }
+    processedGroups += 1;
+
+    let parentDetail;
+    let parentTicket;
+    try {
+      parentDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(group.parent.id)}`);
+      parentTicket = normalizeHelpDeskTicketSummary(parentDetail, agentDirectory);
+      if (parentTicket.status !== "open" || parentTicket.parentTicket || requesterKey(parentTicket) !== group.requesterEmail) {
+        continue;
+      }
+    } catch (error) {
+      mergeErrors.push({
+        requesterEmail: group.requesterEmail,
+        parentTicketId: group.parent.id,
+        message: error.message || "Failed to load 6h auto-merge parent ticket.",
+      });
+      continue;
+    }
+
+    for (const child of group.children) {
+      if (merged.length >= limits.maxMergesPerRun) {
+        mergeLimitReached = true;
+        break groupLoop;
+      }
+
+      try {
+        const childDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(child.id)}`);
+        const childTicket = normalizeHelpDeskTicketSummary(childDetail, agentDirectory);
+        if (childTicket.status !== "open" || childTicket.parentTicket || requesterKey(childTicket) !== group.requesterEmail) {
+          continue;
+        }
+
+        const childContent = mergedTicketContent(childDetail, agentDirectory);
+        await mergeChildTicketPreservingTeam(context.env, parentDetail, parentTicket, childTicket, childContent, "automatic_6h_rule");
+
+        merged.push({
+          mode: "automatic_6h_rule",
+          requesterEmail: group.requesterEmail,
+          windowHours: limits.windowHours,
+          windowStart: group.windowStart,
+          windowEnd: group.windowEnd,
+          parentTicketId: parentTicket.id,
+          parentShortId: parentTicket.short_id || parentTicket.shortID,
+          parentSubject: parentTicket.subject || "",
+          parentLink: ticketLink(parentTicket),
+          childTicketId: childTicket.id,
+          childShortId: childTicket.short_id || childTicket.shortID,
+          childSubject: childTicket.subject || "",
+          childLink: ticketLink(childTicket),
+          mergedContentPreview: childContent.slice(0, 1000),
+        });
+      } catch (error) {
+        mergeErrors.push({
+          requesterEmail: group.requesterEmail,
+          parentTicketId: parentTicket?.id || group.parent.id,
+          childTicketId: child.id,
+          message: error.message || "Failed to auto-merge 6h HelpDesk ticket.",
+        });
+      }
+    }
+  }
+
+  if (merged.length) {
+    await writeLogSafely(context.env, {
+      actor: auth.session.user,
+      area: "helpdesk",
+      action: AUTO_MERGE_ACTION,
+      target: merged[0].parentTicketId,
+      status: "success",
+      details: `Auto-merged ${merged.length} HelpDesk ticket(s) by 6h requester rule.`,
+      metadata: {
+        mode: "automatic_6h_rule",
+        requesterEmail: merged[0].requesterEmail || "",
+        createdDate: `${merged[0].windowStart || ""} to ${merged[0].windowEnd || ""}`,
+        mergedTickets: merged,
+        scannedTickets: tickets.length,
+        candidateGroups: groups.length,
+        processedGroups,
+        mergeLimitReached,
+        groupLimitReached,
+        limits,
+      },
+    });
+  }
+
+  if (mergeErrors.length) {
+    await writeLogSafely(context.env, {
+      actor: auth.session.user,
+      area: "helpdesk",
+      action: AUTO_MERGE_ACTION,
+      target: mergeErrors[0].parentTicketId,
+      status: "error",
+      details: `Failed to auto-merge ${mergeErrors.length} HelpDesk ticket(s) by 6h requester rule.`,
+      metadata: {
+        mode: "automatic_6h_rule",
+        mergeErrors,
+      },
+    });
+  }
+
+  return {
+    merged,
+    mergeErrors,
+    scannedTickets: tickets.length,
+    candidateGroups: groups.length,
+    processedGroups,
+    mergeLimitReached,
+    groupLimitReached,
+    limits,
+  };
+}
+
+async function runAutoMergeSixHourWorkflow(context, auth, workflow) {
+  const result = await autoMergeSixHourRequesterTickets(context, auth, workflow);
+  const limitText = result.mergeLimitReached || result.groupLimitReached ? " More candidates will be checked on the next run." : "";
+  return {
+    details: `Auto-merged ${result.merged.length} ticket(s) by 6h requester rule after scanning ${result.scannedTickets} open ticket(s).${limitText}`,
+    metadata: {
+      type: workflow.type,
+      mergedTickets: result.merged,
+      mergeErrors: result.mergeErrors,
+      scannedTickets: result.scannedTickets,
+      candidateGroups: result.candidateGroups,
+      processedGroups: result.processedGroups,
+      mergeLimitReached: result.mergeLimitReached,
+      groupLimitReached: result.groupLimitReached,
+      limits: result.limits,
+    },
+  };
+}
+
 async function runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes, openTickets) {
   const startedAt = new Date().toISOString();
   try {
     let result;
     if (workflow.type === AUTO_MERGE_WORKFLOW_TYPE) {
       result = await runAutoMergeWorkflow(context, auth, workflow);
+    } else if (workflow.type === AUTO_MERGE_6H_WORKFLOW_TYPE) {
+      result = await runAutoMergeSixHourWorkflow(context, auth, workflow);
     } else if (workflow.type === AUTO_MARKETING_SPAM_WORKFLOW_TYPE) {
       result = await runMarketingSpamWorkflow(context, workflow);
     } else if (workflow.type === AUTO_REPLY_WORKFLOW_TYPE) {
