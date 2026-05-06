@@ -138,6 +138,39 @@ const MARKETING_SPAM_SEARCH_TERMS = [
   "domain authority",
   "lead generation",
 ];
+const MARKETING_SPAM_DEFAULT_EXCLUDED_REQUESTER_DOMAINS = [
+  "gmail.com",
+  "googlemail.com",
+  "outlook.com",
+  "hotmail.com",
+  "live.com",
+  "msn.com",
+  "yahoo.com",
+  "ymail.com",
+  "rocketmail.com",
+  "icloud.com",
+  "me.com",
+  "mac.com",
+  "aol.com",
+  "proton.me",
+  "protonmail.com",
+  "pm.me",
+  "gmx.com",
+  "gmx.net",
+  "mail.com",
+  "zoho.com",
+  "yandex.com",
+  "yandex.ru",
+  "mail.ru",
+  "rambler.ru",
+  "bk.ru",
+  "inbox.ru",
+  "list.ru",
+  "tutanota.com",
+  "tuta.io",
+  "fastmail.com",
+  "hey.com",
+];
 const SUPPORT_EXCLUSION_PHRASES = [
   "complaint",
   "withdrawal",
@@ -338,6 +371,12 @@ function requesterKey(ticket) {
   return `${ticket.requesterEmail || ticket.requester?.email || ""}`.trim().toLowerCase();
 }
 
+function requesterEmailDomain(ticket) {
+  const email = requesterKey(ticket);
+  const separatorIndex = email.lastIndexOf("@");
+  return separatorIndex >= 0 ? email.slice(separatorIndex + 1).trim().toLowerCase() : "";
+}
+
 function ticketCreatedTime(ticket) {
   const date = new Date(ticket.createdAt || 0);
   return Number.isNaN(date.getTime()) ? 0 : date.getTime();
@@ -386,9 +425,41 @@ function splitWorkflowPhrases(value) {
   return uniquePhrases(phrases.map((phrase) => `${phrase || ""}`.trim()).filter(Boolean));
 }
 
+function uniqueDomains(domains) {
+  const seen = new Set();
+  const unique = [];
+  for (const domain of domains || []) {
+    const value = `${domain || ""}`.trim().toLowerCase().replace(/^@+/, "");
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    unique.push(value);
+  }
+  return unique;
+}
+
+function splitWorkflowDomains(value) {
+  const domains = Array.isArray(value) ? value : `${value || ""}`.split(",");
+  return uniqueDomains(domains);
+}
+
 function marketingSpamConfiguredKeywords(config = {}) {
   const configuredKeywords = splitWorkflowPhrases(config.keywords || config.phrases || config.customPhrases);
   return configuredKeywords.length ? configuredKeywords : MARKETING_SPAM_DEFAULT_KEYWORDS;
+}
+
+function marketingSpamExcludedRequesterDomains(config = {}) {
+  const configuredDomains = splitWorkflowDomains(config.excludedRequesterDomains || config.excludeRequesterDomains);
+  return uniqueDomains([
+    ...MARKETING_SPAM_DEFAULT_EXCLUDED_REQUESTER_DOMAINS,
+    ...configuredDomains,
+  ]);
+}
+
+function isExcludedRequesterDomain(domain, excludedDomains) {
+  const normalized = `${domain || ""}`.trim().toLowerCase();
+  return Boolean(normalized && (excludedDomains || []).some((excludedDomain) => {
+    return normalized === excludedDomain || normalized.endsWith(`.${excludedDomain}`);
+  }));
 }
 
 function marketingSpamSearchTerms(config = {}) {
@@ -809,7 +880,16 @@ function ticketAlreadyHasAutoReply(events, messageText) {
   return events.some((event) => !event.is_private && normalizedMessageText(event.text || event.html || "") === expected);
 }
 
-function marketingSpamMatch(ticket, events, threshold, configuredKeywords = []) {
+function marketingSpamMatch(ticket, events, threshold, configuredKeywords = [], excludedRequesterDomains = []) {
+  const requesterDomain = requesterEmailDomain(ticket);
+  if (isExcludedRequesterDomain(requesterDomain, excludedRequesterDomains)) {
+    return {
+      matched: false,
+      reason: "excluded_requester_domain",
+      requesterDomain,
+    };
+  }
+
   const publicMessageEvents = events.filter((event) => eventPublicMessageText(event));
   const requesterMessageEvents = publicMessageEvents.filter((event) => isRequesterMessageAuthor(event));
   if (!requesterMessageEvents.length) {
@@ -881,6 +961,7 @@ async function runMarketingSpamWorkflow(context, workflow) {
     MARKETING_SPAM_MIN_CANDIDATES_PER_RUN,
   );
   const configuredKeywords = marketingSpamConfiguredKeywords(config);
+  const excludedRequesterDomains = marketingSpamExcludedRequesterDomains(config);
   const searchTerms = marketingSpamSearchTerms(config);
   const maxSearchTerms = Math.max(
     safePositiveInteger(config.maxSearchTerms, 8, 9),
@@ -907,7 +988,7 @@ async function runMarketingSpamWorkflow(context, workflow) {
     if (ticket.status !== "open" || ticket.parentTicket) continue;
 
     const events = normalizeHelpDeskConversationEvents(ticketDetail);
-    const match = marketingSpamMatch(ticket, events, scoreThreshold, configuredKeywords);
+    const match = marketingSpamMatch(ticket, events, scoreThreshold, configuredKeywords, excludedRequesterDomains);
     if (!match.matched) {
       skippedTickets.push({
         ticketId: ticket.id,
@@ -915,6 +996,7 @@ async function runMarketingSpamWorkflow(context, workflow) {
         reason: match.reason,
         score: match.score || 0,
         matchedPhrases: match.matchedPhrases || [],
+        requesterDomain: match.requesterDomain || requesterEmailDomain(ticket),
       });
       continue;
     }
@@ -939,6 +1021,7 @@ async function runMarketingSpamWorkflow(context, workflow) {
       tagIds,
       tagNames,
       keywords: configuredKeywords,
+      excludedRequesterDomains,
       scoreThreshold,
       scannedTickets: candidates.length,
       changedTickets,
