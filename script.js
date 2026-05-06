@@ -2380,7 +2380,10 @@ function helpdeskAnalyticsExportFilename(extension) {
 }
 
 function downloadTextFile(filename, content, type) {
-  const blob = new Blob([content], { type });
+  downloadBlobFile(filename, new Blob([content], { type }));
+}
+
+function downloadBlobFile(filename, blob) {
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
   link.download = filename;
@@ -2748,6 +2751,13 @@ function renderHelpdeskTicketsFilterBar() {
         <button id="helpdeskTicketsReloadBtn" class="btn btn-outline-secondary" type="button">
           ${state.helpdeskTickets.loading ? "Loading..." : "Reload"}
         </button>
+      </div>
+      <div class="tickets-filter-group">
+        <span>CSV export</span>
+        <div class="tickets-export-actions">
+          <button class="btn btn-outline-secondary" type="button" data-helpdesk-ticket-export="500">Last 500</button>
+          <button class="btn btn-outline-secondary" type="button" data-helpdesk-ticket-export="1000">Last 1000</button>
+        </div>
       </div>
     </div>
   `;
@@ -4642,8 +4652,8 @@ function helpdeskTicketsCurrentCursor() {
   return state.helpdeskTickets.page.cursorStack.at(-1) || null;
 }
 
-function helpdeskTicketsQueryParams({ includeCounts = true } = {}) {
-  const { filters } = state.helpdeskTickets;
+function helpdeskTicketsQueryParams({ includeCounts = true, includeCursor = true, filtersOverride = null } = {}) {
+  const filters = filtersOverride || state.helpdeskTickets.filters;
   const params = new URLSearchParams({
     pageSize: String(filters.pageSize || 40),
     status: filters.silo === "tickets" ? filters.status || "open" : "all",
@@ -4655,7 +4665,7 @@ function helpdeskTicketsQueryParams({ includeCounts = true } = {}) {
     workflows: "0",
     tzOffset: String(new Date().getTimezoneOffset()),
   });
-  const cursor = helpdeskTicketsCurrentCursor();
+  const cursor = includeCursor ? helpdeskTicketsCurrentCursor() : null;
   if (cursor) {
     params.set("cursorDirection", cursor.direction);
     params.set("cursorValue", cursor.value);
@@ -4674,6 +4684,70 @@ function helpdeskTicketsQueryParams({ includeCounts = true } = {}) {
     if (filters[key]) params.set(key, filters[key]);
   });
   return params;
+}
+
+function helpdeskTicketFiltersFromDom() {
+  const current = state.helpdeskTickets.filters;
+  const nextSortBy = document.getElementById("helpdeskTicketSortBy")?.value || current.sortBy || "lastMessageAt";
+  return {
+    ...current,
+    createdDateFrom: document.getElementById("helpdeskTicketCreatedFrom")?.value || "",
+    createdDateTo: document.getElementById("helpdeskTicketCreatedTo")?.value || "",
+    updatedDateFrom: document.getElementById("helpdeskTicketUpdatedFrom")?.value || "",
+    updatedDateTo: document.getElementById("helpdeskTicketUpdatedTo")?.value || "",
+    lastMessageFrom: document.getElementById("helpdeskTicketLastMessageFrom")?.value || "",
+    lastMessageTo: document.getElementById("helpdeskTicketLastMessageTo")?.value || "",
+    priority: document.getElementById("helpdeskTicketPriority")?.value || "",
+    tagId: document.getElementById("helpdeskTicketTag")?.value || "",
+    sortBy: nextSortBy,
+    order: current.sortBy !== nextSortBy ? defaultHelpdeskTicketSortOrder(nextSortBy) : current.order,
+  };
+}
+
+function contentDispositionFilename(value, fallback) {
+  const match = `${value || ""}`.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i);
+  return match ? decodeURIComponent(match[1].replaceAll('"', "")) : fallback;
+}
+
+async function downloadHelpdeskTicketsCsv(limit) {
+  const safeLimit = Number(limit) === 1000 ? 1000 : 500;
+  const filters = {
+    ...helpdeskTicketFiltersFromDom(),
+    sortBy: "createdAt",
+    order: "desc",
+  };
+  const params = helpdeskTicketsQueryParams({
+    includeCounts: false,
+    includeCursor: false,
+    filtersOverride: filters,
+  });
+  params.set("export", "first_messages_csv");
+  params.set("limit", String(safeLimit));
+
+  setMessage(statusMessage, `Preparing HelpDesk CSV for last ${safeLimit} ticket(s)...`);
+  const response = await fetch(`/api/helpdesk/tickets?${params.toString()}`);
+  const nextCsrfToken = response.headers.get("X-CSRF-Token");
+  if (nextCsrfToken) {
+    state.csrfToken = nextCsrfToken;
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    let message = `CSV export failed with ${response.status}.`;
+    try {
+      message = JSON.parse(text).error || message;
+    } catch (_error) {
+      message = text || message;
+    }
+    throw new Error(message);
+  }
+
+  const blob = await response.blob();
+  const filename = contentDispositionFilename(
+    response.headers.get("Content-Disposition"),
+    `helpdesk-ticket-first-messages-last-${safeLimit}.csv`,
+  );
+  downloadBlobFile(filename, blob);
+  setMessage(statusMessage, `Downloaded HelpDesk CSV for last ${safeLimit} ticket(s).`, "success");
 }
 
 async function fetchHelpdeskTickets({ silent = false } = {}) {
@@ -4737,20 +4811,7 @@ function selectHelpdeskTicketFolder(silo) {
 }
 
 function applyHelpdeskTicketFiltersFromDom() {
-  const filters = state.helpdeskTickets.filters;
-  filters.createdDateFrom = document.getElementById("helpdeskTicketCreatedFrom")?.value || "";
-  filters.createdDateTo = document.getElementById("helpdeskTicketCreatedTo")?.value || "";
-  filters.updatedDateFrom = document.getElementById("helpdeskTicketUpdatedFrom")?.value || "";
-  filters.updatedDateTo = document.getElementById("helpdeskTicketUpdatedTo")?.value || "";
-  filters.lastMessageFrom = document.getElementById("helpdeskTicketLastMessageFrom")?.value || "";
-  filters.lastMessageTo = document.getElementById("helpdeskTicketLastMessageTo")?.value || "";
-  filters.priority = document.getElementById("helpdeskTicketPriority")?.value || "";
-  filters.tagId = document.getElementById("helpdeskTicketTag")?.value || "";
-  const nextSortBy = document.getElementById("helpdeskTicketSortBy")?.value || "lastMessageAt";
-  if (filters.sortBy !== nextSortBy) {
-    filters.sortBy = nextSortBy;
-    filters.order = defaultHelpdeskTicketSortOrder(nextSortBy);
-  }
+  state.helpdeskTickets.filters = helpdeskTicketFiltersFromDom();
   resetHelpdeskTicketPagination();
   fetchHelpdeskTickets();
 }
@@ -5679,6 +5740,15 @@ function bindAppEvents() {
   });
   bindClick("helpdeskTicketsResetFiltersBtn", () => {
     resetHelpdeskTicketFilters();
+  });
+  document.querySelectorAll("[data-helpdesk-ticket-export]").forEach((button) => {
+    button.onclick = async () => {
+      try {
+        await downloadHelpdeskTicketsCsv(Number(button.dataset.helpdeskTicketExport));
+      } catch (error) {
+        setMessage(statusMessage, error.message, "error");
+      }
+    };
   });
   document.querySelectorAll("[data-helpdesk-ticket-page]").forEach((button) => {
     button.onclick = () => goHelpdeskTicketPage(button.dataset.helpdeskTicketPage);

@@ -28,6 +28,8 @@ const AUTO_MERGE_MAX_PAGES = 5;
 const AUTO_MERGE_DETAIL_LOOKUP_LIMIT = 12;
 const AUTO_MERGE_MAX_MERGES_PER_RUN = 2;
 const AUTO_RESOLVE_PAGE_SIZE = 100;
+const TICKET_EXPORT_PAGE_SIZE = 100;
+const TICKET_EXPORT_LIMITS = new Set([500, 1000]);
 const AUTO_RESOLVE_SOURCE_STATUSES = ["open", "pending", "onhold", "solved"];
 const AUTO_RESOLVE_MAX_CHANGES_PER_RUN = 20;
 const WORKFLOW_AUTOMATIC_RUN_INTERVAL_MINUTES = 5;
@@ -185,6 +187,11 @@ function safeSilo(value) {
 
 function safePriority(value) {
   return PRIORITIES.has(`${value}`) ? `${value}` : "";
+}
+
+function safeTicketExportLimit(value) {
+  const parsed = Number.parseInt(value || "", 10);
+  return TICKET_EXPORT_LIMITS.has(parsed) ? parsed : 500;
 }
 
 function safePositiveInteger(value, fallback, max) {
@@ -1903,6 +1910,90 @@ async function listTickets(context, auth) {
   });
 }
 
+function csvCell(value) {
+  const text = `${value ?? ""}`.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const safeText = /^[=+\-@]/.test(text.trimStart()) ? `'${text}` : text;
+  return `"${safeText.replaceAll('"', '""')}"`;
+}
+
+function csvResponse(filename, rows) {
+  const csv = rows.map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
+  const headers = new Headers({
+    "Content-Type": "text/csv; charset=utf-8",
+    "Content-Disposition": `attachment; filename="${filename}"`,
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+    "X-Frame-Options": "DENY",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+  });
+  return new Response(csv, { status: 200, headers });
+}
+
+function firstRequesterMessage(ticket) {
+  const events = normalizeHelpDeskConversationEvents(ticket);
+  const firstMessage = events.find((event) => isRequesterMessageAuthor(event) && eventPublicMessageText(event));
+  return firstMessage ? eventPublicMessageText(firstMessage) : "";
+}
+
+async function ticketExportRows(env, { status, silo, filters, limit }) {
+  const rows = [["ticket_id", "short_id", "created_at", "requester_email", "first_user_message"]];
+  const requestStatus = status === "all" ? "all" : status;
+  let cursor = null;
+  let exported = 0;
+
+  while (exported < limit) {
+    const pageSize = Math.min(TICKET_EXPORT_PAGE_SIZE, limit - exported);
+    const batch = await fetchTicketBatch(env, {
+      status: requestStatus,
+      silo,
+      pageSize,
+      sortBy: "createdAt",
+      order: "desc",
+      filters,
+      cursor,
+      eventsScope: "",
+    });
+    const tickets = batch.tickets.map((ticket) => normalizeHelpDeskTicketSummary(ticket));
+
+    batch.tickets.forEach((rawTicket, index) => {
+      const ticket = tickets[index];
+      if (!ticket?.id) return;
+      rows.push([
+        ticket.id,
+        ticket.short_id || ticket.shortID || "",
+        ticket.createdAt || "",
+        ticket.requesterEmail || "",
+        firstRequesterMessage(rawTicket),
+      ]);
+      exported += 1;
+    });
+
+    const lastTicket = tickets.at(-1);
+    if (!lastTicket || tickets.length < pageSize) break;
+    cursor = {
+      direction: "next",
+      value: lastTicket.createdAt,
+      id: lastTicket.id,
+    };
+  }
+
+  return rows;
+}
+
+async function exportTicketsCsv(context) {
+  const url = new URL(context.request.url);
+  const statusParam = url.searchParams.get("status") || "all";
+  const statuses = requestedStatuses(statusParam);
+  const status = statuses.length === 1 ? statuses[0] : "all";
+  const silo = safeSilo(url.searchParams.get("silo"));
+  const filters = normalizeTicketFilters(url);
+  const limit = safeTicketExportLimit(url.searchParams.get("limit"));
+  const rows = await ticketExportRows(context.env, { status, silo, filters, limit });
+  const date = new Date().toISOString().slice(0, 10);
+  return csvResponse(`helpdesk-ticket-first-messages-last-${limit}-${date}.csv`, rows);
+}
+
 async function mergeTickets(context, auth) {
   const body = await readJson(context.request);
   const parentTicketId = `${body.parentTicketId || ""}`.trim();
@@ -1977,6 +2068,10 @@ export async function onRequest(context) {
 
   try {
     if (context.request.method === "GET") {
+      const url = new URL(context.request.url);
+      if (url.searchParams.get("export") === "first_messages_csv") {
+        return await exportTicketsCsv(context);
+      }
       return await listTickets(context, auth);
     }
 
