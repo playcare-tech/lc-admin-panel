@@ -32,6 +32,8 @@ const AUTO_RESOLVE_SOURCE_STATUSES = ["open", "pending", "onhold", "solved"];
 const AUTO_RESOLVE_MAX_CHANGES_PER_RUN = 20;
 const WORKFLOW_AUTOMATIC_RUN_INTERVAL_MINUTES = 5;
 const MARKETING_SPAM_TAG_NAME = "wf_spam";
+const MARKETING_SPAM_RECENT_OPEN_PAGE_SIZE = 40;
+const MARKETING_SPAM_RECENT_OPEN_MAX_PAGES = 3;
 const AUTO_MERGE_ACTION = "auto_merge_duplicate_tickets";
 const AUTO_RESOLVE_WORKFLOW_TYPE = "auto_resolve_requester";
 const AUTO_REPLY_WORKFLOW_TYPE = "auto_reply_new_requester_ticket";
@@ -625,7 +627,35 @@ async function fetchMarketingSpamCandidates(env, options = {}) {
     : MARKETING_SPAM_SEARCH_TERMS;
   const maxSearchTerms = safePositiveInteger(options.maxSearchTerms, 8, Math.max(searchTerms.length, MARKETING_SPAM_SEARCH_TERMS.length));
   const pageSize = safePositiveInteger(options.pageSize, 50, 100);
+  const recentOpenPages = safePositiveInteger(options.recentOpenPages, 1, MARKETING_SPAM_RECENT_OPEN_MAX_PAGES);
+  const recentPageSize = safePositiveInteger(options.recentPageSize, MARKETING_SPAM_RECENT_OPEN_PAGE_SIZE, 100);
   const byId = new Map();
+
+  let cursor = null;
+  for (let page = 0; page < recentOpenPages; page += 1) {
+    const batch = await fetchTicketBatch(env, {
+      status: "open",
+      silo: "tickets",
+      pageSize: recentPageSize,
+      sortBy: "createdAt",
+      order: "desc",
+      filters: {},
+      cursor,
+    });
+    const tickets = batch.tickets.map((ticket) => normalizeHelpDeskTicketSummary(ticket));
+    for (const ticket of tickets) {
+      if (ticket.id && ticket.status === "open" && ticket.silo === "tickets" && !ticket.parentTicket && !byId.has(ticket.id)) {
+        byId.set(ticket.id, ticket);
+      }
+    }
+    const lastTicket = tickets.at(-1);
+    if (!lastTicket || tickets.length < recentPageSize) break;
+    cursor = {
+      direction: "next",
+      value: lastTicket.createdAt,
+      id: lastTicket.id,
+    };
+  }
 
   for (const term of searchTerms.slice(0, maxSearchTerms)) {
     const params = new URLSearchParams({
@@ -791,7 +821,8 @@ function marketingSpamMatch(ticket, events, threshold, configuredKeywords = []) 
     };
   }
 
-  const subjectAndMessage = `${ticket.subject || ""} ${eventPublicMessageText(firstPublicMessage)}`;
+  const requesterMessage = eventPublicMessageText(firstPublicMessage);
+  const subjectAndMessage = `${ticket.subject || ""} ${requesterMessage}`;
   const supportExclusions = textMatchingPhrases(subjectAndMessage, SUPPORT_EXCLUSION_PHRASES);
   if (supportExclusions.length) {
     return {
@@ -802,19 +833,21 @@ function marketingSpamMatch(ticket, events, threshold, configuredKeywords = []) 
   }
 
   const seenPhrases = new Set();
+  const custom = uniqueMatchedPhrases(requesterMessage, configuredKeywords, seenPhrases);
   const high = uniqueMatchedPhrases(subjectAndMessage, MARKETING_HIGH_CONFIDENCE_PHRASES, seenPhrases);
   const medium = uniqueMatchedPhrases(subjectAndMessage, MARKETING_MEDIUM_CONFIDENCE_PHRASES, seenPhrases);
-  const custom = uniqueMatchedPhrases(subjectAndMessage, configuredKeywords, seenPhrases);
   const low = uniqueMatchedPhrases(subjectAndMessage, MARKETING_LOW_CONFIDENCE_PHRASES, seenPhrases);
-  const score = high.length * 3 + medium.length * 2 + custom.length * 2 + low.length;
-  const matchedPhrases = [...high, ...medium, ...custom, ...low];
+  const score = custom.length * 2 + high.length * 3 + medium.length * 2 + low.length;
+  const matchedPhrases = [...custom, ...high, ...medium, ...low];
+  const keywordMatched = custom.length > 0;
+  const thresholdMatched = score >= threshold;
 
   return {
-    matched: score >= threshold,
-    reason: score >= threshold ? "matched" : "score_below_threshold",
+    matched: keywordMatched || thresholdMatched,
+    reason: keywordMatched ? "keyword_matched" : thresholdMatched ? "matched" : "score_below_threshold",
     score,
     matchedPhrases,
-    messagePreview: eventPublicMessageText(firstPublicMessage).slice(0, 500),
+    messagePreview: requesterMessage.slice(0, 500),
   };
 }
 
@@ -835,6 +868,8 @@ async function runMarketingSpamWorkflow(context, workflow) {
   const tickets = await fetchMarketingSpamCandidates(context.env, {
     maxSearchTerms,
     pageSize: config.searchPageSize,
+    recentOpenPages: config.recentOpenPages,
+    recentPageSize: config.recentPageSize,
     searchTerms,
   });
   const candidates = tickets.slice(0, maxCandidatesPerRun);
