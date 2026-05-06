@@ -70,6 +70,8 @@ const MARKETING_HIGH_CONFIDENCE_PHRASES = [
   "backlink",
   "link building",
   "guest post",
+  "high-quality websites",
+  "boost your rankings",
   "sponsored post",
   "advertising opportunity",
   "increase traffic",
@@ -80,6 +82,7 @@ const MARKETING_HIGH_CONFIDENCE_PHRASES = [
 ];
 const MARKETING_MEDIUM_CONFIDENCE_PHRASES = [
   "seo",
+  "partnership",
   "digital marketing",
   "marketing services",
   "content writing",
@@ -87,10 +90,14 @@ const MARKETING_MEDIUM_CONFIDENCE_PHRASES = [
   "lead generation",
   "write for you",
   "partnership opportunity",
+  "streamer",
+  "affiliates",
   "web design services",
   "app development services",
 ];
 const MARKETING_LOW_CONFIDENCE_PHRASES = [
+  "link",
+  "opportunities",
   "i found your website",
   "your website",
   "collaboration",
@@ -98,11 +105,29 @@ const MARKETING_LOW_CONFIDENCE_PHRASES = [
   "promote your",
   "high quality content",
 ];
+const MARKETING_SPAM_DEFAULT_KEYWORDS = [
+  "partnership",
+  "SEO",
+  "link",
+  "high-quality websites",
+  "Boost Your Rankings",
+  "guest post",
+  "opportunities",
+  "streamer",
+  "affiliates",
+];
 const MARKETING_SPAM_SEARCH_TERMS = [
   "seo",
+  "guest post",
+  "partnership",
+  "link",
+  "high-quality websites",
+  "boost your rankings",
+  "streamer",
+  "affiliates",
   "backlink",
   "link building",
-  "guest post",
+  "opportunities",
   "sponsored post",
   "advertising",
   "marketing services",
@@ -327,6 +352,49 @@ function textIncludesPhrase(text, phrase) {
 
 function textMatchingPhrases(text, phrases) {
   return phrases.filter((phrase) => textIncludesPhrase(text, phrase));
+}
+
+function uniquePhrases(phrases) {
+  const seen = new Set();
+  const unique = [];
+  for (const phrase of phrases || []) {
+    const value = `${phrase || ""}`.trim();
+    const key = normalizedComparableMessage(value);
+    if (!value || !key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(value);
+  }
+  return unique;
+}
+
+function uniqueMatchedPhrases(text, phrases, seen = new Set()) {
+  const matches = [];
+  for (const phrase of textMatchingPhrases(text, uniquePhrases(phrases))) {
+    const key = normalizedComparableMessage(phrase);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    matches.push(phrase);
+  }
+  return matches;
+}
+
+function splitWorkflowPhrases(value) {
+  const phrases = Array.isArray(value) ? value : `${value || ""}`.split(",");
+  return uniquePhrases(phrases.map((phrase) => `${phrase || ""}`.trim()).filter(Boolean));
+}
+
+function marketingSpamConfiguredKeywords(config = {}) {
+  const configuredKeywords = splitWorkflowPhrases(config.keywords || config.phrases || config.customPhrases);
+  return configuredKeywords.length ? configuredKeywords : MARKETING_SPAM_DEFAULT_KEYWORDS;
+}
+
+function marketingSpamSearchTerms(config = {}) {
+  const configuredTerms = splitWorkflowPhrases(config.searchTerms);
+  const configuredKeywords = marketingSpamConfiguredKeywords(config);
+  return uniquePhrases([
+    ...configuredKeywords,
+    ...(configuredTerms.length ? configuredTerms : MARKETING_SPAM_SEARCH_TERMS),
+  ]);
 }
 
 function normalizedComparableMessage(value) {
@@ -555,7 +623,7 @@ async function fetchMarketingSpamCandidates(env, options = {}) {
   const searchTerms = Array.isArray(options.searchTerms) && options.searchTerms.length
     ? options.searchTerms
     : MARKETING_SPAM_SEARCH_TERMS;
-  const maxSearchTerms = safePositiveInteger(options.maxSearchTerms, 8, MARKETING_SPAM_SEARCH_TERMS.length);
+  const maxSearchTerms = safePositiveInteger(options.maxSearchTerms, 8, Math.max(searchTerms.length, MARKETING_SPAM_SEARCH_TERMS.length));
   const pageSize = safePositiveInteger(options.pageSize, 50, 100);
   const byId = new Map();
 
@@ -703,7 +771,7 @@ function ticketAlreadyHasAutoReply(events, messageText) {
   return events.some((event) => !event.is_private && normalizedMessageText(event.text || event.html || "") === expected);
 }
 
-function marketingSpamMatch(ticket, events, threshold) {
+function marketingSpamMatch(ticket, events, threshold, configuredKeywords = []) {
   const publicMessageEvents = events.filter((event) => eventPublicMessageText(event));
   const firstPublicMessage = publicMessageEvents[0];
   if (!firstPublicMessage || !isRequesterMessageAuthor(firstPublicMessage)) {
@@ -733,11 +801,13 @@ function marketingSpamMatch(ticket, events, threshold) {
     };
   }
 
-  const high = textMatchingPhrases(subjectAndMessage, MARKETING_HIGH_CONFIDENCE_PHRASES);
-  const medium = textMatchingPhrases(subjectAndMessage, MARKETING_MEDIUM_CONFIDENCE_PHRASES);
-  const low = textMatchingPhrases(subjectAndMessage, MARKETING_LOW_CONFIDENCE_PHRASES);
-  const score = high.length * 3 + medium.length * 2 + low.length;
-  const matchedPhrases = [...high, ...medium, ...low];
+  const seenPhrases = new Set();
+  const high = uniqueMatchedPhrases(subjectAndMessage, MARKETING_HIGH_CONFIDENCE_PHRASES, seenPhrases);
+  const medium = uniqueMatchedPhrases(subjectAndMessage, MARKETING_MEDIUM_CONFIDENCE_PHRASES, seenPhrases);
+  const custom = uniqueMatchedPhrases(subjectAndMessage, configuredKeywords, seenPhrases);
+  const low = uniqueMatchedPhrases(subjectAndMessage, MARKETING_LOW_CONFIDENCE_PHRASES, seenPhrases);
+  const score = high.length * 3 + medium.length * 2 + custom.length * 2 + low.length;
+  const matchedPhrases = [...high, ...medium, ...custom, ...low];
 
   return {
     matched: score >= threshold,
@@ -756,10 +826,16 @@ async function runMarketingSpamWorkflow(context, workflow) {
   const tagIds = configuredTagIds.length ? configuredTagIds : await resolveHelpdeskTagIds(context.env, tagNames);
   const scoreThreshold = safePositiveInteger(config.scoreThreshold, 4, 20);
   const maxCandidatesPerRun = safePositiveInteger(config.maxCandidatesPerRun, 12, 25);
+  const configuredKeywords = marketingSpamConfiguredKeywords(config);
+  const searchTerms = marketingSpamSearchTerms(config);
+  const maxSearchTerms = Math.max(
+    safePositiveInteger(config.maxSearchTerms, 8, 25),
+    configuredKeywords.length ? Math.min(configuredKeywords.length, 12) : 0,
+  );
   const tickets = await fetchMarketingSpamCandidates(context.env, {
-    maxSearchTerms: config.maxSearchTerms,
+    maxSearchTerms,
     pageSize: config.searchPageSize,
-    searchTerms: config.searchTerms,
+    searchTerms,
   });
   const candidates = tickets.slice(0, maxCandidatesPerRun);
   const changedTickets = [];
@@ -775,7 +851,7 @@ async function runMarketingSpamWorkflow(context, workflow) {
     if (ticket.status !== "open" || ticket.parentTicket) continue;
 
     const events = normalizeHelpDeskConversationEvents(ticketDetail);
-    const match = marketingSpamMatch(ticket, events, scoreThreshold);
+    const match = marketingSpamMatch(ticket, events, scoreThreshold, configuredKeywords);
     if (!match.matched) {
       skippedTickets.push({
         ticketId: ticket.id,
@@ -806,6 +882,7 @@ async function runMarketingSpamWorkflow(context, workflow) {
       status,
       tagIds,
       tagNames,
+      keywords: configuredKeywords,
       scoreThreshold,
       scannedTickets: candidates.length,
       changedTickets,

@@ -9,6 +9,7 @@ import {
   listHelpdeskWorkflowRuns,
   listHelpdeskWorkflows,
   setHelpdeskWorkflowEnabled,
+  updateHelpdeskWorkflowConfig,
 } from "../../_lib/helpdesk-workflows.js";
 
 const STATUSES = new Set(["open", "pending", "onhold", "solved", "closed"]);
@@ -27,6 +28,20 @@ const MANUAL_RUN_WORKFLOW_TYPES = new Set([
 function splitTags(value) {
   const tags = Array.isArray(value) ? value : `${value || ""}`.split(",");
   return [...new Set(tags.map((tag) => `${tag || ""}`.trim()).filter(Boolean))];
+}
+
+function splitPhrases(value) {
+  const phrases = Array.isArray(value) ? value : `${value || ""}`.split(",");
+  const seen = new Set();
+  const unique = [];
+  for (const phrase of phrases) {
+    const normalized = `${phrase || ""}`.trim().replace(/\s+/g, " ");
+    const key = normalized.toLowerCase();
+    if (!normalized || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(normalized);
+  }
+  return unique.slice(0, 80);
 }
 
 function normalizeEmail(value) {
@@ -195,6 +210,41 @@ async function updateWorkflow(context, auth) {
   const body = await readJson(context.request);
   const workflowId = `${body.id || body.workflowId || ""}`.trim();
   if (!workflowId) return errorResponse("Workflow ID is required.", 400);
+
+  const action = `${body.action || ""}`.trim().toLowerCase();
+  if (action === "update_marketing_spam_keywords") {
+    const workflows = await listHelpdeskWorkflows(context.env);
+    const workflow = workflows.find((item) => item.id === workflowId);
+    if (!workflow) return errorResponse("Workflow not found.", 404);
+    if (workflow.type !== AUTO_MARKETING_SPAM_WORKFLOW_TYPE) {
+      return errorResponse("Keyword editing is only available for the marketing spam workflow.", 400);
+    }
+
+    const keywords = splitPhrases(body.keywords || body.phrases || body.config?.keywords);
+    await updateHelpdeskWorkflowConfig(context.env, workflowId, {
+      ...(workflow.config || {}),
+      keywords,
+    });
+    await writeLogSafely(context.env, {
+      actor: auth.session.user,
+      area: "helpdesk",
+      action: "update_workflow",
+      target: workflowId,
+      status: "success",
+      details: "Updated HelpDesk marketing spam workflow keywords.",
+      metadata: {
+        workflowId,
+        type: workflow.type,
+        keywords,
+      },
+    });
+
+    return json({
+      ok: true,
+      workflows: await listHelpdeskWorkflows(context.env),
+    });
+  }
+
   if (!Object.prototype.hasOwnProperty.call(body, "enabled")) {
     return errorResponse("Workflow enabled state is required.", 400);
   }

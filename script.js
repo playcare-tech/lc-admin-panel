@@ -149,6 +149,17 @@ const HELPDESK_AUTO_REPLY_DEFAULT_MESSAGE = [
   "",
   "Customer Support Team",
 ].join("\n");
+const HELPDESK_MARKETING_SPAM_DEFAULT_KEYWORDS = [
+  "partnership",
+  "SEO",
+  "link",
+  "high-quality websites",
+  "Boost Your Rankings",
+  "guest post",
+  "opportunities",
+  "streamer",
+  "affiliates",
+];
 
 function defaultHelpdeskWorkflowForm() {
   return {
@@ -185,6 +196,7 @@ const state = {
     runs: [],
     runsFor: "",
     runningWorkflowId: "",
+    savingWorkflowId: "",
     form: defaultHelpdeskWorkflowForm(),
   },
   helpdeskTickets: {
@@ -3012,9 +3024,17 @@ function helpdeskWorkflowConfigText(workflow) {
     return `sender: ${config.senderName || config.senderAgentId || "agent"} · first author: ${config.firstAuthorType || "client"}`;
   }
   if (workflow.type === "auto_resolve_marketing_spam") {
-    return `Marketing/SEO solicitations -> ${config.status || "solved"} · tags: ${(config.tagNames || ["wf_spam"]).join(", ")}`;
+    const keywordText = workflowMarketingSpamKeywordsValue(workflow);
+    const keywords = keywordText ? ` · keywords: ${keywordText.split(",").map((item) => item.trim()).filter(Boolean).slice(0, 6).join(", ")}` : "";
+    return `Marketing/SEO solicitations -> ${config.status || "solved"} · tags: ${(config.tagNames || ["wf_spam"]).join(", ")}${keywords}`;
   }
   return "";
+}
+
+function workflowMarketingSpamKeywordsValue(workflow) {
+  const keywords = workflow?.config?.keywords;
+  const source = Array.isArray(keywords) && keywords.length ? keywords : HELPDESK_MARKETING_SPAM_DEFAULT_KEYWORDS;
+  return source.join(", ");
 }
 
 function renderHelpdeskWorkflowRows() {
@@ -3027,12 +3047,37 @@ function renderHelpdeskWorkflowRows() {
     .map((workflow) => {
       const canRun = ["auto_merge_duplicates", "auto_merge_6h_rule", "auto_resolve_requester", "auto_resolve_marketing_spam"].includes(workflow.type);
       const isRunning = state.helpdeskWorkflows.runningWorkflowId === workflow.id;
+      const isSaving = state.helpdeskWorkflows.savingWorkflowId === workflow.id;
+      const isMarketingSpam = workflow.type === "auto_resolve_marketing_spam";
       return `
         <tr>
           <td>
             <div class="workflow-name-cell">
               <strong>${escapeHtml(workflow.title)}</strong>
               <span>${escapeHtml(helpdeskWorkflowConfigText(workflow))}</span>
+              ${
+                isMarketingSpam
+                  ? `<div class="workflow-inline-config">
+                      <label for="workflowSpamKeywords-${escapeHtml(workflow.id)}">Keywords/phrases</label>
+                      <div class="workflow-inline-config-row">
+                        <input
+                          id="workflowSpamKeywords-${escapeHtml(workflow.id)}"
+                          class="form-control"
+                          type="text"
+                          value="${escapeHtml(workflowMarketingSpamKeywordsValue(workflow))}"
+                          placeholder="partnership, SEO, guest post"
+                          data-helpdesk-spam-keywords="${escapeHtml(workflow.id)}"
+                        />
+                        <button
+                          class="btn btn-sm btn-primary"
+                          type="button"
+                          data-helpdesk-spam-keywords-save="${escapeHtml(workflow.id)}"
+                          ${isSaving ? "disabled" : ""}
+                        >${isSaving ? "Saving..." : "Save"}</button>
+                      </div>
+                    </div>`
+                  : ""
+              }
             </div>
           </td>
           <td><span class="chip">${escapeHtml(helpdeskWorkflowTypeLabel(workflow.type))}</span></td>
@@ -4529,6 +4574,38 @@ async function runHelpdeskWorkflow(workflowId) {
   }
 }
 
+function helpdeskSpamKeywordsInput(workflowId) {
+  return Array.from(document.querySelectorAll("[data-helpdesk-spam-keywords]")).find((input) => {
+    return input.dataset.helpdeskSpamKeywords === workflowId;
+  });
+}
+
+async function saveHelpdeskSpamWorkflowKeywords(workflowId) {
+  const input = helpdeskSpamKeywordsInput(workflowId);
+  const keywords = input ? input.value : "";
+  state.helpdeskWorkflows.savingWorkflowId = workflowId;
+  setMessage(statusMessage, "Saving workflow keywords...");
+  if (state.section === "helpdesk-workflows") renderApp();
+
+  try {
+    const response = await api("/api/helpdesk/workflows", {
+      method: "PATCH",
+      body: {
+        action: "update_marketing_spam_keywords",
+        id: workflowId,
+        keywords,
+      },
+    });
+    state.helpdeskWorkflows.workflows = response.workflows || [];
+    setMessage(statusMessage, "Workflow keywords saved.", "success");
+  } catch (error) {
+    setMessage(statusMessage, error.message, "error");
+  } finally {
+    state.helpdeskWorkflows.savingWorkflowId = "";
+    if (state.section === "helpdesk-workflows") renderApp();
+  }
+}
+
 async function saveHelpdeskWorkflow() {
   syncHelpdeskWorkflowFormFromDom();
   const form = state.helpdeskWorkflows.form;
@@ -5646,6 +5723,9 @@ function bindAppEvents() {
   });
   document.querySelectorAll("[data-helpdesk-workflow-run]").forEach((button) => {
     button.onclick = () => runHelpdeskWorkflow(button.dataset.helpdeskWorkflowRun);
+  });
+  document.querySelectorAll("[data-helpdesk-spam-keywords-save]").forEach((button) => {
+    button.onclick = () => saveHelpdeskSpamWorkflowKeywords(button.dataset.helpdeskSpamKeywordsSave);
   });
   document.querySelectorAll("[data-helpdesk-workflow-toggle]").forEach((input) => {
     input.onchange = () => toggleHelpdeskWorkflow(input.dataset.helpdeskWorkflowToggle, input.checked);

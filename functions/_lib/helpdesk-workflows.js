@@ -23,6 +23,18 @@ const RUNS_TABLE_SQL = `
   )
 `;
 
+const MARKETING_SPAM_DEFAULT_KEYWORDS = [
+  "partnership",
+  "SEO",
+  "link",
+  "high-quality websites",
+  "Boost Your Rankings",
+  "guest post",
+  "opportunities",
+  "streamer",
+  "affiliates",
+];
+
 const BUILT_IN_WORKFLOWS = [
   {
     id: "auto_merge_duplicates",
@@ -55,6 +67,7 @@ const BUILT_IN_WORKFLOWS = [
       intervalMinutes: 5,
       status: "solved",
       tagNames: ["wf_spam"],
+      keywords: MARKETING_SPAM_DEFAULT_KEYWORDS,
       scoreThreshold: 4,
       maxSearchTerms: 8,
       maxCandidatesPerRun: 12,
@@ -264,6 +277,24 @@ export async function setHelpdeskWorkflowEnabled(env, workflowId, enabled) {
     `,
   )
     .bind(enabled ? 1 : 0, now, workflowId)
+    .run();
+
+  if (!meta?.changes) {
+    throw new Error("Workflow not found.");
+  }
+}
+
+export async function updateHelpdeskWorkflowConfig(env, workflowId, config) {
+  await ensureHelpdeskWorkflowTables(env.DB);
+  const now = new Date().toISOString();
+  const { meta } = await env.DB.prepare(
+    `
+      UPDATE helpdesk_workflows
+      SET config_json = ?, updated_at = ?
+      WHERE id = ?
+    `,
+  )
+    .bind(JSON.stringify(config || {}), now, workflowId)
     .run();
 
   if (!meta?.changes) {
