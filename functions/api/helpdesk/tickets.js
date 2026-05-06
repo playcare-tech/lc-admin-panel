@@ -34,6 +34,7 @@ const WORKFLOW_AUTOMATIC_RUN_INTERVAL_MINUTES = 5;
 const MARKETING_SPAM_TAG_NAME = "wf_spam";
 const MARKETING_SPAM_RECENT_OPEN_PAGE_SIZE = 40;
 const MARKETING_SPAM_RECENT_OPEN_MAX_PAGES = 3;
+const MARKETING_SPAM_MIN_CANDIDATES_PER_RUN = 15;
 const AUTO_MERGE_ACTION = "auto_merge_duplicate_tickets";
 const AUTO_RESOLVE_WORKFLOW_TYPE = "auto_resolve_requester";
 const AUTO_REPLY_WORKFLOW_TYPE = "auto_reply_new_requester_ticket";
@@ -627,9 +628,38 @@ async function fetchMarketingSpamCandidates(env, options = {}) {
     : MARKETING_SPAM_SEARCH_TERMS;
   const maxSearchTerms = safePositiveInteger(options.maxSearchTerms, 8, Math.max(searchTerms.length, MARKETING_SPAM_SEARCH_TERMS.length));
   const pageSize = safePositiveInteger(options.pageSize, 50, 100);
-  const recentOpenPages = safePositiveInteger(options.recentOpenPages, 1, MARKETING_SPAM_RECENT_OPEN_MAX_PAGES);
+  const recentOpenPages = safePositiveInteger(options.recentOpenPages, MARKETING_SPAM_RECENT_OPEN_MAX_PAGES, MARKETING_SPAM_RECENT_OPEN_MAX_PAGES);
   const recentPageSize = safePositiveInteger(options.recentPageSize, MARKETING_SPAM_RECENT_OPEN_PAGE_SIZE, 100);
   const byId = new Map();
+  const searchGroups = [];
+  const addCandidate = (ticket) => {
+    if (ticket.id && ticket.status === "open" && ticket.silo === "tickets" && !ticket.parentTicket && !byId.has(ticket.id)) {
+      byId.set(ticket.id, ticket);
+    }
+  };
+
+  for (const term of searchTerms.slice(0, maxSearchTerms)) {
+    const params = new URLSearchParams({
+      status: "open",
+      query: term,
+      pageSize: String(pageSize),
+      order: "desc",
+      sortBy: "createdAt",
+      eventsScope: "none",
+    });
+    const payload = await helpdeskRequest(env, `/tickets?${params.toString()}`);
+    const tickets = normalizeHelpDeskTicketList(payload).map((ticket) => normalizeHelpDeskTicketSummary(ticket));
+    searchGroups.push(tickets);
+  }
+
+  const longestSearchGroup = Math.max(0, ...searchGroups.map((tickets) => tickets.length));
+  for (let index = 0; index < longestSearchGroup; index += 1) {
+    for (const tickets of searchGroups) {
+      const ticket = tickets[index];
+      if (!ticket) continue;
+      addCandidate(ticket);
+    }
+  }
 
   let cursor = null;
   for (let page = 0; page < recentOpenPages; page += 1) {
@@ -644,9 +674,7 @@ async function fetchMarketingSpamCandidates(env, options = {}) {
     });
     const tickets = batch.tickets.map((ticket) => normalizeHelpDeskTicketSummary(ticket));
     for (const ticket of tickets) {
-      if (ticket.id && ticket.status === "open" && ticket.silo === "tickets" && !ticket.parentTicket && !byId.has(ticket.id)) {
-        byId.set(ticket.id, ticket);
-      }
+      addCandidate(ticket);
     }
     const lastTicket = tickets.at(-1);
     if (!lastTicket || tickets.length < recentPageSize) break;
@@ -657,27 +685,7 @@ async function fetchMarketingSpamCandidates(env, options = {}) {
     };
   }
 
-  for (const term of searchTerms.slice(0, maxSearchTerms)) {
-    const params = new URLSearchParams({
-      status: "open",
-      query: term,
-      pageSize: String(pageSize),
-      order: "desc",
-      sortBy: "createdAt",
-      eventsScope: "none",
-    });
-    const payload = await helpdeskRequest(env, `/tickets?${params.toString()}`);
-    const tickets = normalizeHelpDeskTicketList(payload).map((ticket) => normalizeHelpDeskTicketSummary(ticket));
-    for (const ticket of tickets) {
-      if (ticket.id && ticket.status === "open" && ticket.silo === "tickets" && !ticket.parentTicket && !byId.has(ticket.id)) {
-        byId.set(ticket.id, ticket);
-      }
-    }
-  }
-
-  return Array.from(byId.values()).sort((left, right) => {
-    return (right.createdAt || "").localeCompare(left.createdAt || "");
-  });
+  return Array.from(byId.values());
 }
 
 async function runAutoResolveWorkflow(context, workflow) {
@@ -803,11 +811,25 @@ function ticketAlreadyHasAutoReply(events, messageText) {
 
 function marketingSpamMatch(ticket, events, threshold, configuredKeywords = []) {
   const publicMessageEvents = events.filter((event) => eventPublicMessageText(event));
-  const firstPublicMessage = publicMessageEvents[0];
-  if (!firstPublicMessage || !isRequesterMessageAuthor(firstPublicMessage)) {
+  const requesterMessageEvents = publicMessageEvents.filter((event) => isRequesterMessageAuthor(event));
+  if (!requesterMessageEvents.length) {
+    const firstPublicMessage = publicMessageEvents[0];
     return {
       matched: false,
-      reason: firstPublicMessage ? `first_public_author:${firstPublicMessage.author_type || "unknown"}` : "no_public_message",
+      reason: firstPublicMessage ? `no_requester_message:first_public_author:${firstPublicMessage.author_type || "unknown"}` : "no_public_message",
+    };
+  }
+
+  const requesterMessage = requesterMessageEvents.map((event) => eventPublicMessageText(event)).join("\n\n");
+  const seenPhrases = new Set();
+  const custom = uniqueMatchedPhrases(requesterMessage, configuredKeywords, seenPhrases);
+  if (custom.length) {
+    return {
+      matched: true,
+      reason: "keyword_matched",
+      score: custom.length * 2,
+      matchedPhrases: custom,
+      messagePreview: requesterMessage.slice(0, 500),
     };
   }
 
@@ -821,7 +843,6 @@ function marketingSpamMatch(ticket, events, threshold, configuredKeywords = []) 
     };
   }
 
-  const requesterMessage = eventPublicMessageText(firstPublicMessage);
   const subjectAndMessage = `${ticket.subject || ""} ${requesterMessage}`;
   const supportExclusions = textMatchingPhrases(subjectAndMessage, SUPPORT_EXCLUSION_PHRASES);
   if (supportExclusions.length) {
@@ -832,19 +853,16 @@ function marketingSpamMatch(ticket, events, threshold, configuredKeywords = []) 
     };
   }
 
-  const seenPhrases = new Set();
-  const custom = uniqueMatchedPhrases(requesterMessage, configuredKeywords, seenPhrases);
   const high = uniqueMatchedPhrases(subjectAndMessage, MARKETING_HIGH_CONFIDENCE_PHRASES, seenPhrases);
   const medium = uniqueMatchedPhrases(subjectAndMessage, MARKETING_MEDIUM_CONFIDENCE_PHRASES, seenPhrases);
   const low = uniqueMatchedPhrases(subjectAndMessage, MARKETING_LOW_CONFIDENCE_PHRASES, seenPhrases);
-  const score = custom.length * 2 + high.length * 3 + medium.length * 2 + low.length;
-  const matchedPhrases = [...custom, ...high, ...medium, ...low];
-  const keywordMatched = custom.length > 0;
+  const score = high.length * 3 + medium.length * 2 + low.length;
+  const matchedPhrases = [...high, ...medium, ...low];
   const thresholdMatched = score >= threshold;
 
   return {
-    matched: keywordMatched || thresholdMatched,
-    reason: keywordMatched ? "keyword_matched" : thresholdMatched ? "matched" : "score_below_threshold",
+    matched: thresholdMatched,
+    reason: thresholdMatched ? "matched" : "score_below_threshold",
     score,
     matchedPhrases,
     messagePreview: requesterMessage.slice(0, 500),
@@ -858,12 +876,15 @@ async function runMarketingSpamWorkflow(context, workflow) {
   const configuredTagIds = Array.isArray(config.tagIds) ? config.tagIds.map(String).filter(Boolean) : [];
   const tagIds = configuredTagIds.length ? configuredTagIds : await resolveHelpdeskTagIds(context.env, tagNames);
   const scoreThreshold = safePositiveInteger(config.scoreThreshold, 4, 20);
-  const maxCandidatesPerRun = safePositiveInteger(config.maxCandidatesPerRun, 12, 25);
+  const maxCandidatesPerRun = Math.max(
+    safePositiveInteger(config.maxCandidatesPerRun, MARKETING_SPAM_MIN_CANDIDATES_PER_RUN, MARKETING_SPAM_MIN_CANDIDATES_PER_RUN),
+    MARKETING_SPAM_MIN_CANDIDATES_PER_RUN,
+  );
   const configuredKeywords = marketingSpamConfiguredKeywords(config);
   const searchTerms = marketingSpamSearchTerms(config);
   const maxSearchTerms = Math.max(
-    safePositiveInteger(config.maxSearchTerms, 8, 25),
-    configuredKeywords.length ? Math.min(configuredKeywords.length, 12) : 0,
+    safePositiveInteger(config.maxSearchTerms, 8, 9),
+    configuredKeywords.length ? Math.min(configuredKeywords.length, 9) : 0,
   );
   const tickets = await fetchMarketingSpamCandidates(context.env, {
     maxSearchTerms,
