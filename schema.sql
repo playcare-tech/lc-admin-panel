@@ -51,6 +51,14 @@ CREATE TABLE IF NOT EXISTS helpdesk_workflow_run_stats (
 CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_run_stats_date_metric ON helpdesk_workflow_run_stats (metric_date, metric);
 CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_run_stats_workflow_date ON helpdesk_workflow_run_stats (workflow_id, metric_date);
 
+CREATE TABLE IF NOT EXISTS helpdesk_open_ticket_snapshots (
+  snapshot_date TEXT PRIMARY KEY,
+  open_ticket_count INTEGER NOT NULL DEFAULT 0,
+  captured_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_helpdesk_open_ticket_snapshots_captured ON helpdesk_open_ticket_snapshots (captured_at DESC);
+
 CREATE TABLE IF NOT EXISTS admin_users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT NOT NULL UNIQUE,

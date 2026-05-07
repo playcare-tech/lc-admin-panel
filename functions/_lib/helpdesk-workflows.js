@@ -7,6 +7,9 @@ const RUNS_TABLE_SQL =
 const RUN_STATS_TABLE_SQL =
   "CREATE TABLE IF NOT EXISTS helpdesk_workflow_run_stats (run_id TEXT NOT NULL, workflow_id TEXT NOT NULL, workflow_title TEXT NOT NULL, workflow_type TEXT NOT NULL, metric TEXT NOT NULL, metric_date TEXT NOT NULL, metric_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, PRIMARY KEY (run_id, metric))";
 
+const OPEN_TICKET_SNAPSHOTS_TABLE_SQL =
+  "CREATE TABLE IF NOT EXISTS helpdesk_open_ticket_snapshots (snapshot_date TEXT PRIMARY KEY, open_ticket_count INTEGER NOT NULL DEFAULT 0, captured_at TEXT NOT NULL)";
+
 const WORKFLOW_STATS_METRICS = {
   ticketsSolved: "tickets_solved",
   emptyTicketReplies: "empty_ticket_replies",
@@ -98,6 +101,8 @@ let workflowTablesReady = false;
 let workflowTablesReadyPromise = null;
 let workflowStatsTableReady = false;
 let workflowStatsTableReadyPromise = null;
+let openTicketSnapshotsTableReady = false;
+let openTicketSnapshotsTableReadyPromise = null;
 
 function parseJson(value, fallback = {}) {
   if (!value) return fallback;
@@ -258,6 +263,11 @@ async function prepareHelpdeskWorkflowStatsTable(db) {
   await db.exec("CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_run_stats_workflow_date ON helpdesk_workflow_run_stats (workflow_id, metric_date)");
 }
 
+async function prepareOpenTicketSnapshotsTable(db) {
+  await db.exec(OPEN_TICKET_SNAPSHOTS_TABLE_SQL);
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_helpdesk_open_ticket_snapshots_captured ON helpdesk_open_ticket_snapshots (captured_at DESC)");
+}
+
 export async function ensureHelpdeskWorkflowTables(db) {
   if (!db) {
     throw new Error("Missing DB binding.");
@@ -294,6 +304,24 @@ async function ensureHelpdeskWorkflowStatsTable(db) {
   }
 
   await workflowStatsTableReadyPromise;
+}
+
+async function ensureOpenTicketSnapshotsTable(db) {
+  await ensureHelpdeskWorkflowTables(db);
+  if (openTicketSnapshotsTableReady) return;
+
+  if (!openTicketSnapshotsTableReadyPromise) {
+    openTicketSnapshotsTableReadyPromise = prepareOpenTicketSnapshotsTable(db)
+      .then(() => {
+        openTicketSnapshotsTableReady = true;
+      })
+      .catch((error) => {
+        openTicketSnapshotsTableReadyPromise = null;
+        throw error;
+      });
+  }
+
+  await openTicketSnapshotsTableReadyPromise;
 }
 
 export async function listHelpdeskWorkflows(env) {
@@ -632,4 +660,46 @@ export async function getHelpdeskWorkflowAnalytics(env, { from, to, timezoneOffs
     summary,
     daily,
   };
+}
+
+export async function recordHelpdeskOpenTicketSnapshot(env, { date, count, capturedAt = new Date().toISOString() }) {
+  await ensureOpenTicketSnapshotsTable(env.DB);
+  const snapshotDate = parseDateKey(date, "");
+  if (!snapshotDate) {
+    throw new Error("Open ticket snapshot date is required.");
+  }
+  await env.DB.prepare(
+    `
+      INSERT OR REPLACE INTO helpdesk_open_ticket_snapshots
+        (snapshot_date, open_ticket_count, captured_at)
+      VALUES (?, ?, ?)
+    `,
+  )
+    .bind(snapshotDate, Number(count || 0), capturedAt)
+    .run();
+}
+
+export async function listHelpdeskOpenTicketSnapshots(env, { from, to } = {}) {
+  await ensureOpenTicketSnapshotsTable(env.DB);
+  const fromDate = parseDateKey(from, "");
+  const toDate = parseDateKey(to, "");
+  if (!fromDate || !toDate) return [];
+
+  const { results } = await env.DB.prepare(
+    `
+      SELECT snapshot_date, open_ticket_count, captured_at
+      FROM helpdesk_open_ticket_snapshots
+      WHERE snapshot_date >= ?
+        AND snapshot_date <= ?
+      ORDER BY snapshot_date ASC
+    `,
+  )
+    .bind(fromDate, toDate)
+    .all();
+
+  return (results || []).map((row) => ({
+    date: row.snapshot_date,
+    count: Number(row.open_ticket_count || 0),
+    capturedAt: row.captured_at,
+  }));
 }

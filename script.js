@@ -3120,8 +3120,8 @@ function renderWorkflowAnalyticsCards() {
   const meta = period ? `${period.from} to ${period.to}` : workflowAnalyticsPresetLabel(analytics.filters.preset);
   const openCountLabel = (value) => (value === null || value === undefined ? "—" : ticketCountLabel(value));
   return renderStats([
-    { label: "Open today", value: openCountLabel(openTickets.today?.count), meta: `Created ${openTickets.today?.date || "today"} and still open` },
-    { label: "Open yesterday", value: openCountLabel(openTickets.yesterday?.count), meta: `Created ${openTickets.yesterday?.date || "yesterday"} and still open` },
+    { label: "Open today", value: openCountLabel(openTickets.today?.count), meta: `Open queue snapshot · ${openTickets.today?.date || "today"}` },
+    { label: "Open yesterday", value: openCountLabel(openTickets.yesterday?.count), meta: `Saved open queue snapshot · ${openTickets.yesterday?.date || "yesterday"}` },
     { label: "Solved", value: Number(summary.ticketsSolved || 0), meta: `Workflow ticket solves · ${meta}` },
     { label: "Empty replies", value: Number(summary.emptyTicketReplies || 0), meta: "Auto-reply empty requester tickets" },
     { label: "Auto-merged", value: Number(summary.ticketsMerged || 0), meta: "Duplicate + 6h merge rules" },
@@ -3131,13 +3131,14 @@ function renderWorkflowAnalyticsCards() {
 function renderWorkflowAnalyticsDailyRows() {
   const daily = state.helpdeskWorkflows.analytics.data?.daily || [];
   if (!daily.length) {
-    return `<tr><td colspan="4"><div class="empty-state">No workflow analytics for this period.</div></td></tr>`;
+    return `<tr><td colspan="5"><div class="empty-state">No workflow analytics for this period.</div></td></tr>`;
   }
   return daily
     .map(
       (day) => `
         <tr>
           <td>${escapeHtml(day.date)}</td>
+          <td>${day.openTickets === null || day.openTickets === undefined ? "—" : ticketCountLabel(day.openTickets)}</td>
           <td>${Number(day.ticketsSolved || 0)}</td>
           <td>${Number(day.emptyTicketReplies || 0)}</td>
           <td>${Number(day.ticketsMerged || 0)}</td>
@@ -3154,7 +3155,7 @@ function renderWorkflowAnalyticsTable() {
       <div class="tickets-toolbar">
         <div>
           <div class="section-title">Workflow analytics</div>
-          <div class="subtle">${analytics.loading ? "Loading analytics..." : "Daily counts are persisted in D1 from workflow runs."}</div>
+          <div class="subtle">${analytics.loading ? "Loading analytics..." : "Workflow counts and open queue snapshots are persisted in D1."}</div>
         </div>
       </div>
       ${
@@ -3165,6 +3166,7 @@ function renderWorkflowAnalyticsTable() {
                 <thead>
                   <tr>
                     <th>Date</th>
+                    <th>Open tickets</th>
                     <th>Solved</th>
                     <th>Empty replies</th>
                     <th>Auto-merged</th>

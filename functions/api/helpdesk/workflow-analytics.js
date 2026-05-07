@@ -1,6 +1,10 @@
 import { requireAuth } from "../../_lib/auth.js";
 import { helpdeskRequestWithMeta, normalizeHelpDeskTicketList } from "../../_lib/helpdesk.js";
-import { getHelpdeskWorkflowAnalytics } from "../../_lib/helpdesk-workflows.js";
+import {
+  getHelpdeskWorkflowAnalytics,
+  listHelpdeskOpenTicketSnapshots,
+  recordHelpdeskOpenTicketSnapshot,
+} from "../../_lib/helpdesk-workflows.js";
 import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 
 function dateKeyForOffset(date, timezoneOffsetMinutes = 0) {
@@ -13,28 +17,13 @@ function addDays(dateKey, days) {
   return date.toISOString().slice(0, 10);
 }
 
-function offsetText(timezoneOffsetMinutes = 0) {
-  const offsetMinutes = -Number(timezoneOffsetMinutes || 0);
-  const sign = offsetMinutes >= 0 ? "+" : "-";
-  const absolute = Math.abs(offsetMinutes);
-  const hours = String(Math.floor(absolute / 60)).padStart(2, "0");
-  const minutes = String(absolute % 60).padStart(2, "0");
-  return `${sign}${hours}:${minutes}`;
-}
-
-function localDayBoundary(dateKey, timezoneOffsetMinutes, endOfDay = false) {
-  return `${dateKey}T${endOfDay ? "23:59:59" : "00:00:00"}${offsetText(timezoneOffsetMinutes)}`;
-}
-
-async function openTicketCountForDate(env, dateKey, timezoneOffsetMinutes) {
+async function currentOpenTicketCount(env) {
   const params = new URLSearchParams({
     status: "open",
     pageSize: "1",
     order: "desc",
     sortBy: "createdAt",
     eventsScope: "none",
-    createdDateFrom: localDayBoundary(dateKey, timezoneOffsetMinutes),
-    createdDateTo: localDayBoundary(dateKey, timezoneOffsetMinutes, true),
   });
   const { payload, headers } = await helpdeskRequestWithMeta(env, `/tickets?${params.toString()}`);
   const totalHeader = headers.get("X-Total-Results");
@@ -42,24 +31,51 @@ async function openTicketCountForDate(env, dateKey, timezoneOffsetMinutes) {
   return totalHeader !== null && Number.isFinite(total) ? total : normalizeHelpDeskTicketList(payload).length;
 }
 
-async function openTicketCounts(env, timezoneOffsetMinutes) {
+async function openTicketTrend(env, period, timezoneOffsetMinutes) {
   const today = dateKeyForOffset(new Date(), timezoneOffsetMinutes);
   const yesterday = addDays(today, -1);
+  const trendFrom = [period.from, yesterday].filter(Boolean).sort()[0] || yesterday;
+  const trendTo = [period.to, today].filter(Boolean).sort().at(-1) || today;
+  let currentCount = null;
+  let errorMessage = "";
+
   try {
-    const [todayCount, yesterdayCount] = await Promise.all([
-      openTicketCountForDate(env, today, timezoneOffsetMinutes),
-      openTicketCountForDate(env, yesterday, timezoneOffsetMinutes),
-    ]);
+    currentCount = await currentOpenTicketCount(env);
+    await recordHelpdeskOpenTicketSnapshot(env, {
+      date: today,
+      count: currentCount,
+    });
+  } catch (error) {
+    console.warn("Failed to record HelpDesk open ticket snapshot.", error);
+    errorMessage = error.message || "Failed to record open ticket snapshot.";
+  }
+
+  try {
+    const snapshots = await listHelpdeskOpenTicketSnapshots(env, {
+      from: trendFrom,
+      to: trendTo,
+    });
+    const snapshotByDate = new Map(snapshots.map((snapshot) => [snapshot.date, snapshot]));
+    if (currentCount !== null) {
+      snapshotByDate.set(today, {
+        date: today,
+        count: currentCount,
+        capturedAt: new Date().toISOString(),
+      });
+    }
     return {
-      today: { date: today, count: todayCount },
-      yesterday: { date: yesterday, count: yesterdayCount },
+      today: snapshotByDate.get(today) || { date: today, count: null },
+      yesterday: snapshotByDate.get(yesterday) || { date: yesterday, count: null },
+      snapshots: Array.from(snapshotByDate.values()).sort((left, right) => left.date.localeCompare(right.date)),
+      ...(errorMessage ? { error: errorMessage } : {}),
     };
   } catch (error) {
-    console.warn("Failed to load HelpDesk open ticket counts.", error);
+    console.warn("Failed to load HelpDesk open ticket snapshots.", error);
     return {
-      today: { date: today, count: null },
+      today: { date: today, count: currentCount },
       yesterday: { date: yesterday, count: null },
-      error: error.message || "Failed to load open ticket counts.",
+      snapshots: currentCount === null ? [] : [{ date: today, count: currentCount, capturedAt: new Date().toISOString() }],
+      error: error.message || errorMessage || "Failed to load open ticket snapshots.",
     };
   }
 }
@@ -78,17 +94,21 @@ export async function onRequest(context) {
   const timezoneOffsetMinutes = Number(url.searchParams.get("tzOffset") || url.searchParams.get("timezoneOffsetMinutes") || 0);
 
   try {
-    const [analytics, openTickets] = await Promise.all([
-      getHelpdeskWorkflowAnalytics(context.env, {
-        from,
-        to,
-        timezoneOffsetMinutes,
-      }),
-      openTicketCounts(context.env, timezoneOffsetMinutes),
-    ]);
+    const analytics = await getHelpdeskWorkflowAnalytics(context.env, {
+      from,
+      to,
+      timezoneOffsetMinutes,
+    });
+    const openTickets = await openTicketTrend(context.env, analytics.period, timezoneOffsetMinutes);
+    const openTicketByDate = new Map((openTickets.snapshots || []).map((snapshot) => [snapshot.date, snapshot]));
+    const daily = (analytics.daily || []).map((day) => ({
+      ...day,
+      openTickets: openTicketByDate.get(day.date)?.count ?? null,
+    }));
 
     return json({
       ...analytics,
+      daily,
       openTickets,
     });
   } catch (error) {
