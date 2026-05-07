@@ -1,41 +1,11 @@
-const WORKFLOWS_TABLE_SQL = `
-  CREATE TABLE IF NOT EXISTS helpdesk_workflows (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    type TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 0,
-    config_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  )
-`;
+const WORKFLOWS_TABLE_SQL =
+  "CREATE TABLE IF NOT EXISTS helpdesk_workflows (id TEXT PRIMARY KEY, title TEXT NOT NULL, type TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, config_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)";
 
-const RUNS_TABLE_SQL = `
-  CREATE TABLE IF NOT EXISTS helpdesk_workflow_runs (
-    id TEXT PRIMARY KEY,
-    workflow_id TEXT NOT NULL,
-    workflow_title TEXT NOT NULL,
-    status TEXT NOT NULL,
-    started_at TEXT NOT NULL,
-    finished_at TEXT NOT NULL,
-    details TEXT,
-    metadata TEXT
-  )
-`;
+const RUNS_TABLE_SQL =
+  "CREATE TABLE IF NOT EXISTS helpdesk_workflow_runs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_title TEXT NOT NULL, status TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT NOT NULL, details TEXT, metadata TEXT)";
 
-const RUN_STATS_TABLE_SQL = `
-  CREATE TABLE IF NOT EXISTS helpdesk_workflow_run_stats (
-    run_id TEXT NOT NULL,
-    workflow_id TEXT NOT NULL,
-    workflow_title TEXT NOT NULL,
-    workflow_type TEXT NOT NULL,
-    metric TEXT NOT NULL,
-    metric_date TEXT NOT NULL,
-    metric_count INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (run_id, metric)
-  )
-`;
+const RUN_STATS_TABLE_SQL =
+  "CREATE TABLE IF NOT EXISTS helpdesk_workflow_run_stats (run_id TEXT NOT NULL, workflow_id TEXT NOT NULL, workflow_title TEXT NOT NULL, workflow_type TEXT NOT NULL, metric TEXT NOT NULL, metric_date TEXT NOT NULL, metric_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, PRIMARY KEY (run_id, metric))";
 
 const WORKFLOW_STATS_METRICS = {
   ticketsSolved: "tickets_solved",
