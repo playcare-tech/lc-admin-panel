@@ -56,6 +56,12 @@ function formatWithOffset(date, offset) {
   return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}T${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}${offset}`;
 }
 
+function formatArchiveDate(value) {
+  const match = `${value || ""}`.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/);
+  if (!match) return value;
+  return `${match[1]}.000000${match[2]}`;
+}
+
 function buildFilters(from, to, agentIds) {
   return {
     from,
@@ -141,10 +147,6 @@ function archiveAgentFilter(agentIds, excludedAgentIds) {
   return null;
 }
 
-function userById(chat) {
-  return new Map((chat.users || []).map((user) => [String(user.id), user]));
-}
-
 function usersByType(chat, type) {
   return (chat.users || []).filter((user) => `${user.type || ""}` === type);
 }
@@ -158,98 +160,61 @@ function userEmail(user) {
   return user?.email || (String(user?.id || "").includes("@") ? user.id : "");
 }
 
-function eventText(event) {
-  return event?.text || event?.message || event?.title || "";
-}
-
-function eventPayload(event) {
-  if (!event) return "";
-  try {
-    return JSON.stringify(event);
-  } catch (_error) {
-    return "";
-  }
-}
-
 function rawChatExportHeaders() {
   return [
+    "ticket_link",
+    "created_date",
+    "user_email",
+    "wait_in_queue_seconds",
+    "group",
+    "assignee",
     "chat_id",
     "thread_id",
-    "thread_created_at",
-    "thread_active",
-    "event_id",
-    "event_created_at",
-    "event_type",
-    "author_id",
-    "author_type",
-    "author_name",
-    "author_email",
-    "customer_id",
-    "customer_name",
-    "customer_email",
-    "agent_ids",
-    "agent_names",
-    "agent_emails",
-    "group_ids",
-    "event_text",
-    "event_payload_json",
   ];
 }
 
-function rawChatExportRows(chats) {
-  const rows = [];
-  for (const chat of chats) {
+function chatArchiveLink(chatId) {
+  return chatId ? `https://my.livechatinc.com/archives/?q=${encodeURIComponent(chatId)}` : "";
+}
+
+function groupLabel(groupIds, groupNameById) {
+  return groupIds
+    .map((groupId) => groupNameById.get(String(groupId)) || `Group ${groupId}`)
+    .join("; ");
+}
+
+function queueWaitSeconds(chat, thread) {
+  const candidates = [
+    thread?.queue?.wait_time,
+    thread?.queues_duration,
+    chat?.queue?.wait_time,
+    chat?.queues_duration,
+  ];
+  const value = candidates.find((item) => item !== null && item !== undefined && item !== "");
+  return value === undefined ? "" : value;
+}
+
+function rawChatExportRows(chats, groupNameById = new Map()) {
+  return chats.map((chat) => {
     const thread = chat.thread || {};
-    const users = userById(chat);
     const customer = usersByType(chat, "customer")[0] || {};
     const agents = usersByType(chat, "agent");
     const groupIds = thread.access?.group_ids || chat.access?.group_ids || [];
-    const base = [
+    return [
+      chatArchiveLink(chat.id),
+      thread.created_at || "",
+      userEmail(customer),
+      queueWaitSeconds(chat, thread),
+      groupLabel(groupIds, groupNameById),
+      agents.map(userLabel).filter(Boolean).join("; "),
       chat.id || "",
       thread.id || "",
-      thread.created_at || "",
-      thread.active === undefined ? "" : String(Boolean(thread.active)),
-      customer.id || "",
-      userLabel(customer),
-      userEmail(customer),
-      agents.map((agent) => agent.id).filter(Boolean).join("; "),
-      agents.map(userLabel).filter(Boolean).join("; "),
-      agents.map(userEmail).filter(Boolean).join("; "),
-      groupIds.join("; "),
     ];
-    const events = Array.isArray(thread.events) && thread.events.length ? thread.events : [null];
-
-    for (const event of events) {
-      const author = users.get(String(event?.author_id || "")) || {};
-      rows.push([
-        base[0],
-        base[1],
-        base[2],
-        base[3],
-        event?.id || "",
-        event?.created_at || "",
-        event?.type || "",
-        event?.author_id || "",
-        author.type || "",
-        userLabel(author),
-        userEmail(author),
-        base[4],
-        base[5],
-        base[6],
-        base[7],
-        base[8],
-        base[9],
-        base[10],
-        eventText(event),
-        eventPayload(event),
-      ]);
-    }
-  }
-  return rows;
+  });
 }
 
 async function fetchRawArchivedChats(env, { from, to, agentIds, excludedAgentIds }) {
-  const filters = { from, to };
+  const filters = { from: formatArchiveDate(from), to: formatArchiveDate(to) };
   const agents = archiveAgentFilter(agentIds, excludedAgentIds);
   if (agents) {
     filters.agents = agents;
@@ -281,17 +246,17 @@ async function fetchRawArchivedChats(env, { from, to, agentIds, excludedAgentIds
   return { chats, truncated };
 }
 
-function rawChatsCsv(chats, truncated) {
-  const rows = [rawChatExportHeaders(), ...rawChatExportRows(chats)];
+function rawChatsCsv(chats, truncated, groupNameById) {
+  const rows = [rawChatExportHeaders(), ...rawChatExportRows(chats, groupNameById)];
   if (truncated) {
-    rows.push(["EXPORT_TRUNCATED", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "More chats matched this period than this export can fetch in one run.", ""]);
+    rows.push(["EXPORT_TRUNCATED", "", "", "", "", "More chats matched this period than this export can fetch in one run.", "", ""]);
   }
   return rows.map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
 }
 
-function rawChatsExcelHtml(chats, truncated, from, to) {
+function rawChatsExcelHtml(chats, truncated, from, to, groupNameById) {
   const headers = rawChatExportHeaders();
-  const rows = rawChatExportRows(chats);
+  const rows = rawChatExportRows(chats, groupNameById);
   const excelCell = (value) => {
     const text = `${value ?? ""}`;
     return text.length > RAW_CHAT_EXCEL_MAX_CELL_CHARS
@@ -329,23 +294,27 @@ function rawChatsExcelHtml(chats, truncated, from, to) {
 }
 
 async function exportRawChats(context, { from, to, agentIds, excludedAgentIds, format }) {
-  const { chats, truncated } = await fetchRawArchivedChats(context.env, {
-    from,
-    to,
-    agentIds,
-    excludedAgentIds,
-  });
+  const [{ chats, truncated }, dashboard] = await Promise.all([
+    fetchRawArchivedChats(context.env, {
+      from,
+      to,
+      agentIds,
+      excludedAgentIds,
+    }),
+    getLiveChatDashboard(context.env),
+  ]);
+  const groupNameById = new Map((dashboard.groups || []).map((group) => [String(group.id), group.name]));
 
   if (format === "raw_excel") {
     return downloadResponse(
-      rawChatsExcelHtml(chats, truncated, from, to),
+      rawChatsExcelHtml(chats, truncated, from, to, groupNameById),
       "application/vnd.ms-excel; charset=utf-8",
       rawChatExportFilename(from, to, "xls"),
     );
   }
 
   return downloadResponse(
-    rawChatsCsv(chats, truncated),
+    rawChatsCsv(chats, truncated, groupNameById),
     "text/csv; charset=utf-8",
     rawChatExportFilename(from, to, "csv"),
   );
