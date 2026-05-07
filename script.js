@@ -4467,36 +4467,155 @@ function liveChatAnalyticsExportFilters() {
   };
 }
 
-async function downloadLiveChatRawAnalytics(format) {
-  ensureAnalyticsRange();
-  const filters = liveChatAnalyticsExportFilters();
-  const params = liveChatAnalyticsQueryParams({ exportFormat: format, filtersOverride: filters });
+const LIVECHAT_RAW_EXPORT_HEADERS = [
+  "ticket_link",
+  "created_date",
+  "user_email",
+  "wait_in_queue_seconds",
+  "group",
+  "assignee",
+  "chat_id",
+  "thread_id",
+];
 
-  const isExcel = format === "raw_excel";
-  setMessage(statusMessage, `Preparing LiveChat raw ${isExcel ? "Excel" : "CSV"} export...`);
+function liveChatRawExportGroupLabel(groupIds = [], groupNameById = new Map()) {
+  return (groupIds || [])
+    .map((groupId) => groupNameById.get(String(groupId)) || `Group ${groupId}`)
+    .join("; ");
+}
+
+function liveChatRawExportRow(record, groupNameById = new Map()) {
+  return [
+    record.ticket_link || "",
+    record.created_date || "",
+    record.user_email || "",
+    record.wait_in_queue_seconds ?? "",
+    liveChatRawExportGroupLabel(record.group_ids, groupNameById),
+    record.assignee || "",
+    record.chat_id || "",
+    record.thread_id || "",
+  ];
+}
+
+function liveChatRawExportRows(records) {
+  const groupNameById = new Map((state.livechat.groups || []).map((group) => [String(group.id), group.name]));
+  return records.map((record) => liveChatRawExportRow(record, groupNameById));
+}
+
+function spreadsheetText(value) {
+  const text = `${value ?? ""}`.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  return /^[=+\-@]/.test(text.trimStart()) ? `'${text}` : text;
+}
+
+function spreadsheetCell(value) {
+  return `"${spreadsheetText(value).replaceAll('"', '""')}"`;
+}
+
+function liveChatRawCsv(records) {
+  const rows = [LIVECHAT_RAW_EXPORT_HEADERS, ...liveChatRawExportRows(records)];
+  return rows.map((row) => row.map(spreadsheetCell).join(",")).join("\r\n") + "\r\n";
+}
+
+function liveChatRawExcelHtml(records, filters) {
+  const escapeXmlText = (value) =>
+    `${value ?? ""}`
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  const rows = [LIVECHAT_RAW_EXPORT_HEADERS, ...liveChatRawExportRows(records)];
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    table { border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12px; }
+    th { background: #1f2937; color: #ffffff; font-weight: 700; }
+    th, td { border: 1px solid #d1d5db; padding: 6px; vertical-align: top; mso-number-format:"\\@"; }
+    caption { text-align: left; font-weight: 700; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <table>
+    <caption>LiveChat raw chats ${escapeXmlText(filters.from)} to ${escapeXmlText(filters.to)}</caption>
+    ${rows
+      .map((row, index) => {
+        const tag = index === 0 ? "th" : "td";
+        return `<tr>${row.map((cell) => `<${tag}>${escapeXmlText(spreadsheetText(cell))}</${tag}>`).join("")}</tr>`;
+      })
+      .join("")}
+  </table>
+</body>
+</html>`;
+}
+
+function liveChatRawExportFilename(filters, extension) {
+  const from = `${filters.from || ""}`.slice(0, 10) || "from";
+  const to = `${filters.to || ""}`.slice(0, 10) || "to";
+  return `livechat-raw-chats-${from}-to-${to}.${extension}`;
+}
+
+async function fetchLiveChatRawExportPage(filters, pageId = "") {
+  const params = liveChatAnalyticsQueryParams({
+    exportFormat: "raw_page",
+    filtersOverride: filters,
+  });
+  if (pageId) {
+    params.set("page_id", pageId);
+  }
+
   const response = await fetch(`/api/livechat/analytics?${params.toString()}`);
   const nextCsrfToken = response.headers.get("X-CSRF-Token");
   if (nextCsrfToken) {
     state.csrfToken = nextCsrfToken;
   }
-  if (!response.ok) {
-    const text = await response.text();
-    let message = `LiveChat raw export failed with ${response.status}.`;
+  const text = await response.text();
+  let payload = {};
+  if (text) {
     try {
-      message = JSON.parse(text).error || message;
+      payload = JSON.parse(text);
     } catch (_error) {
-      message = text || message;
+      payload = {};
     }
-    throw new Error(message);
+  }
+  if (!response.ok) {
+    throw new Error(payload.error || text || `LiveChat raw export failed with ${response.status}.`);
   }
 
-  const blob = await response.blob();
-  const filename = contentDispositionFilename(
-    response.headers.get("Content-Disposition"),
-    `livechat-raw-chats.${isExcel ? "xls" : "csv"}`,
-  );
-  downloadBlobFile(filename, blob);
-  setMessage(statusMessage, `LiveChat raw ${isExcel ? "Excel" : "CSV"} export downloaded.`, "success");
+  return payload;
+}
+
+async function downloadLiveChatRawAnalytics(format) {
+  ensureAnalyticsRange();
+  const filters = liveChatAnalyticsExportFilters();
+  const isExcel = format === "raw_excel";
+  const records = [];
+  let nextPageId = "";
+  let page = 0;
+  let foundChats = 0;
+
+  do {
+    page += 1;
+    setMessage(statusMessage, `Preparing LiveChat raw ${isExcel ? "Excel" : "CSV"} export... ${records.length} chat(s) loaded.`);
+    const payload = await fetchLiveChatRawExportPage(filters, nextPageId);
+    records.push(...(payload.records || []));
+    foundChats = payload.foundChats || foundChats;
+    nextPageId = payload.nextPageId || "";
+    if (page > 10000) {
+      throw new Error("LiveChat raw export stopped after 10,000 archive pages.");
+    }
+  } while (nextPageId);
+
+  const blob = isExcel
+    ? new Blob([liveChatRawExcelHtml(records, filters)], { type: "application/vnd.ms-excel; charset=utf-8" })
+    : new Blob([liveChatRawCsv(records)], { type: "text/csv; charset=utf-8" });
+  downloadBlobFile(liveChatRawExportFilename(filters, isExcel ? "xls" : "csv"), blob);
+  if (foundChats && records.length < foundChats) {
+    setMessage(statusMessage, `Downloaded ${records.length} LiveChat raw chat row(s). LiveChat estimated ${foundChats} match(es).`, "info");
+    return;
+  }
+  setMessage(statusMessage, `Downloaded ${records.length} LiveChat raw chat row(s).`, "success");
 }
 
 async function fetchHelpdeskSyncStatus() {

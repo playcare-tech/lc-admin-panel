@@ -5,7 +5,7 @@ import { getLiveChatDashboard, livechatAgentChatRequest, livechatReportsRequest 
 const RAW_CHAT_EXPORT_PAGE_SIZE = 100;
 const RAW_CHAT_EXPORT_MAX_PAGES = 45;
 const RAW_CHAT_EXCEL_MAX_CELL_CHARS = 4000;
-const RAW_CHAT_EXPORT_FORMATS = new Set(["raw_csv", "raw_excel"]);
+const RAW_CHAT_EXPORT_FORMATS = new Set(["raw_csv", "raw_excel", "raw_page"]);
 
 function isValidDate(value) {
   return value && !Number.isNaN(new Date(value).getTime());
@@ -194,49 +194,77 @@ function queueWaitSeconds(chat, thread) {
   return value === undefined ? "" : value;
 }
 
-function rawChatExportRows(chats, groupNameById = new Map()) {
+function rawChatExportRecords(chats) {
   return chats.map((chat) => {
     const thread = chat.thread || {};
     const customer = usersByType(chat, "customer")[0] || {};
     const agents = usersByType(chat, "agent");
     const groupIds = thread.access?.group_ids || chat.access?.group_ids || [];
-    return [
-      chatArchiveLink(chat.id),
-      thread.created_at || "",
-      userEmail(customer),
-      queueWaitSeconds(chat, thread),
-      groupLabel(groupIds, groupNameById),
-      agents.map(userLabel).filter(Boolean).join("; "),
-      chat.id || "",
-      thread.id || "",
-    ];
+    return {
+      ticket_link: chatArchiveLink(chat.id),
+      created_date: thread.created_at || "",
+      user_email: userEmail(customer),
+      wait_in_queue_seconds: queueWaitSeconds(chat, thread),
+      group_ids: groupIds.map(String),
+      assignee: agents.map(userLabel).filter(Boolean).join("; "),
+      chat_id: chat.id || "",
+      thread_id: thread.id || "",
+    };
   });
 }
 
-async function fetchRawArchivedChats(env, { from, to, agentIds, excludedAgentIds }) {
+function rawChatExportRows(chats, groupNameById = new Map()) {
+  return rawChatExportRecords(chats).map((record) => [
+    record.ticket_link,
+    record.created_date,
+    record.user_email,
+    record.wait_in_queue_seconds,
+    groupLabel(record.group_ids, groupNameById),
+    record.assignee,
+    record.chat_id,
+    record.thread_id,
+  ]);
+}
+
+async function fetchRawArchivedChatsPage(env, { from, to, agentIds, excludedAgentIds, pageId = "" }) {
   const filters = { from: formatArchiveDate(from), to: formatArchiveDate(to) };
   const agents = archiveAgentFilter(agentIds, excludedAgentIds);
   if (agents) {
     filters.agents = agents;
   }
 
+  const body = pageId
+    ? {
+        page_id: pageId,
+      }
+    : {
+        filters,
+        sort_order: "asc",
+        limit: RAW_CHAT_EXPORT_PAGE_SIZE,
+      };
+  const payload = await livechatAgentChatRequest(env, "list_archives", body);
+  return {
+    chats: payload.chats || [],
+    nextPageId: payload.next_page_id || "",
+    foundChats: Number(payload.found_chats || 0),
+  };
+}
+
+async function fetchRawArchivedChats(env, { from, to, agentIds, excludedAgentIds }) {
   const chats = [];
   let pageId = "";
   let truncated = false;
 
   for (let page = 0; page < RAW_CHAT_EXPORT_MAX_PAGES; page += 1) {
-    const body = pageId
-      ? {
-          page_id: pageId,
-        }
-      : {
-          filters,
-          sort_order: "asc",
-          limit: RAW_CHAT_EXPORT_PAGE_SIZE,
-        };
-    const payload = await livechatAgentChatRequest(env, "list_archives", body);
-    chats.push(...(payload.chats || []));
-    pageId = payload.next_page_id || "";
+    const payload = await fetchRawArchivedChatsPage(env, {
+      from,
+      to,
+      agentIds,
+      excludedAgentIds,
+      pageId,
+    });
+    chats.push(...payload.chats);
+    pageId = payload.nextPageId;
     if (!pageId) {
       return { chats, truncated: false };
     }
@@ -244,6 +272,22 @@ async function fetchRawArchivedChats(env, { from, to, agentIds, excludedAgentIds
 
   truncated = Boolean(pageId);
   return { chats, truncated };
+}
+
+async function exportRawChatsPage(context, { from, to, agentIds, excludedAgentIds, pageId }) {
+  const result = await fetchRawArchivedChatsPage(context.env, {
+    from,
+    to,
+    agentIds,
+    excludedAgentIds,
+    pageId,
+  });
+  return json({
+    records: rawChatExportRecords(result.chats),
+    nextPageId: result.nextPageId,
+    foundChats: result.foundChats,
+    pageSize: RAW_CHAT_EXPORT_PAGE_SIZE,
+  });
 }
 
 function rawChatsCsv(chats, truncated, groupNameById) {
@@ -713,6 +757,15 @@ export async function onRequest(context) {
   try {
     if (exportFormat) {
       try {
+        if (exportFormat === "raw_page") {
+          return await exportRawChatsPage(context, {
+            from,
+            to,
+            agentIds,
+            excludedAgentIds,
+            pageId: url.searchParams.get("page_id") || "",
+          });
+        }
         return await exportRawChats(context, { from, to, agentIds, excludedAgentIds, format: exportFormat });
       } catch (error) {
         console.error("Failed to export LiveChat raw chats.", error);
