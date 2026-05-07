@@ -4,6 +4,7 @@ import { getLiveChatDashboard, livechatAgentChatRequest, livechatReportsRequest 
 
 const RAW_CHAT_EXPORT_PAGE_SIZE = 100;
 const RAW_CHAT_EXPORT_MAX_PAGES = 45;
+const RAW_CHAT_EXCEL_MAX_CELL_CHARS = 4000;
 const RAW_CHAT_EXPORT_FORMATS = new Set(["raw_csv", "raw_excel"]);
 
 function isValidDate(value) {
@@ -105,6 +106,18 @@ function downloadResponse(content, contentType, filename) {
       "Content-Disposition": `attachment; filename="${filename}"`,
     }),
   });
+}
+
+function upstreamStatus(error) {
+  const status = Number(error?.status || 0);
+  return Number.isFinite(status) && status >= 400 ? status : 0;
+}
+
+function exportErrorResponse(error) {
+  const message = error?.message || "Failed to export LiveChat raw chats.";
+  const status = upstreamStatus(error);
+  const responseStatus = status >= 400 && status < 500 ? status : 502;
+  return errorResponse(`Failed to export LiveChat raw chats: ${message}`, responseStatus);
 }
 
 function splitAgentIds(value) {
@@ -279,9 +292,15 @@ function rawChatsCsv(chats, truncated) {
 function rawChatsExcelHtml(chats, truncated, from, to) {
   const headers = rawChatExportHeaders();
   const rows = rawChatExportRows(chats);
+  const excelCell = (value) => {
+    const text = `${value ?? ""}`;
+    return text.length > RAW_CHAT_EXCEL_MAX_CELL_CHARS
+      ? `${text.slice(0, RAW_CHAT_EXCEL_MAX_CELL_CHARS)}... [truncated for Excel export]`
+      : text;
+  };
   const tableRows = [
     `<tr>${headers.map((header) => `<th>${escapeXml(header)}</th>`).join("")}</tr>`,
-    ...rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeXml(cell)}</td>`).join("")}</tr>`),
+    ...rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeXml(excelCell(cell))}</td>`).join("")}</tr>`),
     ...(truncated
       ? [
           `<tr><td>EXPORT_TRUNCATED</td><td colspan="${headers.length - 1}">More chats matched this period than this export can fetch in one run.</td></tr>`,
@@ -722,13 +741,17 @@ export async function onRequest(context) {
     return errorResponse("Invalid LiveChat analytics export format.", 400);
   }
 
-  const prev = previousPeriod(from, to);
-
   try {
     if (exportFormat) {
-      return await exportRawChats(context, { from, to, agentIds, excludedAgentIds, format: exportFormat });
+      try {
+        return await exportRawChats(context, { from, to, agentIds, excludedAgentIds, format: exportFormat });
+      } catch (error) {
+        console.error("Failed to export LiveChat raw chats.", error);
+        return exportErrorResponse(error);
+      }
     }
 
+    const prev = previousPeriod(from, to);
     await ensureAnalyticsCache(context.env.DB);
     const directory = buildAgentDirectory(await getLiveChatDashboard(context.env));
     const reportAgentIds = effectiveAgentIds(agentIds, excludedAgentIds, directory);

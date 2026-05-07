@@ -52,10 +52,20 @@ export async function livechatRequest(env, action, body = {}) {
   });
 
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch (_error) {
+      payload = text;
+    }
+  }
 
   if (!response.ok) {
-    throw new Error(extractErrorMessage(payload, `LiveChat ${action} failed.`));
+    const error = new Error(extractErrorMessage(payload, `LiveChat ${action} failed.`));
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
 
   return payload;
@@ -175,12 +185,22 @@ export async function livechatReportsRequest(env, path, body = {}) {
   });
 
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch (_error) {
+      payload = text;
+    }
+  }
 
   if (!response.ok) {
-    throw new Error(
+    const error = new Error(
       extractErrorMessage(payload, `LiveChat reports${path} failed.`)
     );
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
 
   return payload;
@@ -201,12 +221,22 @@ export async function livechatAgentChatRequest(env, action, body = {}) {
   });
 
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch (_error) {
+      payload = text;
+    }
+  }
 
   if (!response.ok) {
-    throw new Error(
+    const error = new Error(
       extractErrorMessage(payload, `LiveChat agent ${action} failed.`)
     );
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
 
   return payload;
