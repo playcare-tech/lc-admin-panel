@@ -1,6 +1,10 @@
 import { requireAuth } from "../../_lib/auth.js";
 import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
-import { getLiveChatDashboard, livechatReportsRequest } from "../../_lib/livechat.js";
+import { getLiveChatDashboard, livechatAgentChatRequest, livechatReportsRequest } from "../../_lib/livechat.js";
+
+const RAW_CHAT_EXPORT_PAGE_SIZE = 100;
+const RAW_CHAT_EXPORT_MAX_PAGES = 45;
+const RAW_CHAT_EXPORT_FORMATS = new Set(["raw_csv", "raw_excel"]);
 
 function isValidDate(value) {
   return value && !Number.isNaN(new Date(value).getTime());
@@ -57,6 +61,275 @@ function buildFilters(from, to, agentIds) {
     to,
     ...(agentIds.length ? { agents: { values: agentIds } } : {}),
   };
+}
+
+function securityHeaders(extra = {}) {
+  return {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+    "X-Frame-Options": "DENY",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    ...extra,
+  };
+}
+
+function csvCell(value) {
+  const text = `${value ?? ""}`.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const safeText = /^[=+\-@]/.test(text.trimStart()) ? `'${text}` : text;
+  return `"${safeText.replaceAll('"', '""')}"`;
+}
+
+function escapeXml(value) {
+  return `${value ?? ""}`
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function filenameDate(value) {
+  return `${value || ""}`.slice(0, 10) || "period";
+}
+
+function rawChatExportFilename(from, to, extension) {
+  return `livechat-raw-chats-${filenameDate(from)}-to-${filenameDate(to)}.${extension}`;
+}
+
+function downloadResponse(content, contentType, filename) {
+  return new Response(content, {
+    status: 200,
+    headers: securityHeaders({
+      "Content-Type": contentType,
+      "Content-Disposition": `attachment; filename="${filename}"`,
+    }),
+  });
+}
+
+function splitAgentIds(value) {
+  return (value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function archiveAgentFilter(agentIds, excludedAgentIds) {
+  const included = new Set(agentIds);
+  for (const excluded of excludedAgentIds) {
+    included.delete(excluded);
+  }
+  if (included.size) {
+    return { values: Array.from(included) };
+  }
+  if (excludedAgentIds.size) {
+    return { exclude_values: Array.from(excludedAgentIds) };
+  }
+  return null;
+}
+
+function userById(chat) {
+  return new Map((chat.users || []).map((user) => [String(user.id), user]));
+}
+
+function usersByType(chat, type) {
+  return (chat.users || []).filter((user) => `${user.type || ""}` === type);
+}
+
+function userLabel(user) {
+  if (!user) return "";
+  return user.name || user.email || user.id || "";
+}
+
+function userEmail(user) {
+  return user?.email || (String(user?.id || "").includes("@") ? user.id : "");
+}
+
+function eventText(event) {
+  return event?.text || event?.message || event?.title || "";
+}
+
+function eventPayload(event) {
+  if (!event) return "";
+  try {
+    return JSON.stringify(event);
+  } catch (_error) {
+    return "";
+  }
+}
+
+function rawChatExportHeaders() {
+  return [
+    "chat_id",
+    "thread_id",
+    "thread_created_at",
+    "thread_active",
+    "event_id",
+    "event_created_at",
+    "event_type",
+    "author_id",
+    "author_type",
+    "author_name",
+    "author_email",
+    "customer_id",
+    "customer_name",
+    "customer_email",
+    "agent_ids",
+    "agent_names",
+    "agent_emails",
+    "group_ids",
+    "event_text",
+    "event_payload_json",
+  ];
+}
+
+function rawChatExportRows(chats) {
+  const rows = [];
+  for (const chat of chats) {
+    const thread = chat.thread || {};
+    const users = userById(chat);
+    const customer = usersByType(chat, "customer")[0] || {};
+    const agents = usersByType(chat, "agent");
+    const groupIds = thread.access?.group_ids || chat.access?.group_ids || [];
+    const base = [
+      chat.id || "",
+      thread.id || "",
+      thread.created_at || "",
+      thread.active === undefined ? "" : String(Boolean(thread.active)),
+      customer.id || "",
+      userLabel(customer),
+      userEmail(customer),
+      agents.map((agent) => agent.id).filter(Boolean).join("; "),
+      agents.map(userLabel).filter(Boolean).join("; "),
+      agents.map(userEmail).filter(Boolean).join("; "),
+      groupIds.join("; "),
+    ];
+    const events = Array.isArray(thread.events) && thread.events.length ? thread.events : [null];
+
+    for (const event of events) {
+      const author = users.get(String(event?.author_id || "")) || {};
+      rows.push([
+        base[0],
+        base[1],
+        base[2],
+        base[3],
+        event?.id || "",
+        event?.created_at || "",
+        event?.type || "",
+        event?.author_id || "",
+        author.type || "",
+        userLabel(author),
+        userEmail(author),
+        base[4],
+        base[5],
+        base[6],
+        base[7],
+        base[8],
+        base[9],
+        base[10],
+        eventText(event),
+        eventPayload(event),
+      ]);
+    }
+  }
+  return rows;
+}
+
+async function fetchRawArchivedChats(env, { from, to, agentIds, excludedAgentIds }) {
+  const filters = { from, to };
+  const agents = archiveAgentFilter(agentIds, excludedAgentIds);
+  if (agents) {
+    filters.agents = agents;
+  }
+
+  const chats = [];
+  let pageId = "";
+  let truncated = false;
+
+  for (let page = 0; page < RAW_CHAT_EXPORT_MAX_PAGES; page += 1) {
+    const body = pageId
+      ? {
+          page_id: pageId,
+        }
+      : {
+          filters,
+          sort_order: "asc",
+          limit: RAW_CHAT_EXPORT_PAGE_SIZE,
+        };
+    const payload = await livechatAgentChatRequest(env, "list_archives", body);
+    chats.push(...(payload.chats || []));
+    pageId = payload.next_page_id || "";
+    if (!pageId) {
+      return { chats, truncated: false };
+    }
+  }
+
+  truncated = Boolean(pageId);
+  return { chats, truncated };
+}
+
+function rawChatsCsv(chats, truncated) {
+  const rows = [rawChatExportHeaders(), ...rawChatExportRows(chats)];
+  if (truncated) {
+    rows.push(["EXPORT_TRUNCATED", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "More chats matched this period than this export can fetch in one run.", ""]);
+  }
+  return rows.map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
+}
+
+function rawChatsExcelHtml(chats, truncated, from, to) {
+  const headers = rawChatExportHeaders();
+  const rows = rawChatExportRows(chats);
+  const tableRows = [
+    `<tr>${headers.map((header) => `<th>${escapeXml(header)}</th>`).join("")}</tr>`,
+    ...rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeXml(cell)}</td>`).join("")}</tr>`),
+    ...(truncated
+      ? [
+          `<tr><td>EXPORT_TRUNCATED</td><td colspan="${headers.length - 1}">More chats matched this period than this export can fetch in one run.</td></tr>`,
+        ]
+      : []),
+  ].join("");
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    table { border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12px; }
+    th { background: #1f2937; color: #ffffff; font-weight: 700; }
+    th, td { border: 1px solid #d1d5db; padding: 6px; vertical-align: top; mso-number-format:"\\@"; }
+    caption { text-align: left; font-weight: 700; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <table>
+    <caption>LiveChat raw chats ${escapeXml(from)} to ${escapeXml(to)}</caption>
+    ${tableRows}
+  </table>
+</body>
+</html>`;
+}
+
+async function exportRawChats(context, { from, to, agentIds, excludedAgentIds, format }) {
+  const { chats, truncated } = await fetchRawArchivedChats(context.env, {
+    from,
+    to,
+    agentIds,
+    excludedAgentIds,
+  });
+
+  if (format === "raw_excel") {
+    return downloadResponse(
+      rawChatsExcelHtml(chats, truncated, from, to),
+      "application/vnd.ms-excel; charset=utf-8",
+      rawChatExportFilename(from, to, "xls"),
+    );
+  }
+
+  return downloadResponse(
+    rawChatsCsv(chats, truncated),
+    "text/csv; charset=utf-8",
+    rawChatExportFilename(from, to, "csv"),
+  );
 }
 
 function reportDatePart(value) {
@@ -432,16 +705,9 @@ export async function onRequest(context) {
   const url = new URL(context.request.url);
   const from = url.searchParams.get("from");
   const to = url.searchParams.get("to");
-  const agentIds = (url.searchParams.get("agents") || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-  const excludedAgentIds = new Set(
-    (url.searchParams.get("exclude_agents") || "")
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean),
-  );
+  const agentIds = splitAgentIds(url.searchParams.get("agents"));
+  const excludedAgentIds = new Set(splitAgentIds(url.searchParams.get("exclude_agents")));
+  const exportFormat = url.searchParams.get("export") || "";
 
   if (!from || !to) {
     return errorResponse("Missing required params: from, to", 400);
@@ -452,10 +718,17 @@ export async function onRequest(context) {
   if (new Date(to).getTime() <= new Date(from).getTime()) {
     return errorResponse("The to param must be after from.", 400);
   }
+  if (exportFormat && !RAW_CHAT_EXPORT_FORMATS.has(exportFormat)) {
+    return errorResponse("Invalid LiveChat analytics export format.", 400);
+  }
 
   const prev = previousPeriod(from, to);
 
   try {
+    if (exportFormat) {
+      return await exportRawChats(context, { from, to, agentIds, excludedAgentIds, format: exportFormat });
+    }
+
     await ensureAnalyticsCache(context.env.DB);
     const directory = buildAgentDirectory(await getLiveChatDashboard(context.env));
     const reportAgentIds = effectiveAgentIds(agentIds, excludedAgentIds, directory);

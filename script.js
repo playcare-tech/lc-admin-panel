@@ -1813,6 +1813,8 @@ function renderAnalyticsFilterBar() {
         <button id="analyticsNextBtn" class="btn btn-outline-secondary" type="button">Next period</button>
         <button id="analyticsFilterBtn" class="btn btn-primary" type="button">Filter</button>
         <button id="analyticsReloadBtn" class="btn btn-outline-secondary" type="button">Reload analytics</button>
+        <button class="btn btn-outline-secondary" type="button" data-livechat-raw-export="raw_csv">Raw CSV</button>
+        <button class="btn btn-outline-secondary" type="button" data-livechat-raw-export="raw_excel">Raw Excel</button>
         <label class="analytics-switch">
           <input id="analyticsCompare" class="form-check-input" type="checkbox" ${filters.compare ? "checked" : ""} />
           <span>Compare</span>
@@ -4425,7 +4427,20 @@ async function fetchAnalytics() {
   state.analytics.error = null;
   renderApp();
 
-  const filters = state.analytics.filters;
+  const params = liveChatAnalyticsQueryParams();
+
+  try {
+    state.analytics.data = await api(`/api/livechat/analytics?${params}`);
+  } catch (error) {
+    state.analytics.error = error.message;
+  } finally {
+    state.analytics.loading = false;
+    renderApp();
+  }
+}
+
+function liveChatAnalyticsQueryParams({ exportFormat = "", filtersOverride = null } = {}) {
+  const filters = filtersOverride || state.analytics.filters;
   const params = new URLSearchParams({
     from: filters.from,
     to: filters.to,
@@ -4436,15 +4451,52 @@ async function fetchAnalytics() {
   if (filters.excludeAgents.length) {
     params.set("exclude_agents", filters.excludeAgents.join(","));
   }
-
-  try {
-    state.analytics.data = await api(`/api/livechat/analytics?${params}`);
-  } catch (error) {
-    state.analytics.error = error.message;
-  } finally {
-    state.analytics.loading = false;
-    renderApp();
+  if (exportFormat) {
+    params.set("export", exportFormat);
   }
+
+  return params;
+}
+
+function liveChatAnalyticsExportFilters() {
+  const filters = state.analytics.filters;
+  return {
+    ...filters,
+    agents: filters.pendingAgents ?? stagedLiveChatAnalyticsSelection("analyticsAgents", filters.agents),
+    excludeAgents: filters.pendingExcludeAgents ?? stagedLiveChatAnalyticsSelection("analyticsExcludeAgents", filters.excludeAgents),
+  };
+}
+
+async function downloadLiveChatRawAnalytics(format) {
+  ensureAnalyticsRange();
+  const filters = liveChatAnalyticsExportFilters();
+  const params = liveChatAnalyticsQueryParams({ exportFormat: format, filtersOverride: filters });
+
+  const isExcel = format === "raw_excel";
+  setMessage(statusMessage, `Preparing LiveChat raw ${isExcel ? "Excel" : "CSV"} export...`);
+  const response = await fetch(`/api/livechat/analytics?${params.toString()}`);
+  const nextCsrfToken = response.headers.get("X-CSRF-Token");
+  if (nextCsrfToken) {
+    state.csrfToken = nextCsrfToken;
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    let message = `LiveChat raw export failed with ${response.status}.`;
+    try {
+      message = JSON.parse(text).error || message;
+    } catch (_error) {
+      message = text || message;
+    }
+    throw new Error(message);
+  }
+
+  const blob = await response.blob();
+  const filename = contentDispositionFilename(
+    response.headers.get("Content-Disposition"),
+    `livechat-raw-chats.${isExcel ? "xls" : "csv"}`,
+  );
+  downloadBlobFile(filename, blob);
+  setMessage(statusMessage, `LiveChat raw ${isExcel ? "Excel" : "CSV"} export downloaded.`, "success");
 }
 
 async function fetchHelpdeskSyncStatus() {
@@ -5509,6 +5561,15 @@ function bindAppEvents() {
   bindClick("analyticsReloadBtn", () => {
     state.analytics.data = null;
     fetchAnalytics();
+  });
+  document.querySelectorAll("[data-livechat-raw-export]").forEach((button) => {
+    button.onclick = async () => {
+      try {
+        await downloadLiveChatRawAnalytics(button.dataset.livechatRawExport);
+      } catch (error) {
+        setMessage(statusMessage, error.message, "error");
+      }
+    };
   });
   document.querySelectorAll("[data-analytics-sort]").forEach((button) => {
     button.onclick = () => {

@@ -155,6 +155,11 @@ function getReportsBaseUrl(env) {
   return `https://api.livechatinc.com/${version}/reports`;
 }
 
+function getAgentChatBaseUrl(env) {
+  const version = env.LIVECHAT_API_VERSION || DEFAULT_LIVECHAT_API_VERSION;
+  return `https://api.livechatinc.com/${version}/agent/action`;
+}
+
 export async function livechatReportsRequest(env, path, body = {}) {
   if (!env.TEXT_BASIC_AUTH_B64) {
     throw new Error("Missing TEXT_BASIC_AUTH_B64 environment variable.");
@@ -175,6 +180,32 @@ export async function livechatReportsRequest(env, path, body = {}) {
   if (!response.ok) {
     throw new Error(
       extractErrorMessage(payload, `LiveChat reports${path} failed.`)
+    );
+  }
+
+  return payload;
+}
+
+export async function livechatAgentChatRequest(env, action, body = {}) {
+  if (!env.TEXT_BASIC_AUTH_B64) {
+    throw new Error("Missing TEXT_BASIC_AUTH_B64 environment variable.");
+  }
+
+  const response = await fetch(`${getAgentChatBaseUrl(env)}/${action}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${env.TEXT_BASIC_AUTH_B64}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  const text = await response.text();
+  const payload = text ? JSON.parse(text) : {};
+
+  if (!response.ok) {
+    throw new Error(
+      extractErrorMessage(payload, `LiveChat agent ${action} failed.`)
     );
   }
 
