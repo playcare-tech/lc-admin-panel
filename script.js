@@ -4474,7 +4474,7 @@ const LIVECHAT_RAW_EXPORT_HEADERS = [
   "wait_in_queue_seconds",
   "group",
   "assignee",
-  "chat_id",
+  "tags",
   "thread_id",
 ];
 
@@ -4485,6 +4485,7 @@ function liveChatRawExportGroupLabel(groupIds = [], groupNameById = new Map()) {
 }
 
 function liveChatRawExportRow(record, groupNameById = new Map()) {
+  const tags = Array.isArray(record.tags) ? record.tags.join("; ") : record.tags || "";
   return [
     record.ticket_link || "",
     record.created_date || "",
@@ -4492,7 +4493,7 @@ function liveChatRawExportRow(record, groupNameById = new Map()) {
     record.wait_in_queue_seconds ?? "",
     liveChatRawExportGroupLabel(record.group_ids, groupNameById),
     record.assignee || "",
-    record.chat_id || "",
+    tags,
     record.thread_id || "",
   ];
 }

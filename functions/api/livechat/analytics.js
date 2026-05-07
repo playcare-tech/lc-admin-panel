@@ -168,13 +168,13 @@ function rawChatExportHeaders() {
     "wait_in_queue_seconds",
     "group",
     "assignee",
-    "chat_id",
+    "tags",
     "thread_id",
   ];
 }
 
-function chatArchiveLink(chatId) {
-  return chatId ? `https://my.livechatinc.com/archives/?q=${encodeURIComponent(chatId)}` : "";
+function chatArchiveLink(threadId) {
+  return threadId ? `https://my.livechatinc.com/archives/?q=${encodeURIComponent(threadId)}` : "";
 }
 
 function groupLabel(groupIds, groupNameById) {
@@ -194,20 +194,44 @@ function queueWaitSeconds(chat, thread) {
   return value === undefined ? "" : value;
 }
 
+function tagLabel(tag) {
+  if (!tag) return "";
+  if (typeof tag === "string") return tag;
+  return tag.name || tag.tag || tag.id || tag.value || "";
+}
+
+function threadTagLabels(chat, thread) {
+  return Array.from(
+    new Set(
+      [...(thread.tags || []), ...(chat.tags || [])]
+        .map(tagLabel)
+        .filter(Boolean),
+    ),
+  );
+}
+
+function threadAgentLabels(chat, thread) {
+  const agents = usersByType(chat, "agent");
+  const threadUserIds = new Set((thread.user_ids || []).map(String));
+  const threadAgents = threadUserIds.size
+    ? agents.filter((agent) => threadUserIds.has(String(agent.id)))
+    : agents;
+  return threadAgents.map(userLabel).filter(Boolean).join("; ");
+}
+
 function rawChatExportRecords(chats) {
   return chats.map((chat) => {
     const thread = chat.thread || {};
     const customer = usersByType(chat, "customer")[0] || {};
-    const agents = usersByType(chat, "agent");
     const groupIds = thread.access?.group_ids || chat.access?.group_ids || [];
     return {
-      ticket_link: chatArchiveLink(chat.id),
+      ticket_link: chatArchiveLink(thread.id),
       created_date: thread.created_at || "",
       user_email: userEmail(customer),
       wait_in_queue_seconds: queueWaitSeconds(chat, thread),
       group_ids: groupIds.map(String),
-      assignee: agents.map(userLabel).filter(Boolean).join("; "),
-      chat_id: chat.id || "",
+      assignee: threadAgentLabels(chat, thread),
+      tags: threadTagLabels(chat, thread),
       thread_id: thread.id || "",
     };
   });
@@ -221,7 +245,7 @@ function rawChatExportRows(chats, groupNameById = new Map()) {
     record.wait_in_queue_seconds,
     groupLabel(record.group_ids, groupNameById),
     record.assignee,
-    record.chat_id,
+    (record.tags || []).join("; "),
     record.thread_id,
   ]);
 }
