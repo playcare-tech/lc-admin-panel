@@ -3115,9 +3115,13 @@ function renderWorkflowAnalyticsFilters() {
 function renderWorkflowAnalyticsCards() {
   const analytics = state.helpdeskWorkflows.analytics;
   const summary = analytics.data?.summary || {};
+  const openTickets = analytics.data?.openTickets || {};
   const period = analytics.data?.period;
   const meta = period ? `${period.from} to ${period.to}` : workflowAnalyticsPresetLabel(analytics.filters.preset);
+  const openCountLabel = (value) => (value === null || value === undefined ? "—" : ticketCountLabel(value));
   return renderStats([
+    { label: "Open today", value: openCountLabel(openTickets.today?.count), meta: `Created ${openTickets.today?.date || "today"} and still open` },
+    { label: "Open yesterday", value: openCountLabel(openTickets.yesterday?.count), meta: `Created ${openTickets.yesterday?.date || "yesterday"} and still open` },
     { label: "Solved", value: Number(summary.ticketsSolved || 0), meta: `Workflow ticket solves · ${meta}` },
     { label: "Empty replies", value: Number(summary.emptyTicketReplies || 0), meta: "Auto-reply empty requester tickets" },
     { label: "Auto-merged", value: Number(summary.ticketsMerged || 0), meta: "Duplicate + 6h merge rules" },
