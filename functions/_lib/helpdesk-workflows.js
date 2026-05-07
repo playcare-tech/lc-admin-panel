@@ -31,7 +31,7 @@ const RUN_STATS_TABLE_SQL = `
     workflow_type TEXT NOT NULL,
     metric TEXT NOT NULL,
     metric_date TEXT NOT NULL,
-    count INTEGER NOT NULL DEFAULT 0,
+    metric_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     PRIMARY KEY (run_id, metric)
   )
@@ -126,6 +126,8 @@ const BUILT_IN_WORKFLOWS = [
 
 let workflowTablesReady = false;
 let workflowTablesReadyPromise = null;
+let workflowStatsTableReady = false;
+let workflowStatsTableReadyPromise = null;
 
 function parseJson(value, fallback = {}) {
   if (!value) return fallback;
@@ -239,27 +241,23 @@ async function workflowExists(db, workflowId) {
   return Boolean(row);
 }
 
-async function prepareHelpdeskWorkflowTables(db) {
+async function tableColumns(db, tableName) {
+  const { results } = await db.prepare(`PRAGMA table_info(${tableName})`).all();
+  return new Set((results || []).map((column) => column.name));
+}
+
+async function prepareHelpdeskWorkflowCoreTables(db) {
   if (!(await objectExists(db, "table", "helpdesk_workflows"))) {
     await db.exec(WORKFLOWS_TABLE_SQL);
   }
   if (!(await objectExists(db, "table", "helpdesk_workflow_runs"))) {
     await db.exec(RUNS_TABLE_SQL);
   }
-  if (!(await objectExists(db, "table", "helpdesk_workflow_run_stats"))) {
-    await db.exec(RUN_STATS_TABLE_SQL);
-  }
   if (!(await objectExists(db, "index", "idx_helpdesk_workflow_runs_workflow_started"))) {
     await db.exec("CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_runs_workflow_started ON helpdesk_workflow_runs (workflow_id, started_at DESC)");
   }
   if (!(await objectExists(db, "index", "idx_helpdesk_workflow_runs_started"))) {
     await db.exec("CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_runs_started ON helpdesk_workflow_runs (started_at DESC)");
-  }
-  if (!(await objectExists(db, "index", "idx_helpdesk_workflow_run_stats_date_metric"))) {
-    await db.exec("CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_run_stats_date_metric ON helpdesk_workflow_run_stats (metric_date, metric)");
-  }
-  if (!(await objectExists(db, "index", "idx_helpdesk_workflow_run_stats_workflow_date"))) {
-    await db.exec("CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_run_stats_workflow_date ON helpdesk_workflow_run_stats (workflow_id, metric_date)");
   }
 
   const now = new Date().toISOString();
@@ -277,6 +275,19 @@ async function prepareHelpdeskWorkflowTables(db) {
   }
 }
 
+async function prepareHelpdeskWorkflowStatsTable(db) {
+  await db.exec(RUN_STATS_TABLE_SQL);
+  const columns = await tableColumns(db, "helpdesk_workflow_run_stats");
+  if (!columns.has("metric_count")) {
+    await db.exec("ALTER TABLE helpdesk_workflow_run_stats ADD COLUMN metric_count INTEGER NOT NULL DEFAULT 0");
+  }
+  if (columns.has("count")) {
+    await db.exec('UPDATE helpdesk_workflow_run_stats SET metric_count = "count" WHERE metric_count = 0');
+  }
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_run_stats_date_metric ON helpdesk_workflow_run_stats (metric_date, metric)");
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_run_stats_workflow_date ON helpdesk_workflow_run_stats (workflow_id, metric_date)");
+}
+
 export async function ensureHelpdeskWorkflowTables(db) {
   if (!db) {
     throw new Error("Missing DB binding.");
@@ -284,7 +295,7 @@ export async function ensureHelpdeskWorkflowTables(db) {
   if (workflowTablesReady) return;
 
   if (!workflowTablesReadyPromise) {
-    workflowTablesReadyPromise = prepareHelpdeskWorkflowTables(db)
+    workflowTablesReadyPromise = prepareHelpdeskWorkflowCoreTables(db)
       .then(() => {
         workflowTablesReady = true;
       })
@@ -295,6 +306,24 @@ export async function ensureHelpdeskWorkflowTables(db) {
   }
 
   await workflowTablesReadyPromise;
+}
+
+async function ensureHelpdeskWorkflowStatsTable(db) {
+  await ensureHelpdeskWorkflowTables(db);
+  if (workflowStatsTableReady) return;
+
+  if (!workflowStatsTableReadyPromise) {
+    workflowStatsTableReadyPromise = prepareHelpdeskWorkflowStatsTable(db)
+      .then(() => {
+        workflowStatsTableReady = true;
+      })
+      .catch((error) => {
+        workflowStatsTableReadyPromise = null;
+        throw error;
+      });
+  }
+
+  await workflowStatsTableReadyPromise;
 }
 
 export async function listHelpdeskWorkflows(env) {
@@ -509,7 +538,7 @@ export async function recordHelpdeskWorkflowRun(env, run) {
 }
 
 export async function recordHelpdeskWorkflowRunStats(env, run, timezoneOffsetMinutes = 0) {
-  await ensureHelpdeskWorkflowTables(env.DB);
+  await ensureHelpdeskWorkflowStatsTable(env.DB);
   if (run.status && run.status !== "success") return;
 
   const metadata = run.metadata || {};
@@ -523,7 +552,7 @@ export async function recordHelpdeskWorkflowRunStats(env, run, timezoneOffsetMin
     return env.DB.prepare(
       `
         INSERT OR REPLACE INTO helpdesk_workflow_run_stats
-          (run_id, workflow_id, workflow_title, workflow_type, metric, metric_date, count, created_at)
+          (run_id, workflow_id, workflow_title, workflow_type, metric, metric_date, metric_count, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `,
     ).bind(
@@ -542,7 +571,7 @@ export async function recordHelpdeskWorkflowRunStats(env, run, timezoneOffsetMin
 }
 
 async function backfillHelpdeskWorkflowRunStats(env, fromDate, toDate, timezoneOffsetMinutes = 0) {
-  await ensureHelpdeskWorkflowTables(env.DB);
+  await ensureHelpdeskWorkflowStatsTable(env.DB);
   const queryFrom = `${addDays(fromDate, -2)}T00:00:00.000Z`;
   const queryTo = `${addDays(toDate, 2)}T23:59:59.999Z`;
   const { results } = await env.DB.prepare(
@@ -577,7 +606,7 @@ async function backfillHelpdeskWorkflowRunStats(env, fromDate, toDate, timezoneO
 }
 
 export async function getHelpdeskWorkflowAnalytics(env, { from, to, timezoneOffsetMinutes = 0 } = {}) {
-  await ensureHelpdeskWorkflowTables(env.DB);
+  await ensureHelpdeskWorkflowStatsTable(env.DB);
   const today = workflowDateKey(new Date().toISOString(), timezoneOffsetMinutes);
   const defaultFrom = addDays(today, -6);
   const fromDate = parseDateKey(from, defaultFrom);
@@ -590,7 +619,7 @@ export async function getHelpdeskWorkflowAnalytics(env, { from, to, timezoneOffs
 
   const { results } = await env.DB.prepare(
     `
-      SELECT metric_date, metric, SUM(count) AS count
+      SELECT metric_date, metric, SUM(metric_count) AS total_count
       FROM helpdesk_workflow_run_stats
       WHERE metric_date >= ?
         AND metric_date <= ?
@@ -617,7 +646,7 @@ export async function getHelpdeskWorkflowAnalytics(env, { from, to, timezoneOffs
     const day = dailyByDate.get(row.metric_date);
     const key = metricKeys[row.metric];
     if (!day || !key) continue;
-    day[key] = Number(row.count || 0);
+    day[key] = Number(row.total_count || 0);
   }
 
   const daily = Array.from(dailyByDate.values());

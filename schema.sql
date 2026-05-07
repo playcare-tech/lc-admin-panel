@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS helpdesk_workflow_run_stats (
   workflow_type TEXT NOT NULL,
   metric TEXT NOT NULL,
   metric_date TEXT NOT NULL,
-  count INTEGER NOT NULL DEFAULT 0,
+  metric_count INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   PRIMARY KEY (run_id, metric)
 );
