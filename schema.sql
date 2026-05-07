@@ -36,6 +36,21 @@ CREATE TABLE IF NOT EXISTS helpdesk_workflow_runs (
 CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_runs_workflow_started ON helpdesk_workflow_runs (workflow_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_runs_started ON helpdesk_workflow_runs (started_at DESC);
 
+CREATE TABLE IF NOT EXISTS helpdesk_workflow_run_stats (
+  run_id TEXT NOT NULL,
+  workflow_id TEXT NOT NULL,
+  workflow_title TEXT NOT NULL,
+  workflow_type TEXT NOT NULL,
+  metric TEXT NOT NULL,
+  metric_date TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, metric)
+);
+
+CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_run_stats_date_metric ON helpdesk_workflow_run_stats (metric_date, metric);
+CREATE INDEX IF NOT EXISTS idx_helpdesk_workflow_run_stats_workflow_date ON helpdesk_workflow_run_stats (workflow_id, metric_date);
+
 CREATE TABLE IF NOT EXISTS admin_users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT NOT NULL UNIQUE,

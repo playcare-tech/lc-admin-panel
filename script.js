@@ -197,6 +197,16 @@ const state = {
     runsFor: "",
     runningWorkflowId: "",
     savingWorkflowId: "",
+    analytics: {
+      loading: false,
+      error: null,
+      data: null,
+      filters: {
+        preset: "last_7_days",
+        from: "",
+        to: "",
+      },
+    },
     form: defaultHelpdeskWorkflowForm(),
   },
   helpdeskTickets: {
@@ -3053,6 +3063,117 @@ function workflowMarketingSpamKeywordsValue(workflow) {
   return source.join(", ");
 }
 
+function workflowAnalyticsPresetLabel(value) {
+  const labels = {
+    last_7_days: "Last 7 days",
+    this_month: "Current month",
+    last_month: "Previous month",
+    custom: "Custom range",
+  };
+  return labels[value] || "Last 7 days";
+}
+
+function ensureWorkflowAnalyticsRange() {
+  const filters = state.helpdeskWorkflows.analytics.filters;
+  if (filters.preset === "custom" && filters.from && filters.to) {
+    return;
+  }
+  const range = analyticsPresetRange(filters.preset || "last_7_days");
+  filters.from = localDateValue(range.from);
+  filters.to = localDateValue(range.to);
+}
+
+function renderWorkflowAnalyticsFilters() {
+  ensureWorkflowAnalyticsRange();
+  const filters = state.helpdeskWorkflows.analytics.filters;
+  const presets = ["last_7_days", "this_month", "last_month", "custom"];
+  return `
+    <div class="table-shell workflow-analytics-filter-shell">
+      <div class="workflow-analytics-filter-grid">
+        <label class="tickets-filter-group">
+          <span>Period</span>
+          <select id="workflowAnalyticsPreset" class="form-select">
+            ${presets.map((preset) => `<option value="${preset}" ${filters.preset === preset ? "selected" : ""}>${workflowAnalyticsPresetLabel(preset)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="tickets-filter-group">
+          <span>From</span>
+          <input id="workflowAnalyticsFrom" class="form-control" type="date" value="${escapeHtml(filters.from)}" />
+        </label>
+        <label class="tickets-filter-group">
+          <span>To</span>
+          <input id="workflowAnalyticsTo" class="form-control" type="date" value="${escapeHtml(filters.to)}" />
+        </label>
+        <div class="workflow-form-actions">
+          <button id="workflowAnalyticsReloadBtn" class="btn btn-outline-secondary" type="button">Reload analytics</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderWorkflowAnalyticsCards() {
+  const analytics = state.helpdeskWorkflows.analytics;
+  const summary = analytics.data?.summary || {};
+  const period = analytics.data?.period;
+  const meta = period ? `${period.from} to ${period.to}` : workflowAnalyticsPresetLabel(analytics.filters.preset);
+  return renderStats([
+    { label: "Solved", value: Number(summary.ticketsSolved || 0), meta: `Workflow ticket solves · ${meta}` },
+    { label: "Empty replies", value: Number(summary.emptyTicketReplies || 0), meta: "Auto-reply empty requester tickets" },
+    { label: "Auto-merged", value: Number(summary.ticketsMerged || 0), meta: "Duplicate + 6h merge rules" },
+  ]);
+}
+
+function renderWorkflowAnalyticsDailyRows() {
+  const daily = state.helpdeskWorkflows.analytics.data?.daily || [];
+  if (!daily.length) {
+    return `<tr><td colspan="4"><div class="empty-state">No workflow analytics for this period.</div></td></tr>`;
+  }
+  return daily
+    .map(
+      (day) => `
+        <tr>
+          <td>${escapeHtml(day.date)}</td>
+          <td>${Number(day.ticketsSolved || 0)}</td>
+          <td>${Number(day.emptyTicketReplies || 0)}</td>
+          <td>${Number(day.ticketsMerged || 0)}</td>
+        </tr>
+      `,
+    )
+    .join("");
+}
+
+function renderWorkflowAnalyticsTable() {
+  const analytics = state.helpdeskWorkflows.analytics;
+  return `
+    <div class="table-shell workflow-analytics-shell">
+      <div class="tickets-toolbar">
+        <div>
+          <div class="section-title">Workflow analytics</div>
+          <div class="subtle">${analytics.loading ? "Loading analytics..." : "Daily counts are persisted in D1 from workflow runs."}</div>
+        </div>
+      </div>
+      ${
+        analytics.error
+          ? `<div class="empty-state analytics-error">${escapeHtml(analytics.error)}</div>`
+          : `<div class="table-responsive">
+              <table class="table admin-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Solved</th>
+                    <th>Empty replies</th>
+                    <th>Auto-merged</th>
+                  </tr>
+                </thead>
+                <tbody>${renderWorkflowAnalyticsDailyRows()}</tbody>
+              </table>
+            </div>`
+      }
+    </div>
+  `;
+}
+
 function renderHelpdeskWorkflowRows() {
   const workflows = state.helpdeskWorkflows.workflows || [];
   if (!workflows.length) {
@@ -3250,6 +3371,9 @@ function renderHelpdeskWorkflows() {
         { label: "Enabled", value: enabledCount, meta: "Currently active" },
         { label: "Runs", value: runsLast24h, meta: "Last 24 hours" },
       ])}
+      ${renderWorkflowAnalyticsFilters()}
+      ${renderWorkflowAnalyticsCards()}
+      ${renderWorkflowAnalyticsTable()}
       <div class="table-shell workflows-table-shell">
         <div class="tickets-toolbar">
           <div>
@@ -4713,6 +4837,28 @@ async function fetchHelpdeskWorkflows({ runsFor = state.helpdeskWorkflows.runsFo
   }
 }
 
+async function fetchHelpdeskWorkflowAnalytics() {
+  ensureWorkflowAnalyticsRange();
+  const analytics = state.helpdeskWorkflows.analytics;
+  analytics.loading = true;
+  analytics.error = null;
+  if (state.section === "helpdesk-workflows") renderApp();
+
+  try {
+    const params = new URLSearchParams({
+      from: analytics.filters.from,
+      to: analytics.filters.to,
+      tzOffset: String(new Date().getTimezoneOffset()),
+    });
+    analytics.data = await api(`/api/helpdesk/workflow-analytics?${params.toString()}`);
+  } catch (error) {
+    analytics.error = error.message;
+  } finally {
+    analytics.loading = false;
+    if (state.section === "helpdesk-workflows") renderApp();
+  }
+}
+
 async function toggleHelpdeskWorkflow(workflowId, enabled) {
   try {
     setMessage(statusMessage, `${enabled ? "Enabling" : "Disabling"} workflow...`);
@@ -4752,6 +4898,7 @@ async function runHelpdeskWorkflow(workflowId) {
       run.details || "Workflow run finished.",
       run.status === "error" ? "error" : "success",
     );
+    await fetchHelpdeskWorkflowAnalytics();
   } catch (error) {
     setMessage(statusMessage, error.message, "error");
   } finally {
@@ -5405,6 +5552,14 @@ function renderApp() {
   if (state.section === "helpdesk-workflows" && !state.helpdeskWorkflows.loading && !state.helpdeskWorkflows.workflows.length && !state.helpdeskWorkflows.error) {
     fetchHelpdeskWorkflows();
   }
+  if (
+    state.section === "helpdesk-workflows" &&
+    !state.helpdeskWorkflows.analytics.loading &&
+    !state.helpdeskWorkflows.analytics.data &&
+    !state.helpdeskWorkflows.analytics.error
+  ) {
+    fetchHelpdeskWorkflowAnalytics();
+  }
 }
 
 async function refreshData() {
@@ -5969,6 +6124,27 @@ function bindAppEvents() {
   });
   bindClick("workflowsReloadBtn", () => {
     fetchHelpdeskWorkflows();
+    fetchHelpdeskWorkflowAnalytics();
+  });
+  document.getElementById("workflowAnalyticsPreset")?.addEventListener("change", (event) => {
+    state.helpdeskWorkflows.analytics.filters.preset = event.target.value;
+    state.helpdeskWorkflows.analytics.data = null;
+    fetchHelpdeskWorkflowAnalytics();
+  });
+  document.getElementById("workflowAnalyticsFrom")?.addEventListener("change", (event) => {
+    state.helpdeskWorkflows.analytics.filters.from = event.target.value;
+    state.helpdeskWorkflows.analytics.filters.preset = "custom";
+    state.helpdeskWorkflows.analytics.data = null;
+    fetchHelpdeskWorkflowAnalytics();
+  });
+  document.getElementById("workflowAnalyticsTo")?.addEventListener("change", (event) => {
+    state.helpdeskWorkflows.analytics.filters.to = event.target.value;
+    state.helpdeskWorkflows.analytics.filters.preset = "custom";
+    state.helpdeskWorkflows.analytics.data = null;
+    fetchHelpdeskWorkflowAnalytics();
+  });
+  bindClick("workflowAnalyticsReloadBtn", () => {
+    fetchHelpdeskWorkflowAnalytics();
   });
   bindClick("workflowSaveBtn", () => {
     saveHelpdeskWorkflow();

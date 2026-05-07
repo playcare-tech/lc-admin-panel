@@ -15,6 +15,7 @@ import {
   lastHelpdeskWorkflowRunAt,
   listEnabledHelpdeskWorkflows,
   recordHelpdeskWorkflowRun,
+  recordHelpdeskWorkflowRunStats,
 } from "../../_lib/helpdesk-workflows.js";
 
 const ACTIVE_STATUSES = ["open", "pending", "onhold"];
@@ -555,6 +556,7 @@ async function patchTicketStatusAndTags(env, ticket, status, tagIds) {
 
   const nextTagIds = Array.from(currentTagIds);
   const hasAllTags = (tagIds || []).every((tagId) => currentTagIds.has(String(tagId)));
+  const previousStatus = ticket.status || "";
   if (ticket.status === status && hasAllTags) {
     return null;
   }
@@ -572,6 +574,9 @@ async function patchTicketStatusAndTags(env, ticket, status, tagIds) {
     ticketId,
     shortId: ticket.short_id || ticket.shortID || ticketId,
     link: ticketLink(ticket),
+    previousStatus,
+    nextStatus: status,
+    statusChanged: previousStatus !== status,
   };
 }
 
@@ -1390,7 +1395,7 @@ async function runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes,
     }
     const finishedAt = new Date().toISOString();
 
-    await recordHelpdeskWorkflowRun(context.env, {
+    const runId = await recordHelpdeskWorkflowRun(context.env, {
       workflowId: workflow.id,
       workflowTitle: workflow.title,
       status: "success",
@@ -1399,6 +1404,18 @@ async function runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes,
       details: result.details,
       metadata: result.metadata,
     });
+    await recordHelpdeskWorkflowRunStats(
+      context.env,
+      {
+        runId,
+        workflowId: workflow.id,
+        workflowTitle: workflow.title,
+        status: "success",
+        startedAt,
+        metadata: result.metadata,
+      },
+      timezoneOffsetMinutes,
+    );
     await writeLogSafely(context.env, {
       actor: auth.session.user,
       area: "helpdesk",

@@ -1174,6 +1174,13 @@ body {
   vertical-align: middle;
 }
 
+.workflow-analytics-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(160px, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+}
+
 .workflow-name-cell {
   display: grid;
   gap: 3px;
@@ -1746,6 +1753,7 @@ body {
   .analytics-card-grid,
   .helpdesk-analytics-filters,
   .tickets-filter-bar,
+  .workflow-analytics-filter-grid,
   .workflow-form-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1769,6 +1777,7 @@ body {
   .analytics-top-grid,
   .helpdesk-analytics-filters,
   .tickets-filter-bar,
+  .workflow-analytics-filter-grid,
   .workflow-form-grid,
   .workflow-inline-config-row {
     grid-template-columns: 1fr;
