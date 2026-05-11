@@ -30,7 +30,7 @@ const AUTO_MERGE_DETAIL_LOOKUP_LIMIT = 12;
 const AUTO_MERGE_MAX_MERGES_PER_RUN = 2;
 const AUTO_RESOLVE_PAGE_SIZE = 100;
 const TICKET_EXPORT_PAGE_SIZE = 100;
-const TICKET_EXPORT_LIMITS = new Set([500, 1000]);
+const TICKET_EXPORT_LIMITS = new Set([500]);
 const AUTO_RESOLVE_SOURCE_STATUSES = ["open", "pending", "onhold", "solved"];
 const AUTO_RESOLVE_MAX_CHANGES_PER_RUN = 20;
 const WORKFLOW_AUTOMATIC_RUN_INTERVAL_MINUTES = 5;
@@ -1954,7 +1954,7 @@ function firstRequesterMessage(ticket) {
 }
 
 async function ticketExportRows(env, { status, silo, filters, limit }) {
-  const rows = [["ticket_id", "short_id", "created_at", "requester_email", "first_user_message"]];
+  const rows = [["ticket_id", "short_id", "created_at", "requester_email", "subject", "first_user_message"]];
   const requestStatus = status === "all" ? "all" : status;
   let cursor = null;
   let exported = 0;
@@ -1981,6 +1981,7 @@ async function ticketExportRows(env, { status, silo, filters, limit }) {
         ticket.short_id || ticket.shortID || "",
         ticket.createdAt || "",
         ticket.requesterEmail || "",
+        ticket.subject || "",
         firstRequesterMessage(rawTicket),
       ]);
       exported += 1;
@@ -2008,7 +2009,7 @@ async function exportTicketsCsv(context) {
   const limit = safeTicketExportLimit(url.searchParams.get("limit"));
   const rows = await ticketExportRows(context.env, { status, silo, filters, limit });
   const date = new Date().toISOString().slice(0, 10);
-  return csvResponse(`helpdesk-ticket-first-messages-last-${limit}-${date}.csv`, rows);
+  return csvResponse(`helpdesk-tickets-last-${limit}-${date}.csv`, rows);
 }
 
 async function mergeTickets(context, auth) {

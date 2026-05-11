@@ -2765,10 +2765,9 @@ function renderHelpdeskTicketsFilterBar() {
         </button>
       </div>
       <div class="tickets-filter-group">
-        <span>CSV export</span>
+        <span>Export</span>
         <div class="tickets-export-actions">
-          <button class="btn btn-outline-secondary" type="button" data-helpdesk-ticket-export="500">Last 500</button>
-          <button class="btn btn-outline-secondary" type="button" data-helpdesk-ticket-export="1000">Last 1000</button>
+          <button class="btn btn-outline-secondary" type="button" data-helpdesk-ticket-export="500">Download tickets</button>
         </div>
       </div>
     </div>
@@ -5035,7 +5034,7 @@ function contentDispositionFilename(value, fallback) {
 }
 
 async function downloadHelpdeskTicketsCsv(limit) {
-  const safeLimit = Number(limit) === 1000 ? 1000 : 500;
+  const safeLimit = 500;
   const filters = {
     ...helpdeskTicketFiltersFromDom(),
     sortBy: "createdAt",
@@ -5069,7 +5068,7 @@ async function downloadHelpdeskTicketsCsv(limit) {
   const blob = await response.blob();
   const filename = contentDispositionFilename(
     response.headers.get("Content-Disposition"),
-    `helpdesk-ticket-first-messages-last-${safeLimit}.csv`,
+    `helpdesk-tickets-last-${safeLimit}.csv`,
   );
   downloadBlobFile(filename, blob);
   setMessage(statusMessage, `Downloaded HelpDesk CSV for last ${safeLimit} ticket(s).`, "success");
