@@ -2767,7 +2767,7 @@ function renderHelpdeskTicketsFilterBar() {
       <div class="tickets-filter-group">
         <span>Export</span>
         <div class="tickets-export-actions">
-          <button class="btn btn-outline-secondary" type="button" data-helpdesk-ticket-export="500">Download tickets</button>
+          <button class="btn btn-outline-secondary" type="button" data-helpdesk-ticket-export="2000">Download tickets</button>
         </div>
       </div>
     </div>
@@ -5034,7 +5034,7 @@ function contentDispositionFilename(value, fallback) {
 }
 
 async function downloadHelpdeskTicketsCsv(limit) {
-  const safeLimit = 500;
+  const safeLimit = 2000;
   const filters = {
     ...helpdeskTicketFiltersFromDom(),
     sortBy: "createdAt",

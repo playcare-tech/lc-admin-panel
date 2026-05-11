@@ -30,7 +30,7 @@ const AUTO_MERGE_DETAIL_LOOKUP_LIMIT = 12;
 const AUTO_MERGE_MAX_MERGES_PER_RUN = 2;
 const AUTO_RESOLVE_PAGE_SIZE = 100;
 const TICKET_EXPORT_PAGE_SIZE = 100;
-const TICKET_EXPORT_LIMITS = new Set([500]);
+const TICKET_EXPORT_LIMITS = new Set([2000]);
 const AUTO_RESOLVE_SOURCE_STATUSES = ["open", "pending", "onhold", "solved"];
 const AUTO_RESOLVE_MAX_CHANGES_PER_RUN = 20;
 const WORKFLOW_AUTOMATIC_RUN_INTERVAL_MINUTES = 5;
@@ -192,7 +192,7 @@ function safePriority(value) {
 
 function safeTicketExportLimit(value) {
   const parsed = Number.parseInt(value || "", 10);
-  return TICKET_EXPORT_LIMITS.has(parsed) ? parsed : 500;
+  return TICKET_EXPORT_LIMITS.has(parsed) ? parsed : 2000;
 }
 
 function safePositiveInteger(value, fallback, max) {
