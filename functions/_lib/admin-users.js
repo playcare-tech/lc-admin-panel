@@ -151,10 +151,7 @@ function createSalt() {
 
 function clientIpFromRequest(request) {
   const cfIp = request?.headers?.get("CF-Connecting-IP") || "";
-  if (cfIp.trim()) return cfIp.trim();
-
-  const forwardedFor = request?.headers?.get("X-Forwarded-For") || "";
-  return forwardedFor.split(",")[0]?.trim() || "";
+  return cfIp.trim();
 }
 
 async function loginRateLimitDescriptors(request, username) {
