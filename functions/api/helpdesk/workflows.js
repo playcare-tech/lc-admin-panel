@@ -6,6 +6,7 @@ import { runHelpdeskWorkflowOnce } from "./tickets.js";
 import {
   createHelpdeskAutoReplyWorkflow,
   createHelpdeskAutoResolveWorkflow,
+  getHelpdeskWebhookStats,
   listHelpdeskWorkflowRuns,
   listHelpdeskWorkflows,
   setHelpdeskWorkflowEnabled,
@@ -87,15 +88,17 @@ async function resolveTagIds(env, tagNames) {
 async function getWorkflows(context) {
   const url = new URL(context.request.url);
   const runsFor = url.searchParams.get("runsFor") || "";
-  const [workflows, runs] = await Promise.all([
+  const [workflows, runs, webhookStats] = await Promise.all([
     listHelpdeskWorkflows(context.env),
     runsFor ? listHelpdeskWorkflowRuns(context.env, runsFor) : Promise.resolve([]),
+    getHelpdeskWebhookStats(context.env, { type: "create-ticket" }),
   ]);
 
   return json({
     workflows,
     runsFor,
     runs,
+    webhookStats,
   });
 }
 

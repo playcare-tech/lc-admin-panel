@@ -59,6 +59,22 @@ CREATE TABLE IF NOT EXISTS helpdesk_open_ticket_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_helpdesk_open_ticket_snapshots_captured ON helpdesk_open_ticket_snapshots (captured_at DESC);
 
+CREATE TABLE IF NOT EXISTS helpdesk_webhook_events (
+  id TEXT PRIMARY KEY,
+  webhook_type TEXT NOT NULL,
+  ticket_id TEXT,
+  ticket_short_id TEXT,
+  received_at TEXT NOT NULL,
+  status TEXT NOT NULL,
+  workflow_runs_count INTEGER NOT NULL DEFAULT 0,
+  actions_count INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  payload_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_helpdesk_webhook_events_received ON helpdesk_webhook_events (received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_helpdesk_webhook_events_type_received ON helpdesk_webhook_events (webhook_type, received_at DESC);
+
 CREATE TABLE IF NOT EXISTS admin_users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT NOT NULL UNIQUE,

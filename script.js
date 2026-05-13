@@ -197,6 +197,13 @@ const state = {
     runsFor: "",
     runningWorkflowId: "",
     savingWorkflowId: "",
+    timer: null,
+    webhookStats: {
+      total: 0,
+      receivedLast24h: 0,
+      receivedLast10m: 0,
+      recent: [],
+    },
     analytics: {
       loading: false,
       error: null,
@@ -3182,7 +3189,7 @@ function renderWorkflowAnalyticsTable() {
 function renderHelpdeskWorkflowRows() {
   const workflows = state.helpdeskWorkflows.workflows || [];
   if (!workflows.length) {
-    return `<tr><td colspan="5"><div class="empty-state">No HelpDesk workflows yet.</div></td></tr>`;
+    return `<tr><td colspan="7"><div class="empty-state">No HelpDesk workflows yet.</div></td></tr>`;
   }
 
   return workflows
@@ -3224,6 +3231,8 @@ function renderHelpdeskWorkflowRows() {
           </td>
           <td><span class="chip">${escapeHtml(helpdeskWorkflowTypeLabel(workflow.type))}</span></td>
           <td>${Number(workflow.runsLast24h || 0)}</td>
+          <td>${Number(workflow.actionsLast24h || 0)}</td>
+          <td>${workflow.lastRun ? escapeHtml(formatHelpdeskDateTime(workflow.lastRun.startedAt)) : "—"}</td>
           <td>
             <div class="workflow-actions">
               <button
@@ -3257,6 +3266,54 @@ function renderHelpdeskWorkflowRows() {
       `;
     })
     .join("");
+}
+
+function renderHelpdeskWorkflowWebhookRows() {
+  const recent = state.helpdeskWorkflows.webhookStats?.recent || [];
+  if (!recent.length) {
+    return `<tr><td colspan="5"><div class="empty-state">No create-ticket webhooks received yet.</div></td></tr>`;
+  }
+
+  return recent
+    .map(
+      (event) => `
+        <tr>
+          <td>${escapeHtml(formatHelpdeskDateTime(event.receivedAt))}</td>
+          <td>${escapeHtml(event.ticketShortId || event.ticketId || "—")}</td>
+          <td><span class="chip">${escapeHtml(event.status || "unknown")}</span></td>
+          <td>${Number(event.workflowRuns || 0)}</td>
+          <td>${Number(event.actions || 0)}${event.error ? `<div class="analytics-agent-sub">${escapeHtml(event.error)}</div>` : ""}</td>
+        </tr>
+      `,
+    )
+    .join("");
+}
+
+function renderHelpdeskWorkflowWebhookActivity() {
+  return `
+    <div class="table-shell workflow-webhook-shell">
+      <div class="tickets-toolbar">
+        <div>
+          <div class="section-title">Create-ticket webhook activity</div>
+          <div class="subtle">Incoming webhooks are processed at /webhooks/create-ticket/ and refreshed live while this page is open.</div>
+        </div>
+      </div>
+      <div class="table-responsive">
+        <table class="table admin-table">
+          <thead>
+            <tr>
+              <th>Received</th>
+              <th>Ticket</th>
+              <th>Status</th>
+              <th>Workflow runs</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>${renderHelpdeskWorkflowWebhookRows()}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
 function renderHelpdeskWorkflowRuns() {
@@ -3314,7 +3371,7 @@ function renderHelpdeskWorkflowCreateForm() {
       <div class="tickets-toolbar">
         <div>
           <div class="section-title">New workflow</div>
-          <div class="subtle">Enabled workflows run one at a time, at most once every 5 minutes.</div>
+          <div class="subtle">Enabled workflows run when a create-ticket webhook is received.</div>
         </div>
       </div>
       <div class="workflow-form-grid">
@@ -3366,16 +3423,21 @@ function renderHelpdeskWorkflowCreateForm() {
 
 function renderHelpdeskWorkflows() {
   const { loading, error, workflows } = state.helpdeskWorkflows;
+  const webhookStats = state.helpdeskWorkflows.webhookStats || {};
   const enabledCount = workflows.filter((workflow) => workflow.enabled).length;
   const runsLast24h = workflows.reduce((sum, workflow) => sum + Number(workflow.runsLast24h || 0), 0);
+  const actionsLast24h = workflows.reduce((sum, workflow) => sum + Number(workflow.actionsLast24h || 0), 0);
 
   return `
     <section class="workflows-page">
       ${renderStats([
         { label: "Workflows", value: workflows.length, meta: "Configured rules" },
         { label: "Enabled", value: enabledCount, meta: "Currently active" },
-        { label: "Runs", value: runsLast24h, meta: "Last 24 hours" },
+        { label: "Webhooks", value: Number(webhookStats.receivedLast10m || 0), meta: "Received in the last 10 minutes" },
+        { label: "Webhook 24h", value: Number(webhookStats.receivedLast24h || 0), meta: `${Number(webhookStats.total || 0)} total received` },
+        { label: "Actions", value: actionsLast24h, meta: `${runsLast24h} workflow run(s) in 24h` },
       ])}
+      ${renderHelpdeskWorkflowWebhookActivity()}
       ${renderWorkflowAnalyticsFilters()}
       ${renderWorkflowAnalyticsCards()}
       ${renderWorkflowAnalyticsTable()}
@@ -3397,6 +3459,8 @@ function renderHelpdeskWorkflows() {
                       <th>Workflow</th>
                       <th>Kind</th>
                       <th>Runs 24h</th>
+                      <th>Actions 24h</th>
+                      <th>Last run</th>
                       <th>Runs</th>
                       <th>Enabled</th>
                     </tr>
@@ -4798,6 +4862,12 @@ function stopHelpdeskTicketsRealtime() {
   state.helpdeskTickets.timer = null;
 }
 
+function stopHelpdeskWorkflowsRealtime() {
+  if (!state.helpdeskWorkflows.timer) return;
+  clearInterval(state.helpdeskWorkflows.timer);
+  state.helpdeskWorkflows.timer = null;
+}
+
 function startHelpdeskTicketsRealtime() {
   if (state.helpdeskTickets.timer) return;
   state.helpdeskTickets.timer = setInterval(() => {
@@ -4805,6 +4875,15 @@ function startHelpdeskTicketsRealtime() {
       fetchHelpdeskTickets({ silent: true });
     }
   }, 30 * 1000);
+}
+
+function startHelpdeskWorkflowsRealtime() {
+  if (state.helpdeskWorkflows.timer) return;
+  state.helpdeskWorkflows.timer = setInterval(() => {
+    if (state.section === "helpdesk-workflows") {
+      fetchHelpdeskWorkflows({ silent: true });
+    }
+  }, 5 * 1000);
 }
 
 function syncHelpdeskWorkflowFormFromDom() {
@@ -4821,10 +4900,10 @@ function syncHelpdeskWorkflowFormFromDom() {
   };
 }
 
-async function fetchHelpdeskWorkflows({ runsFor = state.helpdeskWorkflows.runsFor || "" } = {}) {
-  state.helpdeskWorkflows.loading = true;
+async function fetchHelpdeskWorkflows({ runsFor = state.helpdeskWorkflows.runsFor || "", silent = false } = {}) {
+  if (!silent) state.helpdeskWorkflows.loading = true;
   state.helpdeskWorkflows.error = null;
-  if (state.section === "helpdesk-workflows") renderApp();
+  if (!silent && state.section === "helpdesk-workflows") renderApp();
 
   try {
     const params = new URLSearchParams();
@@ -4834,10 +4913,11 @@ async function fetchHelpdeskWorkflows({ runsFor = state.helpdeskWorkflows.runsFo
     state.helpdeskWorkflows.workflows = response.workflows || [];
     state.helpdeskWorkflows.runs = response.runs || [];
     state.helpdeskWorkflows.runsFor = response.runsFor || runsFor || "";
+    state.helpdeskWorkflows.webhookStats = response.webhookStats || state.helpdeskWorkflows.webhookStats;
   } catch (error) {
     state.helpdeskWorkflows.error = error.message;
   } finally {
-    state.helpdeskWorkflows.loading = false;
+    if (!silent) state.helpdeskWorkflows.loading = false;
     if (state.section === "helpdesk-workflows") renderApp();
   }
 }
@@ -4986,8 +5066,6 @@ function helpdeskTicketsQueryParams({ includeCounts = true, includeCursor = true
     order: filters.order || "desc",
     includeCounts: includeCounts ? "1" : "0",
     autoMerge: "0",
-    workflows: "0",
-    tzOffset: String(new Date().getTimezoneOffset()),
   });
   const cursor = includeCursor ? helpdeskTicketsCurrentCursor() : null;
   if (cursor) {
@@ -5486,6 +5564,9 @@ function renderApp() {
   if (state.section !== "helpdesk-tickets") {
     stopHelpdeskTicketsRealtime();
   }
+  if (state.section !== "helpdesk-workflows") {
+    stopHelpdeskWorkflowsRealtime();
+  }
   document.querySelectorAll(".sidebar-link").forEach((button) => {
     button.classList.toggle("active", button.dataset.section === state.section);
   });
@@ -5557,6 +5638,9 @@ function renderApp() {
   if (state.section === "helpdesk-workflows" && !state.helpdeskWorkflows.loading && !state.helpdeskWorkflows.workflows.length && !state.helpdeskWorkflows.error) {
     fetchHelpdeskWorkflows();
   }
+  if (state.section === "helpdesk-workflows") {
+    startHelpdeskWorkflowsRealtime();
+  }
   if (
     state.section === "helpdesk-workflows" &&
     !state.helpdeskWorkflows.analytics.loading &&
@@ -5591,6 +5675,7 @@ async function refreshData() {
   }
   if (workflowsResult.status === "fulfilled") {
     state.helpdeskWorkflows.workflows = workflowsResult.value.workflows || [];
+    state.helpdeskWorkflows.webhookStats = workflowsResult.value.webhookStats || state.helpdeskWorkflows.webhookStats;
   }
   state.logs = logsResult.status === "fulfilled" ? logsResult.value.logs || [] : [];
   state.logsWarning = logsResult.status === "fulfilled" ? logsResult.value.warning || "" : "Logs unavailable.";

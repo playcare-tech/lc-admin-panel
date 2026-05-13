@@ -11,8 +11,7 @@ import {
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import { listLogsByAction, writeLog, writeLogSafely } from "../../_lib/logs.js";
 import {
-  lastAnyHelpdeskWorkflowRunAt,
-  lastHelpdeskWorkflowRunAt,
+  helpdeskWorkflowActionCount,
   listEnabledHelpdeskWorkflows,
   recordHelpdeskWorkflowRun,
   recordHelpdeskWorkflowRunStats,
@@ -33,7 +32,6 @@ const TICKET_EXPORT_PAGE_SIZE = 100;
 const TICKET_EXPORT_LIMITS = new Set([2000]);
 const AUTO_RESOLVE_SOURCE_STATUSES = ["open", "pending", "onhold", "solved"];
 const AUTO_RESOLVE_MAX_CHANGES_PER_RUN = 20;
-const WORKFLOW_AUTOMATIC_RUN_INTERVAL_MINUTES = 5;
 const MARKETING_SPAM_TAG_NAME = "wf_spam";
 const MARKETING_SPAM_RECENT_OPEN_PAGE_SIZE = 40;
 const MARKETING_SPAM_RECENT_OPEN_MAX_PAGES = 3;
@@ -53,14 +51,6 @@ const RUNNABLE_WORKFLOW_TYPES = new Set([
   AUTO_MERGE_6H_WORKFLOW_TYPE,
   AUTO_MARKETING_SPAM_WORKFLOW_TYPE,
 ]);
-const WORKFLOW_TYPE_ORDER = {
-  [AUTO_RESOLVE_WORKFLOW_TYPE]: 0,
-  [AUTO_MARKETING_SPAM_WORKFLOW_TYPE]: 1,
-  [AUTO_REPLY_WORKFLOW_TYPE]: 2,
-  [AUTO_REPLY_EMPTY_REQUESTER_WORKFLOW_TYPE]: 3,
-  [AUTO_MERGE_WORKFLOW_TYPE]: 4,
-  [AUTO_MERGE_6H_WORKFLOW_TYPE]: 5,
-};
 const SORT_FIELDS = ["createdAt", "updatedAt", "lastMessageAt"];
 const PRIORITIES = new Set(["-10", "0", "10", "20"]);
 const STATUSES = new Set(["open", "pending", "onhold", "solved", "closed"]);
@@ -511,38 +501,6 @@ async function mergeChildTicketPreservingTeam(env, parentDetail, parentTicket, c
       body: preservedTeam,
     });
   }
-}
-
-function workflowIntervalMinutes(workflow) {
-  const configured = Number(workflow.config?.intervalMinutes);
-  if (Number.isFinite(configured) && configured > 0) return configured;
-  return WORKFLOW_AUTOMATIC_RUN_INTERVAL_MINUTES;
-}
-
-function dateMs(value) {
-  const parsed = value ? new Date(value).getTime() : 0;
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function elapsedMinutesSince(value) {
-  const lastMs = dateMs(value);
-  if (!lastMs) return Number.POSITIVE_INFINITY;
-  return (Date.now() - lastMs) / 60000;
-}
-
-async function workflowRunInfo(env, workflow) {
-  const lastRunAt = await lastHelpdeskWorkflowRunAt(env, workflow.id);
-  return {
-    workflow,
-    lastRunAt,
-    lastRunMs: dateMs(lastRunAt),
-    due: elapsedMinutesSince(lastRunAt) >= workflowIntervalMinutes(workflow),
-  };
-}
-
-async function automaticWorkflowRunDue(env) {
-  const lastRunAt = await lastAnyHelpdeskWorkflowRunAt(env);
-  return elapsedMinutesSince(lastRunAt) >= WORKFLOW_AUTOMATIC_RUN_INTERVAL_MINUTES;
 }
 
 async function patchTicketStatusAndTags(env, ticket, status, tagIds) {
@@ -1177,6 +1135,169 @@ async function runEmptyRequesterReplyWorkflow(context, workflow) {
   };
 }
 
+async function runAutoResolveWorkflowForTicket(context, workflow, ticketDetail) {
+  const config = workflow.config || {};
+  const requesterEmail = `${config.requesterEmail || ""}`.trim().toLowerCase();
+  const status = `${config.status || "solved"}`.trim().toLowerCase();
+  const configuredTagIds = Array.isArray(config.tagIds) ? config.tagIds.map(String).filter(Boolean) : [];
+  const tagNames = Array.isArray(config.tagNames) ? config.tagNames : [];
+  const tagIds = configuredTagIds.length ? configuredTagIds : await resolveHelpdeskTagIds(context.env, tagNames);
+  const ticket = normalizeHelpDeskTicketSummary(ticketDetail);
+  const matched = ticket.id && requesterKey(ticket) === requesterEmail && ticket.silo === "tickets" && !ticket.parentTicket;
+
+  if (!requesterEmail || !STATUSES.has(status)) {
+    throw new Error("Auto-resolve workflow has invalid configuration.");
+  }
+
+  const changed = matched ? await patchTicketStatusAndTags(context.env, ticket, status, tagIds) : null;
+  return {
+    details: changed
+      ? `Webhook auto-resolved ticket ${ticket.short_id || ticket.id} for ${requesterEmail}.`
+      : `Webhook checked ticket ${ticket.short_id || ticket.id || "unknown"}; requester rule did not apply.`,
+    metadata: {
+      trigger: "webhook:create-ticket",
+      type: workflow.type,
+      requesterEmail,
+      status,
+      tagIds,
+      tagNames,
+      checkedTicket: {
+        ticketId: ticket.id,
+        shortId: ticket.short_id,
+        requesterEmail: ticket.requesterEmail,
+      },
+      changedTickets: changed ? [changed] : [],
+      skippedTickets: changed
+        ? []
+        : [
+            {
+              ticketId: ticket.id,
+              shortId: ticket.short_id,
+              reason: matched ? "already_matched_state" : "requester_not_matched",
+            },
+          ],
+    },
+  };
+}
+
+async function runMarketingSpamWorkflowForTicket(context, workflow, ticketDetail) {
+  const config = workflow.config || {};
+  const status = `${config.status || "solved"}`.trim().toLowerCase();
+  const tagNames = Array.isArray(config.tagNames) && config.tagNames.length ? config.tagNames : [MARKETING_SPAM_TAG_NAME];
+  const configuredTagIds = Array.isArray(config.tagIds) ? config.tagIds.map(String).filter(Boolean) : [];
+  const tagIds = configuredTagIds.length ? configuredTagIds : await resolveHelpdeskTagIds(context.env, tagNames);
+  const scoreThreshold = safePositiveInteger(config.scoreThreshold, 4, 20);
+  const configuredKeywords = marketingSpamConfiguredKeywords(config);
+  const ticket = normalizeHelpDeskTicketSummary(ticketDetail);
+
+  if (!STATUSES.has(status)) {
+    throw new Error("Marketing spam workflow has invalid status configuration.");
+  }
+
+  const events = normalizeHelpDeskConversationEvents(ticketDetail);
+  const match =
+    ticket.status === "open" && !ticket.parentTicket
+      ? marketingSpamMatch(ticket, events, scoreThreshold, configuredKeywords)
+      : { matched: false, reason: ticket.parentTicket ? "child_ticket" : `status:${ticket.status || "unknown"}` };
+  const changed = match.matched ? await patchTicketStatusAndTags(context.env, ticket, status, tagIds) : null;
+
+  return {
+    details: changed
+      ? `Webhook auto-resolved marketing spam ticket ${ticket.short_id || ticket.id}.`
+      : `Webhook checked ticket ${ticket.short_id || ticket.id || "unknown"}; spam rule did not apply.`,
+    metadata: {
+      trigger: "webhook:create-ticket",
+      type: workflow.type,
+      status,
+      tagIds,
+      tagNames,
+      keywords: configuredKeywords,
+      scoreThreshold,
+      scannedTickets: 1,
+      changedTickets: changed
+        ? [
+            {
+              ...changed,
+              score: match.score,
+              matchedPhrases: match.matchedPhrases || [],
+              messagePreview: match.messagePreview || "",
+            },
+          ]
+        : [],
+      skippedTickets: changed
+        ? []
+        : [
+            {
+              ticketId: ticket.id,
+              shortId: ticket.short_id,
+              reason: match.reason,
+              score: match.score || 0,
+              matchedPhrases: match.matchedPhrases || [],
+            },
+          ],
+    },
+  };
+}
+
+async function runEmptyRequesterReplyWorkflowForTicket(context, workflow, ticketDetail) {
+  const config = workflow.config || {};
+  const messageText = `${config.messageText || config.message || ""}`.trim();
+  const status = `${config.status || "solved"}`.trim().toLowerCase();
+
+  if (!messageText) {
+    throw new Error("Empty requester workflow has no message text configured.");
+  }
+  if (!STATUSES.has(status)) {
+    throw new Error("Empty requester workflow has invalid status configuration.");
+  }
+
+  const senderAgent = await resolveWorkflowAgent(context.env, config);
+  const ticket = normalizeHelpDeskTicketSummary(ticketDetail);
+  const events = normalizeHelpDeskConversationEvents(ticketDetail);
+  const match =
+    ticket.status === "open" && !ticket.parentTicket
+      ? emptyRequesterTicketMatch(ticket, events, messageText)
+      : { matched: false, reason: ticket.parentTicket ? "child_ticket" : `status:${ticket.status || "unknown"}` };
+  const repliedTickets = [];
+  const skippedTickets = [];
+
+  if (match.matched) {
+    await replyAndSetTicketStatus(context.env, ticket, senderAgent, messageText, status);
+    repliedTickets.push({
+      ticketId: ticket.id,
+      shortId: ticket.short_id,
+      link: ticketLink(ticket),
+      requesterEmail: ticket.requesterEmail,
+      reason: match.reason,
+    });
+  } else {
+    skippedTickets.push({
+      ticketId: ticket.id,
+      shortId: ticket.short_id,
+      reason: match.reason,
+      messagePreview: match.messagePreview || "",
+    });
+  }
+
+  return {
+    details: repliedTickets.length
+      ? `Webhook auto-replied to and ${status} ticket ${ticket.short_id || ticket.id}.`
+      : `Webhook checked ticket ${ticket.short_id || ticket.id || "unknown"}; empty-requester rule did not apply.`,
+    metadata: {
+      trigger: "webhook:create-ticket",
+      type: workflow.type,
+      status,
+      senderAgentId: senderAgent.id,
+      senderName: senderAgent.name,
+      senderEmail: senderAgent.email,
+      candidates: 1,
+      scannedTickets: 1,
+      repliedTickets,
+      skippedTickets,
+    },
+  };
+}
+
 async function runAutoMergeWorkflow(context, auth, workflow) {
   const result = await autoMergeDuplicateOpenTickets(context, auth, workflow);
   const limitText = result.detailLimitReached || result.mergeLimitReached ? " More candidates will be checked on the next run." : "";
@@ -1376,11 +1497,17 @@ async function runAutoMergeSixHourWorkflow(context, auth, workflow) {
   };
 }
 
-async function runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes, openTickets) {
+async function runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes, openTickets, options = {}) {
   const startedAt = new Date().toISOString();
   try {
     let result;
-    if (workflow.type === AUTO_MERGE_WORKFLOW_TYPE) {
+    if (options.trigger === "webhook:create-ticket" && workflow.type === AUTO_RESOLVE_WORKFLOW_TYPE) {
+      result = await runAutoResolveWorkflowForTicket(context, workflow, options.ticketDetail);
+    } else if (options.trigger === "webhook:create-ticket" && workflow.type === AUTO_MARKETING_SPAM_WORKFLOW_TYPE) {
+      result = await runMarketingSpamWorkflowForTicket(context, workflow, options.ticketDetail);
+    } else if (options.trigger === "webhook:create-ticket" && workflow.type === AUTO_REPLY_EMPTY_REQUESTER_WORKFLOW_TYPE) {
+      result = await runEmptyRequesterReplyWorkflowForTicket(context, workflow, options.ticketDetail);
+    } else if (workflow.type === AUTO_MERGE_WORKFLOW_TYPE) {
       result = await runAutoMergeWorkflow(context, auth, workflow);
     } else if (workflow.type === AUTO_MERGE_6H_WORKFLOW_TYPE) {
       result = await runAutoMergeSixHourWorkflow(context, auth, workflow);
@@ -1426,14 +1553,17 @@ async function runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes,
       metadata: {
         workflowId: workflow.id,
         workflowTitle: workflow.title,
+        ...(options.webhookEventId ? { webhookEventId: options.webhookEventId } : {}),
         ...result.metadata,
       },
     });
 
     return {
       workflowId: workflow.id,
+      workflowTitle: workflow.title,
       status: "success",
       details: result.details,
+      metadata: result.metadata,
     };
   } catch (error) {
     const finishedAt = new Date().toISOString();
@@ -1459,13 +1589,19 @@ async function runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes,
         workflowId: workflow.id,
         workflowTitle: workflow.title,
         type: workflow.type,
+        trigger: options.trigger || "",
+        ...(options.webhookEventId ? { webhookEventId: options.webhookEventId } : {}),
       },
     });
 
     return {
       workflowId: workflow.id,
+      workflowTitle: workflow.title,
       status: "error",
       details: error.message || "Workflow failed.",
+      metadata: {
+        type: workflow.type,
+      },
     };
   }
 }
@@ -1474,49 +1610,30 @@ export async function runHelpdeskWorkflowOnce(context, auth, workflow, timezoneO
   return runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes, []);
 }
 
-export async function runNextAutomaticHelpdeskWorkflow(
+export async function runEnabledHelpdeskWorkflowsForWebhook(
   context,
   auth,
+  ticketDetail,
   timezoneOffsetMinutes = 0,
-  { enforceGlobalInterval = false, forceOne = false } = {},
+  { webhookEventId = "" } = {},
 ) {
-  if (enforceGlobalInterval && !(await automaticWorkflowRunDue(context.env))) return [];
-
   const workflows = await listEnabledHelpdeskWorkflows(context.env);
-  if (!workflows.length) return [];
+  const ticket = normalizeHelpDeskTicketSummary(ticketDetail);
+  const runs = [];
 
-  const workflowInfos = [];
-  const dueWorkflowInfos = [];
   for (const workflow of workflows) {
     if (!RUNNABLE_WORKFLOW_TYPES.has(workflow.type)) continue;
-    const runInfo = await workflowRunInfo(context.env, workflow);
-    workflowInfos.push(runInfo);
-    if (runInfo.due) {
-      dueWorkflowInfos.push(runInfo);
-    }
-  }
-  const candidates = dueWorkflowInfos.length ? dueWorkflowInfos : forceOne ? workflowInfos : [];
-  if (!candidates.length) return [];
-  candidates.sort((left, right) => {
-    return (
-      left.lastRunMs - right.lastRunMs ||
-      (WORKFLOW_TYPE_ORDER[left.workflow.type] ?? 99) - (WORKFLOW_TYPE_ORDER[right.workflow.type] ?? 99)
+    const openTickets = workflow.type === AUTO_REPLY_WORKFLOW_TYPE ? [ticket] : [];
+    runs.push(
+      await runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes, openTickets, {
+        trigger: "webhook:create-ticket",
+        webhookEventId,
+        ticketDetail,
+      }),
     );
-  });
-
-  const workflow = candidates[0].workflow;
-  let openTickets = null;
-  if (workflow.type === AUTO_REPLY_WORKFLOW_TYPE) {
-    openTickets = await fetchOpenTicketsForAutoMerge(context.env);
   }
 
-  return [await runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes, openTickets || [])];
-}
-
-async function runEnabledHelpdeskWorkflows(context, auth, timezoneOffsetMinutes) {
-  return runNextAutomaticHelpdeskWorkflow(context, auth, timezoneOffsetMinutes, {
-    enforceGlobalInterval: true,
-  });
+  return runs;
 }
 
 async function fetchOpenTicketsForAutoMerge(env, maxPages = WORKFLOW_OPEN_TICKETS_MAX_PAGES) {
@@ -1855,26 +1972,6 @@ async function listTickets(context, auth) {
   const filters = normalizeTicketFilters(url);
   const cursor = normalizeCursor(url);
   const includeCounts = url.searchParams.get("includeCounts") !== "0";
-  const timezoneOffsetMinutes = Number(url.searchParams.get("tzOffset") || 0);
-  const shouldRunWorkflows =
-    url.searchParams.get("workflows") === "1" && status === "open" && silo === "tickets" && !cursor;
-
-  let workflowRuns = [];
-  if (shouldRunWorkflows) {
-    try {
-      workflowRuns = await runEnabledHelpdeskWorkflows(context, auth, timezoneOffsetMinutes);
-    } catch (error) {
-      console.error("Failed to run HelpDesk workflows.", error);
-      await writeLogSafely(context.env, {
-        actor: auth.session.user,
-        area: "helpdesk",
-        action: "run_workflows",
-        target: "open_tickets",
-        status: "error",
-        details: "HelpDesk workflow scan failed.",
-      });
-    }
-  }
 
   const agentDirectory = await helpdeskAgentDirectory(context.env);
   const [batches, counts, tags, recentMergeLogs] = await Promise.all([
@@ -1911,7 +2008,6 @@ async function listTickets(context, auth) {
     ...(counts ? { counts } : {}),
     ...(tags ? { tags } : {}),
     ...(recentMergeLogs ? { mergeLogs: recentMergeLogs } : {}),
-    workflowRuns,
     updatedAt: new Date().toISOString(),
     refreshIntervalSeconds: 30,
     page: {
