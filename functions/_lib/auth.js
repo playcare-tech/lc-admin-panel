@@ -38,6 +38,18 @@ async function signBytes(value, secret) {
   return new Uint8Array(signature);
 }
 
+function timingSafeEqualBytes(leftBytes, rightBytes) {
+  if (leftBytes.byteLength !== rightBytes.byteLength) {
+    return false;
+  }
+
+  return crypto.subtle.timingSafeEqual(leftBytes, rightBytes);
+}
+
+export function safeEqualText(left, right) {
+  return timingSafeEqualBytes(encoder.encode(`${left ?? ""}`), encoder.encode(`${right ?? ""}`));
+}
+
 async function verifySignature(value, signature, secret) {
   let signatureBytes;
   try {
@@ -47,11 +59,7 @@ async function verifySignature(value, signature, secret) {
   }
 
   const expectedSignatureBytes = await signBytes(value, secret);
-  if (signatureBytes.byteLength !== expectedSignatureBytes.byteLength) {
-    return false;
-  }
-
-  return crypto.subtle.timingSafeEqual(signatureBytes, expectedSignatureBytes);
+  return timingSafeEqualBytes(signatureBytes, expectedSignatureBytes);
 }
 
 function getCookie(request, name) {
@@ -86,11 +94,7 @@ function safeEqualBase64Url(left, right) {
     return false;
   }
 
-  if (leftBytes.byteLength !== rightBytes.byteLength) {
-    return false;
-  }
-
-  return crypto.subtle.timingSafeEqual(leftBytes, rightBytes);
+  return timingSafeEqualBytes(leftBytes, rightBytes);
 }
 
 export function verifyCsrfToken(request, session) {

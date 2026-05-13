@@ -1,4 +1,4 @@
-import { requireAuth } from "../../_lib/auth.js";
+import { requireAuth, safeEqualText } from "../../_lib/auth.js";
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import { syncHelpDeskAnalyticsWindow } from "./analytics.js";
 
@@ -66,7 +66,7 @@ function hasBearerAccess(request, env) {
   const token = env.HELPDESK_SYNC_TOKEN;
   if (!token) return false;
   const header = request.headers.get("Authorization") || "";
-  return header === `Bearer ${token}`;
+  return safeEqualText(header, `Bearer ${token}`);
 }
 
 async function authenticate(context) {
