@@ -466,22 +466,9 @@ const DOMPURIFY_TEXT_CONFIG = {
 
 const SAFE_URL_PROTOCOLS = new Set(["http:", "https:"]);
 
-function fallbackEscapeHtml(value) {
-  return `${value ?? ""}`
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;")
-    .replaceAll("`", "&#096;");
-}
-
 function escapeHtml(value) {
   const raw = `${value ?? ""}`;
   if (!raw) return "";
-  if (!window.DOMPurify?.sanitize || typeof document === "undefined") {
-    return fallbackEscapeHtml(raw);
-  }
 
   const textNodeHost = document.createElement("div");
   textNodeHost.textContent = raw;
