@@ -1,9 +1,10 @@
 function getAuthHeader(env) {
-  if (!env.TEXT_BASIC_AUTH_B64) {
+  const value = `${env.TEXT_BASIC_AUTH_B64 || ""}`.trim();
+  if (!value) {
     throw new Error("Missing TEXT_BASIC_AUTH_B64 environment variable.");
   }
 
-  return `Basic ${env.TEXT_BASIC_AUTH_B64}`;
+  return /^Basic\s+/i.test(value) ? value : `Basic ${value}`;
 }
 
 function extractErrorMessage(payload, fallback) {

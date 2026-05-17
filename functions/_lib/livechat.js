@@ -17,6 +17,15 @@ function extractErrorMessage(payload, fallback) {
   return payload.error?.message || payload.message || payload.error || fallback;
 }
 
+function getAuthHeader(env) {
+  const value = `${env.TEXT_BASIC_AUTH_B64 || ""}`.trim();
+  if (!value) {
+    throw new Error("Missing TEXT_BASIC_AUTH_B64 environment variable.");
+  }
+
+  return /^Basic\s+/i.test(value) ? value : `Basic ${value}`;
+}
+
 function normalizeGroupId(value) {
   const parsed = Number(value);
   return Number.isNaN(parsed) ? value : parsed;
@@ -38,14 +47,10 @@ function normalizeAvatarPath(value) {
 }
 
 export async function livechatRequest(env, action, body = {}) {
-  if (!env.TEXT_BASIC_AUTH_B64) {
-    throw new Error("Missing TEXT_BASIC_AUTH_B64 environment variable.");
-  }
-
   const response = await fetch(`${getBaseUrl(env)}/${action}`, {
     method: "POST",
     headers: {
-      Authorization: `Basic ${env.TEXT_BASIC_AUTH_B64}`,
+      Authorization: getAuthHeader(env),
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
@@ -171,14 +176,10 @@ function getAgentChatBaseUrl(env) {
 }
 
 export async function livechatReportsRequest(env, path, body = {}) {
-  if (!env.TEXT_BASIC_AUTH_B64) {
-    throw new Error("Missing TEXT_BASIC_AUTH_B64 environment variable.");
-  }
-
   const response = await fetch(`${getReportsBaseUrl(env)}${path}`, {
     method: "POST",
     headers: {
-      Authorization: `Basic ${env.TEXT_BASIC_AUTH_B64}`,
+      Authorization: getAuthHeader(env),
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
@@ -207,14 +208,10 @@ export async function livechatReportsRequest(env, path, body = {}) {
 }
 
 export async function livechatAgentChatRequest(env, action, body = {}) {
-  if (!env.TEXT_BASIC_AUTH_B64) {
-    throw new Error("Missing TEXT_BASIC_AUTH_B64 environment variable.");
-  }
-
   const response = await fetch(`${getAgentChatBaseUrl(env)}/${action}`, {
     method: "POST",
     headers: {
-      Authorization: `Basic ${env.TEXT_BASIC_AUTH_B64}`,
+      Authorization: getAuthHeader(env),
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
