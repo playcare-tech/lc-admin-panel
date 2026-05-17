@@ -10,4 +10,4 @@ HELPDESK_ANALYTICS_TZ_OFFSET = "-120"
 [[d1_databases]]
 binding = "DB"
 database_name = "live_chat_admin"
-database_id = "968349fc-7baf-41b1-80f8-be77f0a2b70d"
+database_id = "d70ce44b-5209-4e02-b565-e3429d7d6288"
