@@ -412,12 +412,13 @@ function dayBounds(date, offset) {
   };
 }
 
-function agentScope(agentIds) {
-  return agentIds.length ? Array.from(new Set(agentIds)).sort().join(",") : "__all__";
-}
-
 function todayForOffset(offset) {
   return formatWithOffset(new Date(), offset).slice(0, 10);
+}
+
+async function tableColumns(db, tableName) {
+  const { results } = await db.prepare(`PRAGMA table_info(${tableName})`).all();
+  return new Set((results || []).map((column) => column.name));
 }
 
 async function ensureAnalyticsCache(db) {
@@ -425,10 +426,10 @@ async function ensureAnalyticsCache(db) {
     throw new Error("Missing DB binding.");
   }
 
-  await db.prepare(
-    `CREATE TABLE IF NOT EXISTS analytics_agent_daily (
+  const createDailyTable = () =>
+    db.prepare(
+      `CREATE TABLE IF NOT EXISTS analytics_agent_daily (
       date TEXT NOT NULL,
-      agent_scope TEXT NOT NULL,
       agent_key TEXT NOT NULL,
       agent_id TEXT,
       agent_email TEXT,
@@ -439,18 +440,59 @@ async function ensureAnalyticsCache(db) {
       rated_good INTEGER NOT NULL DEFAULT 0,
       rated_bad INTEGER NOT NULL DEFAULT 0,
       fetched_at TEXT NOT NULL,
-      PRIMARY KEY (date, agent_scope, agent_key)
+      PRIMARY KEY (date, agent_key)
     )`,
-  ).run();
+    ).run();
 
-  await db.prepare(
-    `CREATE TABLE IF NOT EXISTS analytics_agent_daily_fetches (
-      date TEXT NOT NULL,
-      agent_scope TEXT NOT NULL,
-      fetched_at TEXT NOT NULL,
-      PRIMARY KEY (date, agent_scope)
-    )`,
-  ).run();
+  const columns = await tableColumns(db, "analytics_agent_daily");
+  if (!columns.size) {
+    await createDailyTable();
+  } else if (columns.has("agent_scope")) {
+    await db.prepare("DROP TABLE IF EXISTS analytics_agent_daily_next").run();
+    await db.prepare(
+      `CREATE TABLE analytics_agent_daily_next (
+        date TEXT NOT NULL,
+        agent_key TEXT NOT NULL,
+        agent_id TEXT,
+        agent_email TEXT,
+        agent_name TEXT,
+        chats_count INTEGER NOT NULL DEFAULT 0,
+        avg_ftr_ms INTEGER,
+        avg_csat REAL,
+        rated_good INTEGER NOT NULL DEFAULT 0,
+        rated_bad INTEGER NOT NULL DEFAULT 0,
+        fetched_at TEXT NOT NULL,
+        PRIMARY KEY (date, agent_key)
+      )`,
+    ).run();
+    await db
+      .prepare(
+        `INSERT OR REPLACE INTO analytics_agent_daily_next
+          (date, agent_key, agent_id, agent_email, agent_name, chats_count, avg_ftr_ms, avg_csat, rated_good, rated_bad, fetched_at)
+         SELECT
+          date,
+          CASE WHEN agent_email LIKE '%@%' THEN agent_email ELSE agent_key END AS normalized_agent_key,
+          MAX(agent_id),
+          MAX(agent_email),
+          MAX(agent_name),
+          MAX(chats_count),
+          MAX(avg_ftr_ms),
+          MAX(avg_csat),
+          MAX(rated_good),
+          MAX(rated_bad),
+          MAX(fetched_at)
+         FROM analytics_agent_daily
+         WHERE agent_email LIKE '%@%' OR agent_key LIKE '%@%'
+         GROUP BY date, normalized_agent_key`,
+      )
+      .run();
+    await db.prepare("DROP TABLE analytics_agent_daily").run();
+    await db.prepare("ALTER TABLE analytics_agent_daily_next RENAME TO analytics_agent_daily").run();
+  }
+
+  await db.prepare("DELETE FROM analytics_agent_daily WHERE agent_key NOT LIKE '%@%'").run();
+  await db.prepare("DROP TABLE IF EXISTS analytics_agent_daily_fetches").run();
+  await db.prepare("DROP TABLE IF EXISTS analytics_agent_daily_next").run();
 }
 
 function buildAgentDirectory(livechatDashboard) {
@@ -544,6 +586,15 @@ function normalizeCachedAgentRows(rows) {
     .filter(isHumanAnalyticsAgent);
 }
 
+function filterAgentRows(agents, includedAgentIds, excludedAgentIds, directory) {
+  const included = new Set(effectiveAgentIds(includedAgentIds, excludedAgentIds, directory));
+  const excluded = new Set(Array.from(excludedAgentIds).map((value) => resolveAgentId(value, directory)));
+  return agents.filter((agent) => {
+    const id = resolveAgentId(agent.id || agent.email || agent.record_key, directory);
+    return included.has(id) && !excluded.has(id);
+  });
+}
+
 function normalizeSummary(agents) {
   const ftrAgents = agents.filter((agent) => agent.avg_ftr_ms !== null && agent.total_tickets > 0);
   const ftrChats = ftrAgents.reduce((sum, agent) => sum + agent.total_tickets, 0);
@@ -586,39 +637,40 @@ function normalizeTimeline(totalChatsData, ftrData, ratingsData) {
   });
 }
 
-async function readCachedAgentDay(env, date, scope) {
-  const fetchRecord = await env.DB.prepare(
-    "SELECT fetched_at FROM analytics_agent_daily_fetches WHERE date = ? AND agent_scope = ?",
-  )
-    .bind(date, scope)
-    .first();
-
-  if (!fetchRecord) {
-    return null;
-  }
-
+async function readCachedAgentDay(env, date) {
   const { results } = await env.DB.prepare(
-    "SELECT * FROM analytics_agent_daily WHERE date = ? AND agent_scope = ? ORDER BY chats_count DESC, agent_email ASC",
+    "SELECT * FROM analytics_agent_daily WHERE date = ? AND agent_key LIKE '%@%' ORDER BY chats_count DESC, agent_email ASC",
   )
-    .bind(date, scope)
+    .bind(date)
     .all();
 
+  if (!results?.length) return null;
   return normalizeCachedAgentRows(results || []);
 }
 
-async function writeCachedAgentDay(env, date, scope, agents) {
+async function writeCachedAgentDay(env, date, agents) {
   const fetchedAt = new Date().toISOString();
+  const uniqueAgents = new Map();
+  agents.forEach((agent) => {
+    const agentKey = hasEmailLikeIdentifier(agent.email)
+      ? agent.email
+      : hasEmailLikeIdentifier(agent.record_key)
+        ? agent.record_key
+        : "";
+    if (!agentKey) return;
+    uniqueAgents.set(String(agentKey), agent);
+  });
+
   const statements = [
-    env.DB.prepare("DELETE FROM analytics_agent_daily WHERE date = ? AND agent_scope = ?").bind(date, scope),
-    ...agents.map((agent) =>
+    env.DB.prepare("DELETE FROM analytics_agent_daily WHERE date = ?").bind(date),
+    ...Array.from(uniqueAgents.entries()).map(([agentKey, agent]) =>
       env.DB.prepare(
       `INSERT OR REPLACE INTO analytics_agent_daily
-        (date, agent_scope, agent_key, agent_id, agent_email, agent_name, chats_count, avg_ftr_ms, avg_csat, rated_good, rated_bad, fetched_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (date, agent_key, agent_id, agent_email, agent_name, chats_count, avg_ftr_ms, avg_csat, rated_good, rated_bad, fetched_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(
         date,
-        scope,
-        agent.record_key || agent.id || agent.email,
+        agentKey,
         agent.id || null,
         agent.email || null,
         agent.name || null,
@@ -631,12 +683,6 @@ async function writeCachedAgentDay(env, date, scope, agents) {
       ),
     ),
   ];
-
-  statements.push(
-    env.DB.prepare(
-      "INSERT OR REPLACE INTO analytics_agent_daily_fetches (date, agent_scope, fetched_at) VALUES (?, ?, ?)",
-    ).bind(date, scope, fetchedAt),
-  );
 
   if (statements.length) {
     await env.DB.batch(statements);
@@ -652,18 +698,17 @@ async function fetchAgentDay(env, date, offset, agentIds, excludedAgentIds, dire
 }
 
 async function getAgentDay(env, date, offset, agentIds, excludedAgentIds, directory) {
-  const scope = agentScope(agentIds);
   const shouldRefresh = date === todayForOffset(offset);
   if (!shouldRefresh) {
-    const cached = await readCachedAgentDay(env, date, scope);
+    const cached = await readCachedAgentDay(env, date);
     if (cached) {
-      return cached;
+      return filterAgentRows(cached, agentIds, excludedAgentIds, directory);
     }
   }
 
-  const agents = await fetchAgentDay(env, date, offset, agentIds, excludedAgentIds, directory);
-  await writeCachedAgentDay(env, date, scope, agents);
-  return agents;
+  const agents = await fetchAgentDay(env, date, offset, directory.ids, new Set(), directory);
+  await writeCachedAgentDay(env, date, agents);
+  return filterAgentRows(agents, agentIds, excludedAgentIds, directory);
 }
 
 async function fetchAgentDailyMetrics(env, from, to, agentIds, excludedAgentIds, directory) {

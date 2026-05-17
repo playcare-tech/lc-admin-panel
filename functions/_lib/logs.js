@@ -4,6 +4,10 @@ const CREATE_TABLE_SQL =
 const CREATE_INDEX_SQL =
   "CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs (created_at DESC)";
 
+const LOG_RETENTION_DAYS = 7;
+const SKIPPED_LOG_ACTIONS = new Set(["run_workflow", "create_ticket_webhook"]);
+const SKIPPED_LOG_ACTORS = new Set(["system:helpdesk-webhook"]);
+
 const LOG_COLUMNS = {
   actor: "TEXT NOT NULL DEFAULT 'unknown'",
   area: "TEXT NOT NULL DEFAULT 'app'",
@@ -37,6 +41,18 @@ async function prepareLogsTable(db) {
     }
   }
   await db.exec(CREATE_INDEX_SQL);
+  await purgeOldLogs(db);
+}
+
+async function purgeOldLogs(db) {
+  const cutoff = new Date(Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  await db.prepare("DELETE FROM logs WHERE created_at < ?").bind(cutoff).run();
+}
+
+function shouldStoreLog(entry = {}) {
+  if (SKIPPED_LOG_ACTIONS.has(`${entry.action || ""}`)) return false;
+  if (SKIPPED_LOG_ACTORS.has(`${entry.actor || ""}`)) return false;
+  return true;
 }
 
 export async function ensureLogsTable(db) {
@@ -60,7 +76,9 @@ export async function ensureLogsTable(db) {
 }
 
 export async function writeLog(env, entry) {
+  if (!shouldStoreLog(entry)) return;
   await ensureLogsTable(env.DB);
+  await purgeOldLogs(env.DB);
   await env.DB.prepare(
     `
       INSERT INTO logs (created_at, actor, area, action, target, status, details, metadata)
@@ -90,6 +108,7 @@ export async function writeLogSafely(env, entry) {
 
 export async function listLogs(env, limit = 250) {
   await ensureLogsTable(env.DB);
+  await purgeOldLogs(env.DB);
   const { results } = await env.DB.prepare(
     `
       SELECT id, created_at, actor, area, action, target, status, details, metadata
@@ -109,6 +128,7 @@ export async function listLogs(env, limit = 250) {
 
 export async function listLogsByAction(env, { area, action, limit = 25 } = {}) {
   await ensureLogsTable(env.DB);
+  await purgeOldLogs(env.DB);
   const safeLimit = Math.min(100, Math.max(1, Number(limit) || 25));
   const { results } = await env.DB.prepare(
     `

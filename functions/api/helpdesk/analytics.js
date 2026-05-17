@@ -7,7 +7,20 @@ const PAGE_SIZE = 100;
 const MAX_PAGES_PER_RANGE = 8;
 const DAILY_TABLE = "helpdesk_analytics_daily_v4";
 const DETAIL_TABLE = "helpdesk_analytics_handled_tickets_v4";
-const DAILY_FETCH_TABLE = "helpdesk_analytics_daily_fetches_v4";
+const OBSOLETE_ANALYTICS_TABLES = [
+  "helpdesk_analytics_daily",
+  "helpdesk_analytics_daily_fetches",
+  "helpdesk_analytics_agent_fetches",
+  "helpdesk_analytics_daily_v2",
+  "helpdesk_analytics_daily_fetches_v2",
+  "helpdesk_analytics_agent_fetches_v2",
+  "helpdesk_analytics_daily_v3",
+  "helpdesk_analytics_handled_tickets_v3",
+  "helpdesk_analytics_daily_fetches_v3",
+  "helpdesk_analytics_agent_fetches_v3",
+  "helpdesk_analytics_agent_fetches_v4",
+  "helpdesk_analytics_daily_fetches_v4",
+];
 
 function isValidDate(value) {
   return value instanceof Date && !Number.isNaN(value.getTime());
@@ -203,6 +216,8 @@ function normalizeConversationEvents(ticket, agentDirectory) {
 async function ensureHelpDeskAnalyticsCache(db) {
   if (!db) throw new Error("Missing DB binding.");
 
+  await db.batch(OBSOLETE_ANALYTICS_TABLES.map((table) => db.prepare(`DROP TABLE IF EXISTS ${table}`)));
+
   await db
     .prepare(
       `CREATE TABLE IF NOT EXISTS ${DAILY_TABLE} (
@@ -248,19 +263,9 @@ async function ensureHelpDeskAnalyticsCache(db) {
   await db.prepare(`CREATE INDEX IF NOT EXISTS idx_${DETAIL_TABLE}_agent ON ${DETAIL_TABLE}(agent_id)`).run();
   await db.prepare(`CREATE INDEX IF NOT EXISTS idx_${DETAIL_TABLE}_short ON ${DETAIL_TABLE}(short_id)`).run();
 
-  await db
-    .prepare(
-      `CREATE TABLE IF NOT EXISTS ${DAILY_FETCH_TABLE} (
-        date TEXT PRIMARY KEY,
-        cached_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )`,
-    )
-    .run();
 }
 
 async function readCachedDay(env, date) {
-  const fetchRecord = await env.DB.prepare(`SELECT date FROM ${DAILY_FETCH_TABLE} WHERE date = ?`).bind(date).first();
-  if (!fetchRecord) return null;
   const { results } = await env.DB.prepare(
     `SELECT date, agent_id, agent_name, agent_email, handled_tickets
      FROM ${DAILY_TABLE}
@@ -269,7 +274,7 @@ async function readCachedDay(env, date) {
   )
     .bind(date)
     .all();
-  return results || [];
+  return results?.length ? results : null;
 }
 
 async function readCachedDetails(env, date) {
@@ -299,14 +304,13 @@ async function readCachedDetails(env, date) {
 }
 
 async function hasCachedDay(env, date) {
-  return Boolean(await env.DB.prepare(`SELECT date FROM ${DAILY_FETCH_TABLE} WHERE date = ?`).bind(date).first());
+  return Boolean(await env.DB.prepare(`SELECT date FROM ${DAILY_TABLE} WHERE date = ? LIMIT 1`).bind(date).first());
 }
 
 async function resetCachedDay(env, date) {
   await env.DB.batch([
     env.DB.prepare(`DELETE FROM ${DETAIL_TABLE} WHERE date = ?`).bind(date),
     env.DB.prepare(`DELETE FROM ${DAILY_TABLE} WHERE date = ?`).bind(date),
-    env.DB.prepare(`DELETE FROM ${DAILY_FETCH_TABLE} WHERE date = ?`).bind(date),
   ]);
 }
 
@@ -377,9 +381,6 @@ async function writeCachedDay(env, date, detailRows, { markFetched = true } = {}
        WHERE date = ?
        GROUP BY date, agent_id`,
     ).bind(date),
-    ...(markFetched
-      ? [env.DB.prepare(`INSERT OR REPLACE INTO ${DAILY_FETCH_TABLE} (date, cached_at) VALUES (?, CURRENT_TIMESTAMP)`).bind(date)]
-      : []),
   ]);
 
   const { results } = await env.DB.prepare(
@@ -410,7 +411,6 @@ async function finalizeCachedDay(env, date) {
        WHERE date = ?
        GROUP BY date, agent_id`,
     ).bind(date),
-    env.DB.prepare(`INSERT OR REPLACE INTO ${DAILY_FETCH_TABLE} (date, cached_at) VALUES (?, CURRENT_TIMESTAMP)`).bind(date),
   ]);
 }
 
@@ -500,7 +500,6 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory) 
       const eventDate = normalizeEventDate(event);
       return isPublicIncomingMessageEvent(event) && eventDate && eventDate >= from && eventDate < to;
     }).length;
-    const conversationJson = JSON.stringify(normalizeConversationEvents(ticket, agentDirectory));
     const ticketCreatedAt = normalizeDateString(ticket.createdAt || ticket.created_at);
     const ticketSolvedAt = statusReachedAt(ticket, "solved");
     const ticketClosedAt = statusReachedAt(ticket, "closed");
@@ -513,7 +512,7 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory) 
       ticket_created_at: ticketCreatedAt,
       ticket_solved_at: ticketSolvedAt,
       ticket_closed_at: ticketClosedAt,
-      conversation_json: conversationJson,
+      conversation_json: null,
     };
 
     for (const event of events) {

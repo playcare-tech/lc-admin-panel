@@ -741,6 +741,42 @@ body {
   padding: 18px;
 }
 
+.modal-overlay-nested {
+  z-index: 1010;
+}
+
+.livechat-priority-modal {
+  width: min(100%, 720px);
+}
+
+.priority-bucket-list {
+  display: grid;
+  gap: 10px;
+}
+
+.priority-bucket {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.priority-bucket-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.priority-bucket-head .form-select {
+  width: 132px;
+}
+
+.check-pill-muted {
+  background: rgba(248, 250, 252, 0.92);
+}
+
 .helpdesk-chat-modal {
   width: min(100%, 1120px);
 }
