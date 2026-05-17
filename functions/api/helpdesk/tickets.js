@@ -43,6 +43,8 @@ const AUTO_REPLY_EMPTY_REQUESTER_WORKFLOW_TYPE = "auto_reply_empty_requester_tic
 const AUTO_MERGE_WORKFLOW_TYPE = "auto_merge_duplicates";
 const AUTO_MERGE_6H_WORKFLOW_TYPE = "auto_merge_6h_rule";
 const AUTO_MARKETING_SPAM_WORKFLOW_TYPE = "auto_resolve_marketing_spam";
+const AUTO_MERGED_PARENT_TAG_ID = "43bd4e04-f70d-42b9-9974-669bfe567b10";
+const AUTO_MERGE_PARENT_TAG_MODES = new Set(["automatic", "automatic_6h_rule"]);
 const RUNNABLE_WORKFLOW_TYPES = new Set([
   AUTO_RESOLVE_WORKFLOW_TYPE,
   AUTO_REPLY_WORKFLOW_TYPE,
@@ -490,15 +492,31 @@ async function mergeChildTicket(env, parentTicket, childTicket) {
   });
 }
 
+function autoMergedParentTagPayload(parentDetail, mode) {
+  if (!AUTO_MERGE_PARENT_TAG_MODES.has(mode)) return {};
+
+  const currentTagIds = new Set((parentDetail?.tagIDs || []).map(String).filter(Boolean));
+  currentTagIds.add(AUTO_MERGED_PARENT_TAG_ID);
+  return {
+    tagIDs: Array.from(currentTagIds),
+  };
+}
+
 async function mergeChildTicketPreservingTeam(env, parentDetail, parentTicket, childTicket, childContent, mode = "automatic") {
   const preservedTeam = preserveTeamPayload(parentDetail);
+  const parentTagPayload = autoMergedParentTagPayload(parentDetail, mode);
   await addInternalMergeNote(env, parentTicket, childTicket, childContent, mode);
   await mergeChildTicket(env, parentTicket, childTicket);
 
-  if (Object.keys(preservedTeam).length) {
+  const parentPatch = {
+    ...preservedTeam,
+    ...parentTagPayload,
+  };
+
+  if (Object.keys(parentPatch).length) {
     await helpdeskRequest(env, `/tickets/${encodeURIComponent(parentTicket.id)}`, {
       method: "PATCH",
-      body: preservedTeam,
+      body: parentPatch,
     });
   }
 }
@@ -1411,6 +1429,7 @@ async function autoMergeSixHourRequesterTickets(context, auth, workflow) {
           parentShortId: parentTicket.short_id || parentTicket.shortID,
           parentSubject: parentTicket.subject || "",
           parentLink: ticketLink(parentTicket),
+          parentTagId: AUTO_MERGED_PARENT_TAG_ID,
           childTicketId: childTicket.id,
           childShortId: childTicket.short_id || childTicket.shortID,
           childSubject: childTicket.subject || "",
@@ -1812,6 +1831,7 @@ async function autoMergeDuplicateOpenTickets(context, auth, workflow) {
           parentShortId: parentTicket.short_id || parentTicket.shortID,
           parentSubject: parentTicket.subject || "",
           parentLink: ticketLink(parentTicket),
+          parentTagId: AUTO_MERGED_PARENT_TAG_ID,
           childTicketId: childTicket.id,
           childShortId: childTicket.short_id || childTicket.shortID,
           childSubject: childTicket.subject || "",
