@@ -3584,13 +3584,11 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
   let missingDays = 0;
   let importedDays = 0;
   let cachedDays = 0;
-  let skippedChunks = 0;
 
   for (const response of responseByDate.values()) {
     if (response.cache?.missing) missingDays += 1;
     if (response.cache?.saved || response.cache?.source === "helpdesk_import") importedDays += 1;
     if (response.cache?.hit) cachedDays += 1;
-    skippedChunks += Number(response.cache?.skipped_chunks || 0);
 
     for (const day of response.timeline || []) {
       if (!timelineByDate.has(day.date)) timelineByDate.set(day.date, { date: day.date, tickets: 0 });
@@ -3628,29 +3626,8 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
     },
     agents,
     timeline: Array.from(timelineByDate.values()).sort((left, right) => left.date.localeCompare(right.date)),
-    cache: { missing_days: missingDays, imported_days: importedDays, cached_days: cachedDays, skipped_chunks: skippedChunks },
+    cache: { missing_days: missingDays, imported_days: importedDays, cached_days: cachedDays },
     capabilities: responses[0]?.capabilities || {},
-  };
-}
-
-function emptyHelpdeskAnalyticsResponse(range, reason = "skipped") {
-  return {
-    period: { from: range.from.toISOString(), to: range.to.toISOString() },
-    summary: {
-      total_tickets: 0,
-      active_agents: 0,
-      prev_period: { total_tickets: 0, active_agents: 0 },
-    },
-    agents: [],
-    timeline: [],
-    cache: {
-      hit: false,
-      missing: false,
-      saved: false,
-      skipped_chunks: 1,
-      source: reason,
-    },
-    capabilities: {},
   };
 }
 
@@ -3692,8 +3669,8 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
   } catch (error) {
     const duration = range.to.getTime() - range.from.getTime();
     const isRateLimited = /too many requests|rate limit|429/i.test(error.message || "");
-    if (importMode && isRateLimited && rateRetry < 4) {
-      const waitMs = 3500 * (rateRetry + 1);
+    if (importMode && isRateLimited) {
+      const waitMs = 10000;
       state.helpdesk_analytics.loadStatus = `HelpDesk is rate limiting imports. Waiting ${Math.round(waitMs / 1000)}s before retry...`;
       renderHelpdeskAnalytics();
       await sleep(waitMs);
@@ -3708,21 +3685,18 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
       throw error;
     }
 
-    if (duration <= 60 * 1000 || depth >= 12) {
-      if (state.helpdesk_analytics.loadProgress) {
-        state.helpdesk_analytics.loadProgress.skippedChunks =
-          (state.helpdesk_analytics.loadProgress.skippedChunks || 0) + 1;
-      }
-      state.helpdesk_analytics.loadStatus = "Skipping an overloaded HelpDesk slice and continuing import...";
+    if (duration <= 1000 || depth >= 24) {
+      const waitMs = 10000;
+      state.helpdesk_analytics.loadStatus = `HelpDesk slice is still overloaded. Retrying in ${Math.round(waitMs / 1000)}s...`;
       renderHelpdeskAnalytics();
-      await sleep(300);
-      return [emptyHelpdeskAnalyticsResponse(range, "helpdesk_import_skipped_cpu")];
+      await sleep(waitMs);
+      return fetchHelpdeskAnalyticsRange(range, filters, depth, importMode, rateRetry + 1);
     }
 
     const middle = new Date(range.from.getTime() + Math.floor(duration / 2));
-    state.helpdesk_analytics.loadStatus = "HelpDesk request was too large. Loading a smaller portion...";
+    state.helpdesk_analytics.loadStatus = "HelpDesk request was too large. Waiting 10s, then loading smaller portions...";
     renderHelpdeskAnalytics();
-    await sleep(500);
+    await sleep(10000);
     const first = await fetchHelpdeskAnalyticsRange(
       { from: range.from, to: middle, cacheFullDay: false },
       filters,
@@ -3816,7 +3790,6 @@ async function fetchHelpdeskAnalyticsDayResponses(filters, importMode = false) {
       cacheHits: 0,
       savedDays: 0,
       liveDays: 0,
-      skippedChunks: 0,
     };
   }
 
@@ -3852,7 +3825,6 @@ function renderHelpdeskAnalyticsLoading(container) {
   const cacheHits = loadProgress?.cacheHits || 0;
   const savedDays = loadProgress?.savedDays || 0;
   const liveDays = loadProgress?.liveDays || 0;
-  const skippedChunks = loadProgress?.skippedChunks || 0;
 
   const loadingDiv = document.createElement("div");
   loadingDiv.className = "alert alert-info helpdesk-analytics-loading";
@@ -3868,7 +3840,6 @@ function renderHelpdeskAnalyticsLoading(container) {
       <span>D1 hits: ${cacheHits}</span>
       <span>Fetched and saved: ${savedDays}</span>
       <span>Live only: ${liveDays}</span>
-      ${skippedChunks ? `<span>Skipped: ${skippedChunks}</span>` : ""}
     </div>
   `;
   container.appendChild(loadingDiv);
@@ -4175,12 +4146,6 @@ function renderHelpdeskAnalytics() {
       missingDiv.className = "alert alert-warning";
       missingDiv.textContent = `${data.cache.missing_days} selected day(s) are not imported into D1 yet. Click "Import from HelpDesk" to load and save them.`;
       container.appendChild(missingDiv);
-    }
-    if (!loading && data.cache?.skipped_chunks) {
-      const skippedDiv = document.createElement("div");
-      skippedDiv.className = "alert alert-warning";
-      skippedDiv.textContent = `${data.cache.skipped_chunks} overloaded HelpDesk slice(s) were skipped because Cloudflare stopped them at the CPU limit. The rest of the imported data was saved.`;
-      container.appendChild(skippedDiv);
     }
     renderMetricsAndPanels();
     renderLeaderboard();
