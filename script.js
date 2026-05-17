@@ -3738,7 +3738,7 @@ function helpdeskImportSliceMs() {
 
 function helpdeskImportConcurrency() {
   const concurrency = Number(state.helpdesk_analytics.importOptions.concurrency || 1);
-  return Math.min(1, Math.max(1, Number.isFinite(concurrency) ? Math.floor(concurrency) : 1));
+  return Math.min(10, Math.max(1, Number.isFinite(concurrency) ? Math.floor(concurrency) : 1));
 }
 
 async function runHelpdeskImportChunkBatch(chunks, filters, dayLabel, completedOffset = 0) {
@@ -4059,7 +4059,7 @@ function renderHelpdeskAnalytics() {
     <label class="helpdesk-import-option">
       <span>At once</span>
       <select id="helpdeskImportConcurrency" class="form-select form-select-sm">
-        ${[1]
+        ${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
           .map((count) => `<option value="${count}" ${Number(importOptions.concurrency) === count ? "selected" : ""}>${count}</option>`)
           .join("")}
       </select>
