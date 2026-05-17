@@ -45,6 +45,7 @@ const AUTO_MERGE_6H_WORKFLOW_TYPE = "auto_merge_6h_rule";
 const AUTO_MARKETING_SPAM_WORKFLOW_TYPE = "auto_resolve_marketing_spam";
 const AUTO_MERGED_PARENT_TAG_ID = "43bd4e04-f70d-42b9-9974-669bfe567b10";
 const AUTO_MERGE_PARENT_TAG_MODES = new Set(["automatic", "automatic_6h_rule"]);
+const MERGE_NOTE_MARKER_PREFIX = "LC_ADMIN_MERGE_NOTE";
 const RUNNABLE_WORKFLOW_TYPES = new Set([
   AUTO_RESOLVE_WORKFLOW_TYPE,
   AUTO_REPLY_WORKFLOW_TYPE,
@@ -457,6 +458,7 @@ function mergedTicketContent(ticket, agentDirectory) {
 
 function internalMergeNote(parentTicket, childTicket, childContent, mode = "automatic") {
   const childId = childTicket.short_id || childTicket.id;
+  const marker = mergeNoteMarker(parentTicket, childTicket);
   const mergeLabel =
     mode === "manual"
       ? "Manual duplicate merge"
@@ -469,7 +471,33 @@ function internalMergeNote(parentTicket, childTicket, childContent, mode = "auto
     "",
     "Merged ticket content:",
     childContent || "No message content found.",
+    "",
+    marker,
   ].join("\n");
+}
+
+function mergeNoteMarker(parentTicket, childTicket) {
+  return `${MERGE_NOTE_MARKER_PREFIX}:${parentTicket.id || ""}:${childTicket.id || childTicket.short_id || ""}`;
+}
+
+function parentHasMergeNote(parentDetail, parentTicket, childTicket) {
+  const marker = mergeNoteMarker(parentTicket, childTicket);
+  const childShortId = `${childTicket.short_id || childTicket.shortID || ""}`.trim();
+  const childId = `${childTicket.id || childTicket.ticket_id || ""}`.trim();
+  const childLink = ticketLink(childTicket);
+  const events = normalizeHelpDeskConversationEvents(parentDetail);
+
+  return events.some((event) => {
+    if (!event.is_private) return false;
+    const text = eventMessageText(event);
+    if (!text) return false;
+    if (text.includes(marker)) return true;
+    const hasMergePrefix =
+      (childShortId && text.includes(`from ticket ${childShortId}`)) ||
+      (childId && text.includes(`from ticket ${childId}`));
+    const hasLink = childLink && text.includes(childLink);
+    return hasMergePrefix && hasLink;
+  });
 }
 
 async function addInternalMergeNote(env, parentTicket, childTicket, childContent, mode = "automatic") {
@@ -505,8 +533,18 @@ function autoMergedParentTagPayload(parentDetail, mode) {
 async function mergeChildTicketPreservingTeam(env, parentDetail, parentTicket, childTicket, childContent, mode = "automatic") {
   const preservedTeam = preserveTeamPayload(parentDetail);
   const parentTagPayload = autoMergedParentTagPayload(parentDetail, mode);
-  await addInternalMergeNote(env, parentTicket, childTicket, childContent, mode);
   await mergeChildTicket(env, parentTicket, childTicket);
+
+  let currentParentDetail = parentDetail;
+  try {
+    currentParentDetail = await helpdeskRequest(env, `/tickets/${encodeURIComponent(parentTicket.id)}`);
+  } catch (error) {
+    console.warn("Failed to refresh parent ticket before merge note dedupe.", error);
+  }
+
+  if (!parentHasMergeNote(currentParentDetail, parentTicket, childTicket)) {
+    await addInternalMergeNote(env, parentTicket, childTicket, childContent, mode);
+  }
 
   const parentPatch = {
     ...preservedTeam,
