@@ -3602,7 +3602,6 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
           ...agent,
           total_tickets: 0,
           days: [],
-          tickets: [],
         });
       }
       const current = agentsById.get(key);
@@ -3610,7 +3609,6 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
       current.email = current.email || agent.email;
       current.total_tickets += Number(agent.total_tickets || 0);
       current.days.push(...(agent.days || []));
-      current.tickets.push(...(agent.tickets || []));
     }
   }
 
@@ -3899,22 +3897,6 @@ async function importHelpdeskAnalytics() {
     state.helpdesk_analytics.loadStatus = "";
     state.helpdesk_analytics.loadProgress = null;
     renderHelpdeskAnalytics();
-  }
-}
-
-async function openHelpdeskAnalyticsTicket(ticket) {
-  try {
-    setMessage(statusMessage, "Loading ticket conversation...");
-    const params = new URLSearchParams({
-      date: ticket.date,
-      agent_id: ticket.agent_id,
-      short_id: ticket.short_id,
-    });
-    const response = await api(`/api/helpdesk/analytics-ticket?${params.toString()}`);
-    openModal("helpdesk-ticket", response.ticket);
-    setMessage(statusMessage, "");
-  } catch (error) {
-    setMessage(statusMessage, error.message, "error");
   }
 }
 
@@ -4410,7 +4392,6 @@ function renderLeaderboard() {
     const tickets = days.reduce((sum, day) => sum + (day.tickets || 0), 0);
     return { tickets };
   };
-  const tableColumnCount = 4 + columnHeaders.length;
 
   const wrapper = document.createElement("div");
   wrapper.className = "leaderboard-wrapper helpdesk-leaderboard-wrapper";
@@ -4421,10 +4402,6 @@ function renderLeaderboard() {
   const thead = document.createElement("thead");
   const headerRow = document.createElement("tr");
 
-  const th0 = document.createElement("th");
-  th0.className = "col-action sticky-left";
-  th0.rowSpan = 2;
-  th0.textContent = "Action";
   const th1 = document.createElement("th");
   th1.className = "col-rank sticky-left";
   th1.rowSpan = 2;
@@ -4438,7 +4415,6 @@ function renderLeaderboard() {
   th3.rowSpan = 2;
   th3.textContent = "Processed Tickets";
 
-  headerRow.appendChild(th0);
   headerRow.appendChild(th1);
   headerRow.appendChild(th2);
   headerRow.appendChild(th3);
@@ -4467,7 +4443,7 @@ function renderLeaderboard() {
   const summaryRow = document.createElement("tr");
   summaryRow.className = "summary-row";
   const summaryCell = document.createElement("td");
-  summaryCell.colSpan = 4;
+  summaryCell.colSpan = 3;
   summaryCell.style.fontWeight = "600";
   summaryCell.textContent = "Account Summary";
   summaryRow.appendChild(summaryCell);
@@ -4486,16 +4462,6 @@ function renderLeaderboard() {
     const rankLabel = rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : String(rank);
 
     const row = document.createElement("tr");
-    const expanded = state.helpdesk_analytics.expandedAgents.has(String(agent.agent_id || agent.id));
-
-    const actionCell = document.createElement("td");
-    actionCell.className = "col-action sticky-left";
-    actionCell.innerHTML = `
-      <button class="btn btn-sm btn-outline-secondary analytics-agent-toggle" type="button" data-helpdesk-agent-toggle="${escapeHtml(agent.agent_id || agent.id)}">
-        ${expanded ? "Hide" : "Open"}
-      </button>
-    `;
-    row.appendChild(actionCell);
 
     const rankCell = document.createElement("td");
     rankCell.className = "col-rank sticky-left";
@@ -4532,16 +4498,6 @@ function renderLeaderboard() {
     });
 
     tbody.appendChild(row);
-
-    if (expanded) {
-      const detailRow = document.createElement("tr");
-      detailRow.className = "analytics-agent-detail-row";
-      const detailCell = document.createElement("td");
-      detailCell.colSpan = tableColumnCount;
-      detailCell.innerHTML = renderHelpdeskAgentTicketDetails(agent);
-      detailRow.appendChild(detailCell);
-      tbody.appendChild(detailRow);
-    }
   });
 
   table.appendChild(tbody);
@@ -4553,93 +4509,6 @@ function renderLeaderboard() {
     container.appendChild(leaderboardSection);
   }
   leaderboardSection.appendChild(wrapper);
-
-  leaderboardSection.querySelectorAll("[data-helpdesk-agent-toggle]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const agentId = String(button.dataset.helpdeskAgentToggle || "");
-      if (state.helpdesk_analytics.expandedAgents.has(agentId)) {
-        state.helpdesk_analytics.expandedAgents.delete(agentId);
-      } else {
-        state.helpdesk_analytics.expandedAgents.add(agentId);
-      }
-      renderHelpdeskAnalytics();
-    });
-  });
-
-  leaderboardSection.querySelectorAll("[data-helpdesk-ticket-open]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const agent = sortedAgents.find((item) => String(item.agent_id || item.id) === String(button.dataset.agentId));
-      const ticket = (agent?.tickets || []).find(
-        (item) => item.date === button.dataset.date && item.short_id === button.dataset.shortId,
-      );
-      if (ticket) openHelpdeskAnalyticsTicket(ticket);
-    });
-  });
-}
-
-function renderHelpdeskAgentTicketDetails(agent) {
-  const tickets = [...(agent.tickets || [])].sort((left, right) =>
-    (right.last_public_reply_at || "").localeCompare(left.last_public_reply_at || ""),
-  );
-
-  if (!tickets.length) {
-    return `<div class="empty-state">No cached ticket details for this agent. Import the selected period from HelpDesk to load evidence rows.</div>`;
-  }
-
-  return `
-    <div class="analytics-ticket-detail">
-      <div class="analytics-ticket-detail-title">${escapeHtml(helpdeskAgentLabel(agent))} handled tickets</div>
-      <div class="analytics-ticket-table-wrap">
-        <table class="analytics-ticket-table">
-          <thead>
-            <tr>
-              <th>Open</th>
-              <th>Ticket</th>
-              <th>Agent replies</th>
-              <th>Incoming messages</th>
-              <th>Created</th>
-              <th>Solved</th>
-              <th>Closed</th>
-              <th>Last agent reply</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${tickets
-              .map(
-                (ticket) => {
-                  const ticketHref = safeUrlAttribute(ticket.ticket_link, "#");
-                  return `
-                  <tr>
-                    <td>
-                      <button
-                        class="btn btn-sm btn-outline-primary"
-                        type="button"
-                        data-helpdesk-ticket-open="${escapeHtml(ticket.short_id)}"
-                        data-agent-id="${escapeHtml(ticket.agent_id)}"
-                        data-date="${escapeHtml(ticket.date)}"
-                        data-short-id="${escapeHtml(ticket.short_id)}"
-                      >Chat</button>
-                    </td>
-                    <td>
-                      <a href="${ticketHref}" target="_blank" rel="noreferrer">${escapeHtml(ticket.short_id || ticket.ticket_id || "-")}</a>
-                      ${ticket.subject ? `<div class="analytics-agent-sub">${escapeHtml(ticket.subject)}</div>` : ""}
-                    </td>
-                    <td>${Number(ticket.agent_reply_count || 0)}</td>
-                    <td>${Number(ticket.incoming_message_count || 0)}</td>
-                    <td>${escapeHtml(formatHelpdeskDateTime(ticket.ticket_created_at))}</td>
-                    <td>${escapeHtml(formatHelpdeskDateTime(ticket.ticket_solved_at))}</td>
-                    <td>${escapeHtml(formatHelpdeskDateTime(ticket.ticket_closed_at))}</td>
-                    <td>${escapeHtml(formatHelpdeskDateTime(ticket.last_public_reply_at))}</td>
-                  </tr>
-                `;
-                },
-              )
-              .join("")}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
 }
 
 async function fetchAnalytics() {

@@ -5,9 +5,7 @@ import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
 const STATUSES = ["open", "pending", "onhold", "solved", "closed"];
 const PAGE_SIZE = 25;
 const MAX_PAGES_PER_RANGE = 20;
-const MAX_DETAIL_ROWS_PER_RESPONSE = 300;
 const DAILY_TABLE = "helpdesk_analytics_daily_v4";
-const DETAIL_TABLE = "helpdesk_analytics_handled_tickets_v4";
 const OBSOLETE_ANALYTICS_TABLES = [
   "helpdesk_analytics_daily",
   "helpdesk_analytics_daily_fetches",
@@ -21,6 +19,7 @@ const OBSOLETE_ANALYTICS_TABLES = [
   "helpdesk_analytics_agent_fetches_v3",
   "helpdesk_analytics_agent_fetches_v4",
   "helpdesk_analytics_daily_fetches_v4",
+  "helpdesk_analytics_handled_tickets_v4",
 ];
 
 function isValidDate(value) {
@@ -61,11 +60,6 @@ function normalizeEventDate(event) {
   const value = event.date || event.createdAt || event.timestamp || event.created_at;
   const date = value ? new Date(value) : null;
   return isValidDate(date) ? date : null;
-}
-
-function normalizeDateString(value) {
-  const date = value ? new Date(value) : null;
-  return isValidDate(date) ? date.toISOString() : "";
 }
 
 function buildAgentDirectory(dashboard) {
@@ -132,88 +126,6 @@ function isPublicAgentMessageEvent(event) {
   return isMessageEvent(event) && !Boolean(event.isPrivate || event.private) && eventAuthorType(event) === "agent";
 }
 
-function isPublicIncomingMessageEvent(event) {
-  const authorType = eventAuthorType(event);
-  return (
-    isMessageEvent(event) &&
-    !Boolean(event.isPrivate || event.private) &&
-    !["agent", "system"].includes(authorType)
-  );
-}
-
-function eventMessageParts(event) {
-  const message = event.message || event.text || event.content || {};
-  if (typeof message === "string") return { text: message, html: "" };
-  return {
-    text: message.text || message.plainText || event.text || "",
-    html: message.html || event.richTextHtml || event.html || "",
-  };
-}
-
-function eventStatusValue(event) {
-  const status =
-    event.status ||
-    event.newStatus ||
-    event.value ||
-    event.to ||
-    event.data?.status ||
-    event.payload?.status ||
-    event.changes?.status?.to ||
-    "";
-  if (typeof status === "string") return status.toLowerCase();
-  return `${status.value || status.name || status.status || ""}`.toLowerCase();
-}
-
-function statusReachedAt(ticket, status) {
-  const directFields = {
-    solved: [ticket.solvedAt, ticket.solved_at, ticket.solvedDate, ticket.solved_date],
-    closed: [ticket.closedAt, ticket.closed_at, ticket.closedDate, ticket.closed_date],
-  };
-  const direct = (directFields[status] || []).map(normalizeDateString).find(Boolean);
-  if (direct) return direct;
-
-  return (ticket.events || [])
-    .filter((event) => eventStatusValue(event) === status)
-    .map(normalizeEventDate)
-    .filter(Boolean)
-    .sort((left, right) => left.getTime() - right.getTime())[0]
-    ?.toISOString() || "";
-}
-
-function ticketLink(ticket, shortId) {
-  return (
-    ticket.url ||
-    ticket.webUrl ||
-    ticket.ticketUrl ||
-    ticket.ticketURL ||
-    ticket.link ||
-    `https://app.helpdesk.com/tickets/${encodeURIComponent(shortId)}`
-  );
-}
-
-function normalizeConversationEvents(ticket, agentDirectory) {
-  return (ticket.events || [])
-    .map((event) => {
-      const date = normalizeEventDate(event);
-      const author = authorProfile(event, agentDirectory);
-      const authorType = eventAuthorType(event) || "system";
-      const message = eventMessageParts(event);
-      return {
-        date: date ? date.toISOString() : "",
-        type: event.type || event.eventType || "",
-        author_type: authorType,
-        author_id: author.id,
-        author_name: author.name || authorType,
-        author_email: author.email,
-        is_private: Boolean(event.isPrivate || event.private),
-        status: eventStatusValue(event),
-        text: message.text,
-        html: message.html,
-      };
-    })
-    .sort((left, right) => left.date.localeCompare(right.date));
-}
-
 async function ensureHelpDeskAnalyticsCache(db) {
   if (!db) throw new Error("Missing DB binding.");
 
@@ -235,35 +147,6 @@ async function ensureHelpDeskAnalyticsCache(db) {
     .run();
   await db.prepare(`CREATE INDEX IF NOT EXISTS idx_${DAILY_TABLE}_date ON ${DAILY_TABLE}(date)`).run();
   await db.prepare(`CREATE INDEX IF NOT EXISTS idx_${DAILY_TABLE}_agent ON ${DAILY_TABLE}(agent_id)`).run();
-
-  await db
-    .prepare(
-      `CREATE TABLE IF NOT EXISTS ${DETAIL_TABLE} (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        date TEXT NOT NULL,
-        agent_id TEXT NOT NULL,
-        agent_name TEXT,
-        agent_email TEXT,
-        ticket_id TEXT,
-        short_id TEXT NOT NULL,
-        ticket_link TEXT,
-        subject TEXT,
-        agent_reply_count INTEGER NOT NULL DEFAULT 0,
-        incoming_message_count INTEGER NOT NULL DEFAULT 0,
-        ticket_created_at TEXT,
-        ticket_solved_at TEXT,
-        ticket_closed_at TEXT,
-        last_public_reply_at TEXT NOT NULL,
-        conversation_json TEXT,
-        cached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(date, agent_id, short_id)
-      )`,
-    )
-    .run();
-  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_${DETAIL_TABLE}_date ON ${DETAIL_TABLE}(date)`).run();
-  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_${DETAIL_TABLE}_agent ON ${DETAIL_TABLE}(agent_id)`).run();
-  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_${DETAIL_TABLE}_short ON ${DETAIL_TABLE}(short_id)`).run();
-
 }
 
 async function readCachedDay(env, date) {
@@ -278,42 +161,12 @@ async function readCachedDay(env, date) {
   return results?.length ? results : null;
 }
 
-async function readCachedDetails(env, date) {
-  const { results } = await env.DB.prepare(
-    `SELECT
-      date,
-      agent_id,
-      agent_name,
-      agent_email,
-      ticket_id,
-      short_id,
-      ticket_link,
-      subject,
-      agent_reply_count,
-      incoming_message_count,
-      ticket_created_at,
-      ticket_solved_at,
-      ticket_closed_at,
-      last_public_reply_at
-     FROM ${DETAIL_TABLE}
-     WHERE date = ?
-     ORDER BY last_public_reply_at DESC
-     LIMIT ${MAX_DETAIL_ROWS_PER_RESPONSE}`,
-  )
-    .bind(date)
-    .all();
-  return results || [];
-}
-
 async function hasCachedDay(env, date) {
   return Boolean(await env.DB.prepare(`SELECT date FROM ${DAILY_TABLE} WHERE date = ? LIMIT 1`).bind(date).first());
 }
 
 async function resetCachedDay(env, date) {
-  await env.DB.batch([
-    env.DB.prepare(`DELETE FROM ${DETAIL_TABLE} WHERE date = ?`).bind(date),
-    env.DB.prepare(`DELETE FROM ${DAILY_TABLE} WHERE date = ?`).bind(date),
-  ]);
+  await env.DB.prepare(`DELETE FROM ${DAILY_TABLE} WHERE date = ?`).bind(date).run();
 }
 
 async function runBatches(db, statements, size = 80) {
@@ -323,68 +176,56 @@ async function runBatches(db, statements, size = 80) {
   }
 }
 
+function summarizeDailyRows(date, detailRows) {
+  const byAgent = new Map();
+
+  for (const row of detailRows || []) {
+    const agentId = String(row.agent_id || "");
+    if (!agentId) continue;
+    const current = byAgent.get(agentId) || {
+      date,
+      agent_id: agentId,
+      agent_name: row.agent_name || agentId,
+      agent_email: row.agent_email || "",
+      handled_tickets: 0,
+    };
+    current.handled_tickets += 1;
+    if (!current.agent_name && row.agent_name) current.agent_name = row.agent_name;
+    if (!current.agent_email && row.agent_email) current.agent_email = row.agent_email;
+    byAgent.set(agentId, current);
+  }
+
+  return Array.from(byAgent.values());
+}
+
 async function writeCachedDay(env, date, detailRows, { markFetched = true } = {}) {
+  const dailyRows = summarizeDailyRows(date, detailRows);
+
+  if (markFetched) {
+    await resetCachedDay(env, date);
+  }
+
   await runBatches(
     env.DB,
-    detailRows.map((row) =>
+    dailyRows.map((row) =>
       env.DB.prepare(
-        `INSERT OR REPLACE INTO ${DETAIL_TABLE}
-          (
-            date,
-            agent_id,
-            agent_name,
-            agent_email,
-            ticket_id,
-            short_id,
-            ticket_link,
-            subject,
-            agent_reply_count,
-            incoming_message_count,
-            ticket_created_at,
-            ticket_solved_at,
-            ticket_closed_at,
-            last_public_reply_at,
-            conversation_json,
-            cached_at
-          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+        `INSERT INTO ${DAILY_TABLE}
+          (date, agent_id, agent_name, agent_email, handled_tickets, cached_at)
+         VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(date, agent_id) DO UPDATE SET
+          agent_name = COALESCE(NULLIF(excluded.agent_name, ''), ${DAILY_TABLE}.agent_name),
+          agent_email = COALESCE(NULLIF(excluded.agent_email, ''), ${DAILY_TABLE}.agent_email),
+          handled_tickets = ${DAILY_TABLE}.handled_tickets + excluded.handled_tickets,
+          cached_at = CURRENT_TIMESTAMP`,
       ).bind(
         row.date,
         row.agent_id,
         row.agent_name,
         row.agent_email,
-        row.ticket_id,
-        row.short_id,
-        row.ticket_link,
-        row.subject,
-        row.agent_reply_count,
-        row.incoming_message_count,
-        row.ticket_created_at,
-        row.ticket_solved_at,
-        row.ticket_closed_at,
-        row.last_public_reply_at,
-        row.conversation_json,
+        row.handled_tickets,
       ),
     ),
   );
-
-  await env.DB.batch([
-    env.DB.prepare(`DELETE FROM ${DAILY_TABLE} WHERE date = ?`).bind(date),
-    env.DB.prepare(
-      `INSERT INTO ${DAILY_TABLE}
-        (date, agent_id, agent_name, agent_email, handled_tickets, cached_at)
-       SELECT
-        date,
-        agent_id,
-        COALESCE(MAX(NULLIF(agent_name, '')), agent_id),
-        COALESCE(MAX(NULLIF(agent_email, '')), ''),
-        COUNT(*),
-        CURRENT_TIMESTAMP
-       FROM ${DETAIL_TABLE}
-       WHERE date = ?
-       GROUP BY date, agent_id`,
-    ).bind(date),
-  ]);
 
   const { results } = await env.DB.prepare(
     `SELECT date, agent_id, agent_name, agent_email, handled_tickets
@@ -398,44 +239,11 @@ async function writeCachedDay(env, date, detailRows, { markFetched = true } = {}
 }
 
 async function finalizeCachedDay(env, date) {
-  await env.DB.batch([
-    env.DB.prepare(`DELETE FROM ${DAILY_TABLE} WHERE date = ?`).bind(date),
-    env.DB.prepare(
-      `INSERT INTO ${DAILY_TABLE}
-        (date, agent_id, agent_name, agent_email, handled_tickets, cached_at)
-       SELECT
-        date,
-        agent_id,
-        COALESCE(MAX(NULLIF(agent_name, '')), agent_id),
-        COALESCE(MAX(NULLIF(agent_email, '')), ''),
-        COUNT(*),
-        CURRENT_TIMESTAMP
-       FROM ${DETAIL_TABLE}
-       WHERE date = ?
-       GROUP BY date, agent_id`,
-    ).bind(date),
-  ]);
+  await env.DB.prepare(`UPDATE ${DAILY_TABLE} SET cached_at = CURRENT_TIMESTAMP WHERE date = ?`).bind(date).run();
 }
 
 function filterRows(rows, filters, agentDirectory = new Map()) {
   return rows.filter((row) => matchesFilters(row.agent_id, filters, agentDirectory));
-}
-
-function detailToResponse(row) {
-  return {
-    date: row.date,
-    agent_id: String(row.agent_id),
-    ticket_id: row.ticket_id || "",
-    short_id: row.short_id || "",
-    ticket_link: row.ticket_link || "",
-    subject: row.subject || "",
-    agent_reply_count: Number(row.agent_reply_count || 0),
-    incoming_message_count: Number(row.incoming_message_count || 0),
-    ticket_created_at: row.ticket_created_at || "",
-    ticket_solved_at: row.ticket_solved_at || "",
-    ticket_closed_at: row.ticket_closed_at || "",
-    last_public_reply_at: row.last_public_reply_at || "",
-  };
 }
 
 async function listTicketsForRange(env, from, to) {
@@ -496,30 +304,13 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory) 
   const handled = new Map();
 
   for (const ticket of tickets) {
-    const ticketId = normalizeTicketId(ticket);
     const shortId = normalizeTicketShortId(ticket);
     const events = Array.isArray(ticket.events) ? ticket.events : [];
-    const ticketCreatedAt = normalizeDateString(ticket.createdAt || ticket.created_at);
-    const ticketSolvedAt = statusReachedAt(ticket, "solved");
-    const ticketClosedAt = statusReachedAt(ticket, "closed");
-    const baseDetail = {
-      ticket_id: ticketId,
-      short_id: shortId,
-      ticket_link: ticketLink(ticket, shortId),
-      subject: ticket.subject || "",
-      ticket_created_at: ticketCreatedAt,
-      ticket_solved_at: ticketSolvedAt,
-      ticket_closed_at: ticketClosedAt,
-      conversation_json: null,
-    };
-    const ticketRows = [];
-    let incomingMessageCount = 0;
 
     for (const event of events) {
       const eventDate = normalizeEventDate(event);
       if (!eventDate || eventDate < from || eventDate >= to) continue;
 
-      if (isPublicIncomingMessageEvent(event)) incomingMessageCount += 1;
       if (!isPublicAgentMessageEvent(event)) continue;
 
       const agent = authorProfile(event, agentDirectory);
@@ -528,29 +319,17 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory) 
       const localDay = dateKey(eventDate, timezoneOffsetMinutes);
       const countKey = `${localDay}|${agent.id}|${shortId}`;
       const existing = handled.get(countKey);
-      const replyAt = eventDate.toISOString();
 
       if (!existing) {
         const row = {
-          ...baseDetail,
           date: localDay,
           agent_id: agent.id,
           agent_name: agent.name || agent.id,
           agent_email: agent.email || "",
-          incoming_message_count: 0,
-          agent_reply_count: 1,
-          last_public_reply_at: replyAt,
+          short_id: shortId,
         };
         handled.set(countKey, row);
-        ticketRows.push(row);
-      } else {
-        existing.agent_reply_count += 1;
-        if (replyAt > existing.last_public_reply_at) existing.last_public_reply_at = replyAt;
       }
-    }
-
-    for (const row of ticketRows) {
-      row.incoming_message_count = incomingMessageCount;
     }
   }
 
@@ -560,14 +339,7 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory) 
   });
 }
 
-function rowsToResponse(rows, detailRows, from, to, agentDirectory, cache = {}) {
-  const detailsByAgent = new Map();
-  for (const detail of detailRows || []) {
-    const key = String(detail.agent_id);
-    if (!detailsByAgent.has(key)) detailsByAgent.set(key, []);
-    detailsByAgent.get(key).push(detailToResponse(detail));
-  }
-
+function rowsToResponse(rows, from, to, agentDirectory, cache = {}) {
   const agents = rows
     .map((row) => {
       const profile = agentDirectory.get(String(row.agent_id)) || {};
@@ -579,7 +351,6 @@ function rowsToResponse(rows, detailRows, from, to, agentDirectory, cache = {}) 
         email: row.agent_email || profile.email || String(row.agent_id),
         total_tickets: Number(row.handled_tickets || 0),
         days: [{ date: row.date, tickets: Number(row.handled_tickets || 0) }],
-        tickets: detailsByAgent.get(agentId) || [],
       };
     })
     .sort((left, right) => right.total_tickets - left.total_tickets);
@@ -639,6 +410,9 @@ export async function syncHelpDeskAnalyticsWindow(env, { from, to, timezoneOffse
   let detailRows = 0;
 
   for (const range of splitRangeByLocalDay(from, to, timezoneOffsetMinutes)) {
+    if (!affectedDates.has(range.date)) {
+      await resetCachedDay(env, range.date);
+    }
     const importedDetails = await computeDay(env, range.from, range.to, timezoneOffsetMinutes, agentDirectory);
     await writeCachedDay(env, range.date, importedDetails, { markFetched: false });
     affectedDates.add(range.date);
@@ -688,7 +462,6 @@ export async function onRequest(context) {
     const dashboard = await getHelpDeskDashboard(context.env);
     const agentDirectory = buildAgentDirectory(dashboard);
     const cachedRows = shouldImport || shouldFinalizeDate ? null : await readCachedDay(context.env, localDate);
-    const cachedDetails = cachedRows ? await readCachedDetails(context.env, localDate) : [];
     const cacheMeta = {
       date: localDate,
       checked: true,
@@ -699,14 +472,11 @@ export async function onRequest(context) {
     };
 
     let rows = cachedRows ? filterRows(cachedRows, filters, agentDirectory) : [];
-    let detailRows = cachedRows ? filterRows(cachedDetails, filters, agentDirectory) : [];
 
     if (shouldFinalizeDate) {
       await finalizeCachedDay(context.env, localDate);
       const finalizedRows = await readCachedDay(context.env, localDate);
-      const finalizedDetails = await readCachedDetails(context.env, localDate);
       rows = filterRows(finalizedRows || [], filters, agentDirectory);
-      detailRows = filterRows(finalizedDetails, filters, agentDirectory);
       cacheMeta.hit = true;
       cacheMeta.missing = false;
       cacheMeta.saved = true;
@@ -716,7 +486,6 @@ export async function onRequest(context) {
       const importedDetails = await computeDay(context.env, from, to, timezoneOffsetMinutes, agentDirectory);
       const summaryRows = await writeCachedDay(context.env, localDate, importedDetails, { markFetched: isFullDayCacheWrite });
       rows = filterRows(summaryRows, filters, agentDirectory);
-      detailRows = isFullDayCacheWrite ? filterRows(await readCachedDetails(context.env, localDate), filters, agentDirectory) : [];
       cacheMeta.hit = false;
       cacheMeta.missing = !isFullDayCacheWrite;
       cacheMeta.saved = true;
@@ -727,7 +496,7 @@ export async function onRequest(context) {
       cacheMeta.source = "d1_empty";
     }
 
-    return json(rowsToResponse(rows, detailRows, from, to, agentDirectory, cacheMeta));
+    return json(rowsToResponse(rows, from, to, agentDirectory, cacheMeta));
   } catch (error) {
     const message = error.message || "";
     if (/too many requests|rate limit/i.test(message)) {
