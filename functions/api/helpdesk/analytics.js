@@ -3,9 +3,9 @@ import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../.
 import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
 
 const STATUSES = ["open", "pending", "onhold", "solved", "closed"];
-const PAGE_SIZE = 100;
-const MAX_PAGES_PER_RANGE = 8;
-const MAX_DETAIL_ROWS_PER_RESPONSE = 1200;
+const PAGE_SIZE = 25;
+const MAX_PAGES_PER_RANGE = 20;
+const MAX_DETAIL_ROWS_PER_RESPONSE = 300;
 const DAILY_TABLE = "helpdesk_analytics_daily_v4";
 const DETAIL_TABLE = "helpdesk_analytics_handled_tickets_v4";
 const OBSOLETE_ANALYTICS_TABLES = [
@@ -687,7 +687,7 @@ export async function onRequest(context) {
 
     const dashboard = await getHelpDeskDashboard(context.env);
     const agentDirectory = buildAgentDirectory(dashboard);
-    const cachedRows = await readCachedDay(context.env, localDate);
+    const cachedRows = shouldImport || shouldFinalizeDate ? null : await readCachedDay(context.env, localDate);
     const cachedDetails = cachedRows ? await readCachedDetails(context.env, localDate) : [];
     const cacheMeta = {
       date: localDate,
@@ -715,9 +715,8 @@ export async function onRequest(context) {
       if (shouldResetDate) await resetCachedDay(context.env, localDate);
       const importedDetails = await computeDay(context.env, from, to, timezoneOffsetMinutes, agentDirectory);
       const summaryRows = await writeCachedDay(context.env, localDate, importedDetails, { markFetched: isFullDayCacheWrite });
-      const savedDetails = await readCachedDetails(context.env, localDate);
       rows = filterRows(summaryRows, filters, agentDirectory);
-      detailRows = filterRows(savedDetails, filters, agentDirectory);
+      detailRows = isFullDayCacheWrite ? filterRows(await readCachedDetails(context.env, localDate), filters, agentDirectory) : [];
       cacheMeta.hit = false;
       cacheMeta.missing = !isFullDayCacheWrite;
       cacheMeta.saved = true;
