@@ -5,6 +5,7 @@ import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
 const STATUSES = ["open", "pending", "onhold", "solved", "closed"];
 const PAGE_SIZE = 100;
 const MAX_PAGES_PER_RANGE = 8;
+const MAX_DETAIL_ROWS_PER_RESPONSE = 1200;
 const DAILY_TABLE = "helpdesk_analytics_daily_v4";
 const DETAIL_TABLE = "helpdesk_analytics_handled_tickets_v4";
 const OBSOLETE_ANALYTICS_TABLES = [
@@ -296,7 +297,8 @@ async function readCachedDetails(env, date) {
       last_public_reply_at
      FROM ${DETAIL_TABLE}
      WHERE date = ?
-     ORDER BY last_public_reply_at DESC`,
+     ORDER BY last_public_reply_at DESC
+     LIMIT ${MAX_DETAIL_ROWS_PER_RESPONSE}`,
   )
     .bind(date)
     .all();
@@ -315,6 +317,7 @@ async function resetCachedDay(env, date) {
 }
 
 async function runBatches(db, statements, size = 80) {
+  if (!statements.length) return;
   for (let index = 0; index < statements.length; index += size) {
     await db.batch(statements.slice(index, index + size));
   }
@@ -496,10 +499,6 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory) 
     const ticketId = normalizeTicketId(ticket);
     const shortId = normalizeTicketShortId(ticket);
     const events = Array.isArray(ticket.events) ? ticket.events : [];
-    const incomingMessageCount = events.filter((event) => {
-      const eventDate = normalizeEventDate(event);
-      return isPublicIncomingMessageEvent(event) && eventDate && eventDate >= from && eventDate < to;
-    }).length;
     const ticketCreatedAt = normalizeDateString(ticket.createdAt || ticket.created_at);
     const ticketSolvedAt = statusReachedAt(ticket, "solved");
     const ticketClosedAt = statusReachedAt(ticket, "closed");
@@ -508,18 +507,20 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory) 
       short_id: shortId,
       ticket_link: ticketLink(ticket, shortId),
       subject: ticket.subject || "",
-      incoming_message_count: incomingMessageCount,
       ticket_created_at: ticketCreatedAt,
       ticket_solved_at: ticketSolvedAt,
       ticket_closed_at: ticketClosedAt,
       conversation_json: null,
     };
+    const ticketRows = [];
+    let incomingMessageCount = 0;
 
     for (const event of events) {
-      if (!isPublicAgentMessageEvent(event)) continue;
-
       const eventDate = normalizeEventDate(event);
       if (!eventDate || eventDate < from || eventDate >= to) continue;
+
+      if (isPublicIncomingMessageEvent(event)) incomingMessageCount += 1;
+      if (!isPublicAgentMessageEvent(event)) continue;
 
       const agent = authorProfile(event, agentDirectory);
       if (!agent.id) continue;
@@ -530,19 +531,26 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory) 
       const replyAt = eventDate.toISOString();
 
       if (!existing) {
-        handled.set(countKey, {
+        const row = {
           ...baseDetail,
           date: localDay,
           agent_id: agent.id,
           agent_name: agent.name || agent.id,
           agent_email: agent.email || "",
+          incoming_message_count: 0,
           agent_reply_count: 1,
           last_public_reply_at: replyAt,
-        });
+        };
+        handled.set(countKey, row);
+        ticketRows.push(row);
       } else {
         existing.agent_reply_count += 1;
         if (replyAt > existing.last_public_reply_at) existing.last_public_reply_at = replyAt;
       }
+    }
+
+    for (const row of ticketRows) {
+      row.incoming_message_count = incomingMessageCount;
     }
   }
 
