@@ -1,5 +1,5 @@
 import { requireAuth } from "../../_lib/auth.js";
-import { withAccountContext } from "../../_lib/accounts.js";
+import { accountTableName, withAccountContext } from "../../_lib/accounts.js";
 import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 import { getLiveChatDashboard, livechatAgentChatRequest, livechatReportsRequest } from "../../_lib/livechat.js";
 
@@ -422,14 +422,20 @@ async function tableColumns(db, tableName) {
   return new Set((results || []).map((column) => column.name));
 }
 
-async function ensureAnalyticsCache(db) {
-  if (!db) {
+function analyticsDailyTable(env) {
+  return accountTableName(env, "analytics_agent_daily");
+}
+
+async function ensureAnalyticsCache(env) {
+  if (!env?.DB) {
     throw new Error("Missing DB binding.");
   }
+  const table = analyticsDailyTable(env);
+  const nextTable = `${table}_next`;
 
   const createDailyTable = () =>
-    db.prepare(
-      `CREATE TABLE IF NOT EXISTS analytics_agent_daily (
+    env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS ${table} (
       date TEXT NOT NULL,
       agent_key TEXT NOT NULL,
       agent_id TEXT,
@@ -445,13 +451,13 @@ async function ensureAnalyticsCache(db) {
     )`,
     ).run();
 
-  const columns = await tableColumns(db, "analytics_agent_daily");
+  const columns = await tableColumns(env.DB, table);
   if (!columns.size) {
     await createDailyTable();
   } else if (columns.has("agent_scope")) {
-    await db.prepare("DROP TABLE IF EXISTS analytics_agent_daily_next").run();
-    await db.prepare(
-      `CREATE TABLE analytics_agent_daily_next (
+    await env.DB.prepare(`DROP TABLE IF EXISTS ${nextTable}`).run();
+    await env.DB.prepare(
+      `CREATE TABLE ${nextTable} (
         date TEXT NOT NULL,
         agent_key TEXT NOT NULL,
         agent_id TEXT,
@@ -466,9 +472,9 @@ async function ensureAnalyticsCache(db) {
         PRIMARY KEY (date, agent_key)
       )`,
     ).run();
-    await db
+    await env.DB
       .prepare(
-        `INSERT OR REPLACE INTO analytics_agent_daily_next
+        `INSERT OR REPLACE INTO ${nextTable}
           (date, agent_key, agent_id, agent_email, agent_name, chats_count, avg_ftr_ms, avg_csat, rated_good, rated_bad, fetched_at)
          SELECT
           date,
@@ -482,18 +488,18 @@ async function ensureAnalyticsCache(db) {
           MAX(rated_good),
           MAX(rated_bad),
           MAX(fetched_at)
-         FROM analytics_agent_daily
+         FROM ${table}
          WHERE agent_email LIKE '%@%' OR agent_key LIKE '%@%'
          GROUP BY date, normalized_agent_key`,
       )
       .run();
-    await db.prepare("DROP TABLE analytics_agent_daily").run();
-    await db.prepare("ALTER TABLE analytics_agent_daily_next RENAME TO analytics_agent_daily").run();
+    await env.DB.prepare(`DROP TABLE ${table}`).run();
+    await env.DB.prepare(`ALTER TABLE ${nextTable} RENAME TO ${table}`).run();
   }
 
-  await db.prepare("DELETE FROM analytics_agent_daily WHERE agent_key NOT LIKE '%@%'").run();
-  await db.prepare("DROP TABLE IF EXISTS analytics_agent_daily_fetches").run();
-  await db.prepare("DROP TABLE IF EXISTS analytics_agent_daily_next").run();
+  await env.DB.prepare(`DELETE FROM ${table} WHERE agent_key NOT LIKE '%@%'`).run();
+  await env.DB.prepare("DROP TABLE IF EXISTS analytics_agent_daily_fetches").run();
+  await env.DB.prepare(`DROP TABLE IF EXISTS ${nextTable}`).run();
 }
 
 function buildAgentDirectory(livechatDashboard) {
@@ -639,8 +645,9 @@ function normalizeTimeline(totalChatsData, ftrData, ratingsData) {
 }
 
 async function readCachedAgentDay(env, date) {
+  const table = analyticsDailyTable(env);
   const { results } = await env.DB.prepare(
-    "SELECT * FROM analytics_agent_daily WHERE date = ? AND agent_key LIKE '%@%' ORDER BY chats_count DESC, agent_email ASC",
+    `SELECT * FROM ${table} WHERE date = ? AND agent_key LIKE '%@%' ORDER BY chats_count DESC, agent_email ASC`,
   )
     .bind(date)
     .all();
@@ -650,6 +657,7 @@ async function readCachedAgentDay(env, date) {
 }
 
 async function writeCachedAgentDay(env, date, agents) {
+  const table = analyticsDailyTable(env);
   const fetchedAt = new Date().toISOString();
   const uniqueAgents = new Map();
   agents.forEach((agent) => {
@@ -663,10 +671,10 @@ async function writeCachedAgentDay(env, date, agents) {
   });
 
   const statements = [
-    env.DB.prepare("DELETE FROM analytics_agent_daily WHERE date = ?").bind(date),
+    env.DB.prepare(`DELETE FROM ${table} WHERE date = ?`).bind(date),
     ...Array.from(uniqueAgents.entries()).map(([agentKey, agent]) =>
       env.DB.prepare(
-      `INSERT OR REPLACE INTO analytics_agent_daily
+      `INSERT OR REPLACE INTO ${table}
         (date, agent_key, agent_id, agent_email, agent_name, chats_count, avg_ftr_ms, avg_csat, rated_good, rated_bad, fetched_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(
@@ -845,7 +853,7 @@ export async function onRequest(context) {
     }
 
     const prev = previousPeriod(from, to);
-    await ensureAnalyticsCache(context.env.DB);
+    await ensureAnalyticsCache(context.env);
     const directory = buildAgentDirectory(await getLiveChatDashboard(context.env));
     const reportAgentIds = effectiveAgentIds(agentIds, excludedAgentIds, directory);
     const [current, previous] = await Promise.all([

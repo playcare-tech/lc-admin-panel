@@ -1,12 +1,12 @@
 import { requireAuth } from "../../_lib/auth.js";
-import { withAccountContext } from "../../_lib/accounts.js";
+import { accountIndexName, accountTableName, withAccountContext } from "../../_lib/accounts.js";
 import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
 
 const STATUSES = ["open", "pending", "onhold", "solved", "closed"];
 const PAGE_SIZE = 25;
 const MAX_PAGES_PER_RANGE = 20;
-const DAILY_TABLE = "helpdesk_analytics_daily_v4";
+const DAILY_TABLE_BASE = "helpdesk_analytics_daily_v4";
 const OBSOLETE_ANALYTICS_TABLES = [
   "helpdesk_analytics_daily",
   "helpdesk_analytics_daily_fetches",
@@ -127,14 +127,21 @@ function isPublicAgentMessageEvent(event) {
   return isMessageEvent(event) && !Boolean(event.isPrivate || event.private) && eventAuthorType(event) === "agent";
 }
 
-async function ensureHelpDeskAnalyticsCache(db) {
-  if (!db) throw new Error("Missing DB binding.");
+function dailyTable(env) {
+  return accountTableName(env, DAILY_TABLE_BASE);
+}
 
-  await db.batch(OBSOLETE_ANALYTICS_TABLES.map((table) => db.prepare(`DROP TABLE IF EXISTS ${table}`)));
+async function ensureHelpDeskAnalyticsCache(env) {
+  if (!env?.DB) throw new Error("Missing DB binding.");
+  const table = dailyTable(env);
 
-  await db
+  if (table === DAILY_TABLE_BASE) {
+    await env.DB.batch(OBSOLETE_ANALYTICS_TABLES.map((obsoleteTable) => env.DB.prepare(`DROP TABLE IF EXISTS ${obsoleteTable}`)));
+  }
+
+  await env.DB
     .prepare(
-      `CREATE TABLE IF NOT EXISTS ${DAILY_TABLE} (
+      `CREATE TABLE IF NOT EXISTS ${table} (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         date TEXT NOT NULL,
         agent_id TEXT NOT NULL,
@@ -146,14 +153,15 @@ async function ensureHelpDeskAnalyticsCache(db) {
       )`,
     )
     .run();
-  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_${DAILY_TABLE}_date ON ${DAILY_TABLE}(date)`).run();
-  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_${DAILY_TABLE}_agent ON ${DAILY_TABLE}(agent_id)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${DAILY_TABLE_BASE}_date`)} ON ${table}(date)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${DAILY_TABLE_BASE}_agent`)} ON ${table}(agent_id)`).run();
 }
 
 async function readCachedDay(env, date) {
+  const table = dailyTable(env);
   const { results } = await env.DB.prepare(
     `SELECT date, agent_id, agent_name, agent_email, handled_tickets
-     FROM ${DAILY_TABLE}
+     FROM ${table}
      WHERE date = ?
      ORDER BY handled_tickets DESC`,
   )
@@ -163,11 +171,11 @@ async function readCachedDay(env, date) {
 }
 
 async function hasCachedDay(env, date) {
-  return Boolean(await env.DB.prepare(`SELECT date FROM ${DAILY_TABLE} WHERE date = ? LIMIT 1`).bind(date).first());
+  return Boolean(await env.DB.prepare(`SELECT date FROM ${dailyTable(env)} WHERE date = ? LIMIT 1`).bind(date).first());
 }
 
 async function resetCachedDay(env, date) {
-  await env.DB.prepare(`DELETE FROM ${DAILY_TABLE} WHERE date = ?`).bind(date).run();
+  await env.DB.prepare(`DELETE FROM ${dailyTable(env)} WHERE date = ?`).bind(date).run();
 }
 
 async function runBatches(db, statements, size = 80) {
@@ -200,6 +208,7 @@ function summarizeDailyRows(date, detailRows) {
 }
 
 async function writeCachedDay(env, date, detailRows, { markFetched = true } = {}) {
+  const table = dailyTable(env);
   const dailyRows = summarizeDailyRows(date, detailRows);
 
   if (markFetched) {
@@ -210,13 +219,13 @@ async function writeCachedDay(env, date, detailRows, { markFetched = true } = {}
     env.DB,
     dailyRows.map((row) =>
       env.DB.prepare(
-        `INSERT INTO ${DAILY_TABLE}
+        `INSERT INTO ${table}
           (date, agent_id, agent_name, agent_email, handled_tickets, cached_at)
          VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
          ON CONFLICT(date, agent_id) DO UPDATE SET
-          agent_name = COALESCE(NULLIF(excluded.agent_name, ''), ${DAILY_TABLE}.agent_name),
-          agent_email = COALESCE(NULLIF(excluded.agent_email, ''), ${DAILY_TABLE}.agent_email),
-          handled_tickets = ${DAILY_TABLE}.handled_tickets + excluded.handled_tickets,
+          agent_name = COALESCE(NULLIF(excluded.agent_name, ''), ${table}.agent_name),
+          agent_email = COALESCE(NULLIF(excluded.agent_email, ''), ${table}.agent_email),
+          handled_tickets = ${table}.handled_tickets + excluded.handled_tickets,
           cached_at = CURRENT_TIMESTAMP`,
       ).bind(
         row.date,
@@ -230,7 +239,7 @@ async function writeCachedDay(env, date, detailRows, { markFetched = true } = {}
 
   const { results } = await env.DB.prepare(
     `SELECT date, agent_id, agent_name, agent_email, handled_tickets
-     FROM ${DAILY_TABLE}
+     FROM ${table}
      WHERE date = ?
      ORDER BY handled_tickets DESC`,
   )
@@ -240,7 +249,7 @@ async function writeCachedDay(env, date, detailRows, { markFetched = true } = {}
 }
 
 async function finalizeCachedDay(env, date) {
-  await env.DB.prepare(`UPDATE ${DAILY_TABLE} SET cached_at = CURRENT_TIMESTAMP WHERE date = ?`).bind(date).run();
+  await env.DB.prepare(`UPDATE ${dailyTable(env)} SET cached_at = CURRENT_TIMESTAMP WHERE date = ?`).bind(date).run();
 }
 
 function filterRows(rows, filters, agentDirectory = new Map()) {
@@ -404,7 +413,7 @@ export async function syncHelpDeskAnalyticsWindow(env, { from, to, timezoneOffse
   if (!env?.DB) throw new Error("Missing DB binding.");
   if (!isValidDate(from) || !isValidDate(to) || to <= from) throw new Error("Invalid sync window.");
 
-  await ensureHelpDeskAnalyticsCache(env.DB);
+  await ensureHelpDeskAnalyticsCache(env);
   const dashboard = await getHelpDeskDashboard(env);
   const agentDirectory = buildAgentDirectory(dashboard);
   const affectedDates = new Set();
@@ -440,7 +449,7 @@ export async function onRequest(context) {
   context = withAccountContext(context);
 
   try {
-    await ensureHelpDeskAnalyticsCache(context.env.DB);
+    await ensureHelpDeskAnalyticsCache(context.env);
 
     const url = new URL(context.request.url);
     const from = parseDateParam(url.searchParams.get("from"), "from");

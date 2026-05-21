@@ -142,7 +142,7 @@ const LIVECHAT_GROUP_BUCKETS = ["VIP", "SS", "TL", "S2B"];
 const ACCOUNT_STORAGE_KEY = "lc-admin-selected-account";
 const ACCOUNT_OPTIONS = [
   { id: "default", label: "Playcare" },
-  { id: "2", label: "PAM" },
+  { id: "playtraffpartners", label: "playtraffpartners" },
 ];
 const LIVECHAT_PRIORITY_OPTIONS = [
   { value: "normal", label: "Primary" },
@@ -185,6 +185,9 @@ function defaultHelpdeskWorkflowForm() {
 }
 
 function normalizeAccountId(value) {
+  if (["2", "pam", "second", "secondary"].includes(`${value || ""}`.trim().toLowerCase())) {
+    return "playtraffpartners";
+  }
   return ACCOUNT_OPTIONS.some((account) => account.id === value) ? value : "default";
 }
 

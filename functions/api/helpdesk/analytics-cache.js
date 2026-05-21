@@ -1,7 +1,8 @@
 import { requireAuth } from "../../_lib/auth.js";
+import { accountTableName, withAccountContext } from "../../_lib/accounts.js";
 import { json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 
-const ANALYTICS_TABLES = [
+const DEFAULT_OBSOLETE_ANALYTICS_TABLES = [
   "analytics_agent_daily_fetches",
   "helpdesk_analytics_daily",
   "helpdesk_analytics_daily_fetches",
@@ -22,6 +23,17 @@ const ANALYTICS_TABLES = [
   "helpdesk_workflow_runs",
 ];
 
+function analyticsTables(context) {
+  const currentTables = [
+    accountTableName(context.env, "analytics_agent_daily"),
+    accountTableName(context.env, "helpdesk_analytics_daily_v4"),
+    accountTableName(context.env, "helpdesk_analytics_sync_meta"),
+  ];
+  return context.env.LC_ACCOUNT_ID === "default"
+    ? [...new Set([...DEFAULT_OBSOLETE_ANALYTICS_TABLES, ...currentTables])]
+    : currentTables;
+}
+
 export async function onRequest(context) {
   if (!["DELETE", "POST"].includes(context.request.method)) {
     return methodNotAllowed(["DELETE", "POST"]);
@@ -29,15 +41,17 @@ export async function onRequest(context) {
 
   const auth = await requireAuth(context);
   if (auth.error) return auth.error;
+  context = withAccountContext(context);
 
   try {
     if (!context.env.DB) throw new Error("Missing DB binding.");
+    const tables = analyticsTables(context);
 
     await context.env.DB.batch(
-      ANALYTICS_TABLES.map((table) => context.env.DB.prepare(`DROP TABLE IF EXISTS ${table}`)),
+      tables.map((table) => context.env.DB.prepare(`DROP TABLE IF EXISTS ${table}`)),
     );
 
-    return json({ ok: true, cleared_tables: ANALYTICS_TABLES });
+    return json({ ok: true, cleared_tables: tables });
   } catch (error) {
     return serverErrorResponse(error, "Failed to clear HelpDesk analytics cache.");
   }

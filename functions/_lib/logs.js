@@ -1,8 +1,4 @@
-const CREATE_TABLE_SQL =
-  "CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, actor TEXT NOT NULL, area TEXT NOT NULL, action TEXT NOT NULL, target TEXT, status TEXT NOT NULL, details TEXT, metadata TEXT)";
-
-const CREATE_INDEX_SQL =
-  "CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs (created_at DESC)";
+import { accountIndexName, accountTableName } from "./accounts.js";
 
 const LOG_RETENTION_DAYS = 7;
 const SKIPPED_LOG_ACTIONS = new Set(["run_workflow", "create_ticket_webhook"]);
@@ -18,8 +14,7 @@ const LOG_COLUMNS = {
   metadata: "TEXT",
 };
 
-let logsTableReady = false;
-let logsTableReadyPromise = null;
+const logsReady = new Map();
 
 function parseMetadata(value) {
   if (!value) return null;
@@ -31,22 +26,31 @@ function parseMetadata(value) {
   }
 }
 
-async function prepareLogsTable(db) {
-  await db.exec(CREATE_TABLE_SQL);
-  const { results } = await db.prepare("PRAGMA table_info(logs)").all();
+function logsTable(env) {
+  return accountTableName(env, "logs");
+}
+
+async function prepareLogsTable(env) {
+  const table = logsTable(env);
+  const index = accountIndexName(env, "idx_logs_created_at");
+  await env.DB.exec(
+    `CREATE TABLE IF NOT EXISTS ${table} (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, actor TEXT NOT NULL, area TEXT NOT NULL, action TEXT NOT NULL, target TEXT, status TEXT NOT NULL, details TEXT, metadata TEXT)`,
+  );
+  const { results } = await env.DB.prepare(`PRAGMA table_info(${table})`).all();
   const existingColumns = new Set((results || []).map((column) => column.name));
   for (const [column, definition] of Object.entries(LOG_COLUMNS)) {
     if (!existingColumns.has(column)) {
-      await db.exec(`ALTER TABLE logs ADD COLUMN ${column} ${definition}`);
+      await env.DB.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
     }
   }
-  await db.exec(CREATE_INDEX_SQL);
-  await purgeOldLogs(db);
+  await env.DB.exec(`CREATE INDEX IF NOT EXISTS ${index} ON ${table} (created_at DESC)`);
+  await purgeOldLogs(env);
 }
 
-async function purgeOldLogs(db) {
+async function purgeOldLogs(env) {
+  const table = logsTable(env);
   const cutoff = new Date(Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  await db.prepare("DELETE FROM logs WHERE created_at < ?").bind(cutoff).run();
+  await env.DB.prepare(`DELETE FROM ${table} WHERE created_at < ?`).bind(cutoff).run();
 }
 
 function shouldStoreLog(entry = {}) {
@@ -55,33 +59,32 @@ function shouldStoreLog(entry = {}) {
   return true;
 }
 
-export async function ensureLogsTable(db) {
-  if (!db) {
+export async function ensureLogsTable(env) {
+  if (!env?.DB) {
     throw new Error("Missing DB binding.");
   }
-  if (logsTableReady) return;
-
-  if (!logsTableReadyPromise) {
-    logsTableReadyPromise = prepareLogsTable(db)
-      .then(() => {
-        logsTableReady = true;
-      })
-      .catch((error) => {
-        logsTableReadyPromise = null;
+  const table = logsTable(env);
+  if (!logsReady.has(table)) {
+    logsReady.set(
+      table,
+      prepareLogsTable(env).catch((error) => {
+        logsReady.delete(table);
         throw error;
-      });
+      }),
+    );
   }
 
-  await logsTableReadyPromise;
+  await logsReady.get(table);
 }
 
 export async function writeLog(env, entry) {
   if (!shouldStoreLog(entry)) return;
-  await ensureLogsTable(env.DB);
-  await purgeOldLogs(env.DB);
+  const table = logsTable(env);
+  await ensureLogsTable(env);
+  await purgeOldLogs(env);
   await env.DB.prepare(
     `
-      INSERT INTO logs (created_at, actor, area, action, target, status, details, metadata)
+      INSERT INTO ${table} (created_at, actor, area, action, target, status, details, metadata)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `,
   )
@@ -107,12 +110,13 @@ export async function writeLogSafely(env, entry) {
 }
 
 export async function listLogs(env, limit = 250) {
-  await ensureLogsTable(env.DB);
-  await purgeOldLogs(env.DB);
+  const table = logsTable(env);
+  await ensureLogsTable(env);
+  await purgeOldLogs(env);
   const { results } = await env.DB.prepare(
     `
       SELECT id, created_at, actor, area, action, target, status, details, metadata
-      FROM logs
+      FROM ${table}
       ORDER BY created_at DESC
       LIMIT ?
     `,
@@ -127,13 +131,14 @@ export async function listLogs(env, limit = 250) {
 }
 
 export async function listLogsByAction(env, { area, action, limit = 25 } = {}) {
-  await ensureLogsTable(env.DB);
-  await purgeOldLogs(env.DB);
+  const table = logsTable(env);
+  await ensureLogsTable(env);
+  await purgeOldLogs(env);
   const safeLimit = Math.min(100, Math.max(1, Number(limit) || 25));
   const { results } = await env.DB.prepare(
     `
       SELECT id, created_at, actor, area, action, target, status, details, metadata
-      FROM logs
+      FROM ${table}
       WHERE (? IS NULL OR area = ?)
         AND (? IS NULL OR action = ?)
       ORDER BY created_at DESC

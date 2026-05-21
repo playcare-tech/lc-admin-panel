@@ -1,17 +1,22 @@
 import { requireAuth, safeEqualText } from "../../_lib/auth.js";
-import { withAccountContext } from "../../_lib/accounts.js";
+import { accountTableName, withAccountContext } from "../../_lib/accounts.js";
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import { syncHelpDeskAnalyticsWindow } from "./analytics.js";
 
-const SYNC_META_TABLE = "helpdesk_analytics_sync_meta";
+const SYNC_META_TABLE_BASE = "helpdesk_analytics_sync_meta";
 const DEFAULT_WINDOW_MINUTES = 35;
 const DEFAULT_OVERLAP_MINUTES = 5;
 const MAX_WINDOW_MINUTES = 120;
 
-async function ensureSyncMetaTable(db) {
-  await db
+function syncMetaTable(env) {
+  return accountTableName(env, SYNC_META_TABLE_BASE);
+}
+
+async function ensureSyncMetaTable(env) {
+  const table = syncMetaTable(env);
+  await env.DB
     .prepare(
-      `CREATE TABLE IF NOT EXISTS ${SYNC_META_TABLE} (
+      `CREATE TABLE IF NOT EXISTS ${table} (
         key TEXT PRIMARY KEY,
         value TEXT,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -21,16 +26,18 @@ async function ensureSyncMetaTable(db) {
 }
 
 async function readSyncMeta(env) {
-  await ensureSyncMetaTable(env.DB);
-  const { results } = await env.DB.prepare(`SELECT key, value FROM ${SYNC_META_TABLE}`).all();
+  const table = syncMetaTable(env);
+  await ensureSyncMetaTable(env);
+  const { results } = await env.DB.prepare(`SELECT key, value FROM ${table}`).all();
   return Object.fromEntries((results || []).map((row) => [row.key, row.value]));
 }
 
 async function writeSyncMeta(env, entries) {
-  await ensureSyncMetaTable(env.DB);
+  const table = syncMetaTable(env);
+  await ensureSyncMetaTable(env);
   await env.DB.batch(
     Object.entries(entries).map(([key, value]) =>
-      env.DB.prepare(`INSERT OR REPLACE INTO ${SYNC_META_TABLE} (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)`).bind(
+      env.DB.prepare(`INSERT OR REPLACE INTO ${table} (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)`).bind(
         key,
         value == null ? "" : String(value),
       ),

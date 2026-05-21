@@ -1,11 +1,4 @@
-const WORKFLOWS_TABLE_SQL =
-  "CREATE TABLE IF NOT EXISTS helpdesk_workflows (id TEXT PRIMARY KEY, title TEXT NOT NULL, type TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, config_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)";
-
-const OPEN_TICKET_SNAPSHOTS_TABLE_SQL =
-  "CREATE TABLE IF NOT EXISTS helpdesk_open_ticket_snapshots (snapshot_date TEXT PRIMARY KEY, open_ticket_count INTEGER NOT NULL DEFAULT 0, captured_at TEXT NOT NULL)";
-
-const WEBHOOK_DAILY_STATS_TABLE_SQL =
-  "CREATE TABLE IF NOT EXISTS helpdesk_webhook_daily_stats (stat_date TEXT PRIMARY KEY, webhooks_received INTEGER NOT NULL DEFAULT 0, workflow_runs INTEGER NOT NULL DEFAULT 0, tickets_solved INTEGER NOT NULL DEFAULT 0, tickets_auto_replied INTEGER NOT NULL DEFAULT 0, tickets_merged INTEGER NOT NULL DEFAULT 0, actions_count INTEGER NOT NULL DEFAULT 0, errors_count INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)";
+import { accountIndexName, accountTableName } from "./accounts.js";
 
 const WORKFLOW_STATS_METRICS = {
   ticketsSolved: "tickets_solved",
@@ -89,12 +82,29 @@ const BUILT_IN_WORKFLOWS = [
   },
 ];
 
-let workflowTablesReady = false;
-let workflowTablesReadyPromise = null;
-let webhookDailyStatsTableReady = false;
-let webhookDailyStatsTableReadyPromise = null;
-let openTicketSnapshotsTableReady = false;
-let openTicketSnapshotsTableReadyPromise = null;
+const workflowTablesReady = new Map();
+const webhookDailyStatsTableReady = new Map();
+const openTicketSnapshotsTableReady = new Map();
+
+function workflowTables(env) {
+  return {
+    workflows: accountTableName(env, "helpdesk_workflows"),
+    webhookDailyStats: accountTableName(env, "helpdesk_webhook_daily_stats"),
+    openTicketSnapshots: accountTableName(env, "helpdesk_open_ticket_snapshots"),
+  };
+}
+
+function workflowTableSql(table) {
+  return `CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, title TEXT NOT NULL, type TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, config_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`;
+}
+
+function openTicketSnapshotsTableSql(table) {
+  return `CREATE TABLE IF NOT EXISTS ${table} (snapshot_date TEXT PRIMARY KEY, open_ticket_count INTEGER NOT NULL DEFAULT 0, captured_at TEXT NOT NULL)`;
+}
+
+function webhookDailyStatsTableSql(table) {
+  return `CREATE TABLE IF NOT EXISTS ${table} (stat_date TEXT PRIMARY KEY, webhooks_received INTEGER NOT NULL DEFAULT 0, workflow_runs INTEGER NOT NULL DEFAULT 0, tickets_solved INTEGER NOT NULL DEFAULT 0, tickets_auto_replied INTEGER NOT NULL DEFAULT 0, tickets_merged INTEGER NOT NULL DEFAULT 0, actions_count INTEGER NOT NULL DEFAULT 0, errors_count INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)`;
+}
 
 function parseJson(value, fallback = {}) {
   if (!value) return fallback;
@@ -199,17 +209,19 @@ function dailyStatsFromRunMetadata(metadata = {}) {
 }
 
 async function readWebhookDailyStats(env, date) {
-  await ensureWebhookDailyStatsTable(env.DB);
-  return env.DB.prepare("SELECT * FROM helpdesk_webhook_daily_stats WHERE stat_date = ?").bind(date).first();
+  const { webhookDailyStats } = workflowTables(env);
+  await ensureWebhookDailyStatsTable(env);
+  return env.DB.prepare(`SELECT * FROM ${webhookDailyStats} WHERE stat_date = ?`).bind(date).first();
 }
 
 async function incrementWebhookDailyStats(env, date, increments = {}) {
-  await ensureWebhookDailyStatsTable(env.DB);
+  const { webhookDailyStats } = workflowTables(env);
+  await ensureWebhookDailyStatsTable(env);
   const statDate = parseDateKey(date, workflowDateKey(new Date().toISOString(), Number(env.HELPDESK_ANALYTICS_TZ_OFFSET || 0)));
   const now = new Date().toISOString();
   await env.DB.prepare(
     `
-      INSERT INTO helpdesk_webhook_daily_stats
+      INSERT INTO ${webhookDailyStats}
         (stat_date, webhooks_received, workflow_runs, tickets_solved, tickets_auto_replied, tickets_merged, actions_count, errors_count, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(stat_date) DO UPDATE SET
@@ -245,27 +257,31 @@ async function objectExists(db, type, name) {
   return Boolean(row);
 }
 
-async function workflowExists(db, workflowId) {
-  const row = await db.prepare("SELECT id FROM helpdesk_workflows WHERE id = ?").bind(workflowId).first();
+async function workflowExists(env, workflowId) {
+  const { workflows } = workflowTables(env);
+  const row = await env.DB.prepare(`SELECT id FROM ${workflows} WHERE id = ?`).bind(workflowId).first();
   return Boolean(row);
 }
 
-async function prepareHelpdeskWorkflowCoreTables(db) {
-  if (!(await objectExists(db, "table", "helpdesk_workflows"))) {
-    await db.exec(WORKFLOWS_TABLE_SQL);
+async function prepareHelpdeskWorkflowCoreTables(env) {
+  const { workflows, webhookDailyStats } = workflowTables(env);
+  if (!(await objectExists(env.DB, "table", workflows))) {
+    await env.DB.exec(workflowTableSql(workflows));
   }
-  await db.exec(WEBHOOK_DAILY_STATS_TABLE_SQL);
-  await db.exec("DROP TABLE IF EXISTS helpdesk_webhook_events");
-  await db.exec("DROP TABLE IF EXISTS helpdesk_workflow_run_stats");
-  await db.exec("DROP TABLE IF EXISTS helpdesk_workflow_runs");
+  await env.DB.exec(webhookDailyStatsTableSql(webhookDailyStats));
+  if (workflows === "helpdesk_workflows") {
+    await env.DB.exec("DROP TABLE IF EXISTS helpdesk_webhook_events");
+    await env.DB.exec("DROP TABLE IF EXISTS helpdesk_workflow_run_stats");
+    await env.DB.exec("DROP TABLE IF EXISTS helpdesk_workflow_runs");
+  }
 
   const now = new Date().toISOString();
   for (const workflow of BUILT_IN_WORKFLOWS) {
-    if (await workflowExists(db, workflow.id)) continue;
-    await db
+    if (await workflowExists(env, workflow.id)) continue;
+    await env.DB
       .prepare(
         `
-          INSERT OR IGNORE INTO helpdesk_workflows (id, title, type, enabled, config_json, created_at, updated_at)
+          INSERT OR IGNORE INTO ${workflows} (id, title, type, enabled, config_json, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?)
         `,
       )
@@ -274,90 +290,89 @@ async function prepareHelpdeskWorkflowCoreTables(db) {
   }
 }
 
-async function prepareWebhookDailyStatsTable(db) {
-  await db.exec(WEBHOOK_DAILY_STATS_TABLE_SQL);
+async function prepareWebhookDailyStatsTable(env) {
+  const { webhookDailyStats } = workflowTables(env);
+  await env.DB.exec(webhookDailyStatsTableSql(webhookDailyStats));
 }
 
-async function prepareOpenTicketSnapshotsTable(db) {
-  await db.exec(OPEN_TICKET_SNAPSHOTS_TABLE_SQL);
-  await db.exec("CREATE INDEX IF NOT EXISTS idx_helpdesk_open_ticket_snapshots_captured ON helpdesk_open_ticket_snapshots (captured_at DESC)");
+async function prepareOpenTicketSnapshotsTable(env) {
+  const { openTicketSnapshots } = workflowTables(env);
+  const index = accountIndexName(env, "idx_helpdesk_open_ticket_snapshots_captured");
+  await env.DB.exec(openTicketSnapshotsTableSql(openTicketSnapshots));
+  await env.DB.exec(`CREATE INDEX IF NOT EXISTS ${index} ON ${openTicketSnapshots} (captured_at DESC)`);
 }
 
-export async function ensureHelpdeskWorkflowTables(db) {
-  if (!db) {
+export async function ensureHelpdeskWorkflowTables(env) {
+  if (!env?.DB) {
     throw new Error("Missing DB binding.");
   }
-  if (workflowTablesReady) return;
-
-  if (!workflowTablesReadyPromise) {
-    workflowTablesReadyPromise = prepareHelpdeskWorkflowCoreTables(db)
-      .then(() => {
-        workflowTablesReady = true;
-      })
-      .catch((error) => {
-        workflowTablesReadyPromise = null;
+  const { workflows } = workflowTables(env);
+  if (!workflowTablesReady.has(workflows)) {
+    workflowTablesReady.set(
+      workflows,
+      prepareHelpdeskWorkflowCoreTables(env).catch((error) => {
+        workflowTablesReady.delete(workflows);
         throw error;
-      });
+      }),
+    );
   }
 
-  await workflowTablesReadyPromise;
+  await workflowTablesReady.get(workflows);
 }
 
-async function ensureWebhookDailyStatsTable(db) {
-  await ensureHelpdeskWorkflowTables(db);
-  if (webhookDailyStatsTableReady) return;
-
-  if (!webhookDailyStatsTableReadyPromise) {
-    webhookDailyStatsTableReadyPromise = prepareWebhookDailyStatsTable(db)
-      .then(() => {
-        webhookDailyStatsTableReady = true;
-      })
-      .catch((error) => {
-        webhookDailyStatsTableReadyPromise = null;
+async function ensureWebhookDailyStatsTable(env) {
+  await ensureHelpdeskWorkflowTables(env);
+  const { webhookDailyStats } = workflowTables(env);
+  if (!webhookDailyStatsTableReady.has(webhookDailyStats)) {
+    webhookDailyStatsTableReady.set(
+      webhookDailyStats,
+      prepareWebhookDailyStatsTable(env).catch((error) => {
+        webhookDailyStatsTableReady.delete(webhookDailyStats);
         throw error;
-      });
+      }),
+    );
   }
 
-  await webhookDailyStatsTableReadyPromise;
+  await webhookDailyStatsTableReady.get(webhookDailyStats);
 }
 
-async function ensureOpenTicketSnapshotsTable(db) {
-  await ensureHelpdeskWorkflowTables(db);
-  if (openTicketSnapshotsTableReady) return;
-
-  if (!openTicketSnapshotsTableReadyPromise) {
-    openTicketSnapshotsTableReadyPromise = prepareOpenTicketSnapshotsTable(db)
-      .then(() => {
-        openTicketSnapshotsTableReady = true;
-      })
-      .catch((error) => {
-        openTicketSnapshotsTableReadyPromise = null;
+async function ensureOpenTicketSnapshotsTable(env) {
+  await ensureHelpdeskWorkflowTables(env);
+  const { openTicketSnapshots } = workflowTables(env);
+  if (!openTicketSnapshotsTableReady.has(openTicketSnapshots)) {
+    openTicketSnapshotsTableReady.set(
+      openTicketSnapshots,
+      prepareOpenTicketSnapshotsTable(env).catch((error) => {
+        openTicketSnapshotsTableReady.delete(openTicketSnapshots);
         throw error;
-      });
+      }),
+    );
   }
 
-  await openTicketSnapshotsTableReadyPromise;
+  await openTicketSnapshotsTableReady.get(openTicketSnapshots);
 }
 
 export async function listHelpdeskWorkflows(env) {
-  await ensureHelpdeskWorkflowTables(env.DB);
-  const { results: workflows } = await env.DB.prepare(
+  const { workflows: workflowsTable } = workflowTables(env);
+  await ensureHelpdeskWorkflowTables(env);
+  const { results } = await env.DB.prepare(
     `
       SELECT id, title, type, enabled, config_json, created_at, updated_at
-      FROM helpdesk_workflows
+      FROM ${workflowsTable}
       ORDER BY CASE type WHEN 'auto_merge_duplicates' THEN 0 WHEN 'auto_merge_6h_rule' THEN 1 WHEN 'auto_reply_empty_requester_ticket' THEN 2 ELSE 3 END, created_at ASC
     `,
   ).all();
 
-  return (workflows || []).map((row) => workflowFromRow(row));
+  return (results || []).map((row) => workflowFromRow(row));
 }
 
 export async function listEnabledHelpdeskWorkflows(env) {
-  await ensureHelpdeskWorkflowTables(env.DB);
+  const { workflows: workflowsTable } = workflowTables(env);
+  await ensureHelpdeskWorkflowTables(env);
   const { results } = await env.DB.prepare(
     `
       SELECT id, title, type, enabled, config_json, created_at, updated_at
-      FROM helpdesk_workflows
+      FROM ${workflowsTable}
       WHERE enabled = 1
       ORDER BY CASE type WHEN 'auto_merge_duplicates' THEN 0 WHEN 'auto_merge_6h_rule' THEN 1 WHEN 'auto_reply_empty_requester_ticket' THEN 2 ELSE 3 END, created_at ASC
     `,
@@ -367,16 +382,17 @@ export async function listEnabledHelpdeskWorkflows(env) {
 }
 
 export async function listHelpdeskWorkflowRuns(env, workflowId, limit = 50) {
-  await ensureHelpdeskWorkflowTables(env.DB);
+  await ensureHelpdeskWorkflowTables(env);
   return [];
 }
 
 export async function setHelpdeskWorkflowEnabled(env, workflowId, enabled) {
-  await ensureHelpdeskWorkflowTables(env.DB);
+  const { workflows } = workflowTables(env);
+  await ensureHelpdeskWorkflowTables(env);
   const now = new Date().toISOString();
   const { meta } = await env.DB.prepare(
     `
-      UPDATE helpdesk_workflows
+      UPDATE ${workflows}
       SET enabled = ?, updated_at = ?
       WHERE id = ?
     `,
@@ -390,11 +406,12 @@ export async function setHelpdeskWorkflowEnabled(env, workflowId, enabled) {
 }
 
 export async function updateHelpdeskWorkflowConfig(env, workflowId, config) {
-  await ensureHelpdeskWorkflowTables(env.DB);
+  const { workflows } = workflowTables(env);
+  await ensureHelpdeskWorkflowTables(env);
   const now = new Date().toISOString();
   const { meta } = await env.DB.prepare(
     `
-      UPDATE helpdesk_workflows
+      UPDATE ${workflows}
       SET config_json = ?, updated_at = ?
       WHERE id = ?
     `,
@@ -408,12 +425,13 @@ export async function updateHelpdeskWorkflowConfig(env, workflowId, config) {
 }
 
 export async function createHelpdeskAutoResolveWorkflow(env, { title, requesterEmail, status, tagNames, tagIds }) {
-  await ensureHelpdeskWorkflowTables(env.DB);
+  const { workflows } = workflowTables(env);
+  await ensureHelpdeskWorkflowTables(env);
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
   await env.DB.prepare(
     `
-      INSERT INTO helpdesk_workflows (id, title, type, enabled, config_json, created_at, updated_at)
+      INSERT INTO ${workflows} (id, title, type, enabled, config_json, created_at, updated_at)
       VALUES (?, ?, 'auto_resolve_requester', 1, ?, ?, ?)
     `,
   )
@@ -435,12 +453,13 @@ export async function createHelpdeskAutoResolveWorkflow(env, { title, requesterE
 }
 
 export async function createHelpdeskAutoReplyWorkflow(env, { title, senderName, senderAgentId, messageText }) {
-  await ensureHelpdeskWorkflowTables(env.DB);
+  const { workflows } = workflowTables(env);
+  await ensureHelpdeskWorkflowTables(env);
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
   await env.DB.prepare(
     `
-      INSERT INTO helpdesk_workflows (id, title, type, enabled, config_json, created_at, updated_at)
+      INSERT INTO ${workflows} (id, title, type, enabled, config_json, created_at, updated_at)
       VALUES (?, ?, 'auto_reply_new_requester_ticket', 1, ?, ?, ?)
     `,
   )
@@ -463,7 +482,7 @@ export async function createHelpdeskAutoReplyWorkflow(env, { title, senderName, 
 }
 
 export async function recordHelpdeskWorkflowRun(env, run) {
-  await ensureHelpdeskWorkflowTables(env.DB);
+  await ensureHelpdeskWorkflowTables(env);
   return crypto.randomUUID();
 }
 
@@ -484,7 +503,8 @@ export async function recordHelpdeskWorkflowRunStats(env, run, timezoneOffsetMin
 }
 
 export async function getHelpdeskWorkflowAnalytics(env, { from, to, timezoneOffsetMinutes = 0 } = {}) {
-  await ensureWebhookDailyStatsTable(env.DB);
+  const { webhookDailyStats } = workflowTables(env);
+  await ensureWebhookDailyStatsTable(env);
   const today = workflowDateKey(new Date().toISOString(), timezoneOffsetMinutes);
   const defaultFrom = addDays(today, -6);
   const fromDate = parseDateKey(from, defaultFrom);
@@ -496,7 +516,7 @@ export async function getHelpdeskWorkflowAnalytics(env, { from, to, timezoneOffs
   const { results } = await env.DB.prepare(
     `
       SELECT stat_date, tickets_solved, tickets_auto_replied, tickets_merged
-      FROM helpdesk_webhook_daily_stats
+      FROM ${webhookDailyStats}
       WHERE stat_date >= ?
         AND stat_date <= ?
       ORDER BY stat_date ASC
@@ -536,14 +556,15 @@ export async function getHelpdeskWorkflowAnalytics(env, { from, to, timezoneOffs
 }
 
 export async function recordHelpdeskOpenTicketSnapshot(env, { date, count, capturedAt = new Date().toISOString() }) {
-  await ensureOpenTicketSnapshotsTable(env.DB);
+  const { openTicketSnapshots } = workflowTables(env);
+  await ensureOpenTicketSnapshotsTable(env);
   const snapshotDate = parseDateKey(date, "");
   if (!snapshotDate) {
     throw new Error("Open ticket snapshot date is required.");
   }
   await env.DB.prepare(
     `
-      INSERT OR REPLACE INTO helpdesk_open_ticket_snapshots
+      INSERT OR REPLACE INTO ${openTicketSnapshots}
         (snapshot_date, open_ticket_count, captured_at)
       VALUES (?, ?, ?)
     `,
@@ -553,7 +574,8 @@ export async function recordHelpdeskOpenTicketSnapshot(env, { date, count, captu
 }
 
 export async function listHelpdeskOpenTicketSnapshots(env, { from, to } = {}) {
-  await ensureOpenTicketSnapshotsTable(env.DB);
+  const { openTicketSnapshots } = workflowTables(env);
+  await ensureOpenTicketSnapshotsTable(env);
   const fromDate = parseDateKey(from, "");
   const toDate = parseDateKey(to, "");
   if (!fromDate || !toDate) return [];
@@ -561,7 +583,7 @@ export async function listHelpdeskOpenTicketSnapshots(env, { from, to } = {}) {
   const { results } = await env.DB.prepare(
     `
       SELECT snapshot_date, open_ticket_count, captured_at
-      FROM helpdesk_open_ticket_snapshots
+      FROM ${openTicketSnapshots}
       WHERE snapshot_date >= ?
         AND snapshot_date <= ?
       ORDER BY snapshot_date ASC
@@ -598,16 +620,17 @@ export async function finishHelpdeskWebhookEvent(env, eventId, { status = "proce
 }
 
 export async function getHelpdeskWebhookStats(env, { type = "create-ticket", recentLimit = 10 } = {}) {
-  await ensureWebhookDailyStatsTable(env.DB);
+  const { webhookDailyStats } = workflowTables(env);
+  await ensureWebhookDailyStatsTable(env);
   const today = workflowDateKey(new Date().toISOString(), Number(env.HELPDESK_ANALYTICS_TZ_OFFSET || 0));
   const safeLimit = Math.min(50, Math.max(1, Number(recentLimit) || 10));
   const [{ total }, todayRow, { results }] = await Promise.all([
-    env.DB.prepare("SELECT SUM(webhooks_received) AS total FROM helpdesk_webhook_daily_stats").first(),
+    env.DB.prepare(`SELECT SUM(webhooks_received) AS total FROM ${webhookDailyStats}`).first(),
     readWebhookDailyStats(env, today),
     env.DB.prepare(
       `
         SELECT stat_date, webhooks_received, workflow_runs, tickets_solved, tickets_auto_replied, tickets_merged, actions_count, errors_count
-        FROM helpdesk_webhook_daily_stats
+        FROM ${webhookDailyStats}
         ORDER BY stat_date DESC
         LIMIT ?
       `,

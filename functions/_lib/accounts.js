@@ -1,11 +1,12 @@
 const ACCOUNT_HEADER = "X-LC-Account";
 
 export const DEFAULT_ACCOUNT_ID = "default";
-export const SECOND_ACCOUNT_ID = "2";
+export const SECOND_ACCOUNT_ID = "playtraffpartners";
+const SECOND_ACCOUNT_TABLE_SUFFIX = "playtraffpartners";
 
 export function normalizeAccountId(value) {
   const normalized = `${value || ""}`.trim().toLowerCase();
-  if (["2", "second", "secondary", "pam"].includes(normalized)) return SECOND_ACCOUNT_ID;
+  if (["2", "second", "secondary", "pam", "playtraffpartners"].includes(normalized)) return SECOND_ACCOUNT_ID;
   return DEFAULT_ACCOUNT_ID;
 }
 
@@ -16,6 +17,18 @@ export function requestAccountId(request) {
 
 export function accountSecretName(accountId) {
   return accountId === SECOND_ACCOUNT_ID ? "TEXT_BASIC_AUTH_B64_2" : "TEXT_BASIC_AUTH_B64";
+}
+
+export function accountTableName(env, baseName) {
+  return normalizeAccountId(env?.LC_ACCOUNT_ID) === SECOND_ACCOUNT_ID
+    ? `${baseName}_${SECOND_ACCOUNT_TABLE_SUFFIX}`
+    : baseName;
+}
+
+export function accountIndexName(env, baseName) {
+  return normalizeAccountId(env?.LC_ACCOUNT_ID) === SECOND_ACCOUNT_ID
+    ? `${baseName}_${SECOND_ACCOUNT_TABLE_SUFFIX}`
+    : baseName;
 }
 
 export function accountScopedEnv(context) {
