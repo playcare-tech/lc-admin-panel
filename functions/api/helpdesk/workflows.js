@@ -1,4 +1,5 @@
 import { requireAuth } from "../../_lib/auth.js";
+import { withAccountContext } from "../../_lib/accounts.js";
 import { helpdeskRequest } from "../../_lib/helpdesk.js";
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import { writeLogSafely } from "../../_lib/logs.js";
@@ -281,6 +282,7 @@ export async function onRequest(context) {
 
   const auth = await requireAuth(context);
   if (auth.error) return auth.error;
+  context = withAccountContext(context);
 
   try {
     if (context.request.method === "GET") return await getWorkflows(context);

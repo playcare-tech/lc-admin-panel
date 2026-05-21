@@ -169,6 +169,19 @@ body {
   flex-wrap: wrap;
 }
 
+.account-switcher {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.account-switcher select {
+  min-width: 112px;
+}
+
 .session-badge {
   padding: 7px 10px;
   border-radius: 999px;

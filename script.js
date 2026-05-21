@@ -139,6 +139,11 @@ const HELPDESK_TICKET_SORTS = [
 const HELPDESK_TICKET_TEXT_SORTS = new Set(["requester", "assignedAgent"]);
 const HELPDESK_TICKET_DATE_SORTS = new Set(["createdAt", "updatedAt", "lastMessageAt"]);
 const LIVECHAT_GROUP_BUCKETS = ["VIP", "SS", "TL", "S2B"];
+const ACCOUNT_STORAGE_KEY = "lc-admin-selected-account";
+const ACCOUNT_OPTIONS = [
+  { id: "default", label: "Playcare" },
+  { id: "2", label: "PAM" },
+];
 const LIVECHAT_PRIORITY_OPTIONS = [
   { value: "normal", label: "Primary" },
   { value: "last", label: "Last" },
@@ -179,10 +184,27 @@ function defaultHelpdeskWorkflowForm() {
   };
 }
 
+function normalizeAccountId(value) {
+  return ACCOUNT_OPTIONS.some((account) => account.id === value) ? value : "default";
+}
+
+function storedAccountId() {
+  try {
+    return normalizeAccountId(localStorage.getItem(ACCOUNT_STORAGE_KEY));
+  } catch (_error) {
+    return "default";
+  }
+}
+
+function accountLabel(accountId = state.accountId) {
+  return ACCOUNT_OPTIONS.find((account) => account.id === accountId)?.label || "Playcare";
+}
+
 const state = {
   user: null,
   permissions: {},
   csrfToken: "",
+  accountId: storedAccountId(),
   loginChallenge: null,
   section: "livechat-users",
   livechat: { agents: [], groups: [] },
@@ -335,6 +357,7 @@ const loginMessage = document.getElementById("loginMessage");
 const statusMessage = document.getElementById("statusMessage");
 const syncStatusMessage = document.getElementById("syncStatusMessage");
 const sessionBadge = document.getElementById("sessionBadge");
+const accountSelect = document.getElementById("accountSelect");
 const pageTitle = document.getElementById("pageTitle");
 const appContent = document.getElementById("appContent");
 const modalRoot = document.getElementById("modalRoot");
@@ -346,9 +369,14 @@ function setMessage(element, message, tone = "info") {
   element.dataset.tone = message ? tone : "";
 }
 
+function accountRequestHeaders() {
+  return { "X-LC-Account": normalizeAccountId(state.accountId) };
+}
+
 async function api(path, options = {}) {
   const method = (options.method || "GET").toUpperCase();
   const headers = {
+    ...accountRequestHeaders(),
     ...(options.body ? { "Content-Type": "application/json" } : {}),
     ...(options.headers || {}),
   };
@@ -393,7 +421,7 @@ async function api(path, options = {}) {
 function showApp() {
   loginView.classList.add("d-none");
   appView.classList.remove("d-none");
-  sessionBadge.textContent = `Signed in as ${state.user}`;
+  syncAccountSwitcher();
   startHelpdeskAutoSync();
 }
 
@@ -408,6 +436,67 @@ function showLogin() {
     state.helpdeskSyncTimer = null;
   }
   stopHelpdeskTicketsRealtime();
+}
+
+function syncAccountSwitcher() {
+  if (accountSelect) {
+    accountSelect.value = normalizeAccountId(state.accountId);
+  }
+  sessionBadge.textContent = `Signed in as ${state.user} · ${accountLabel()}`;
+}
+
+function resetAccountScopedState() {
+  stopHelpdeskTicketsRealtime();
+  stopHelpdeskWorkflowsRealtime();
+  state.livechat = { agents: [], groups: [] };
+  state.helpdesk = { agents: [], teams: [] };
+  state.logs = [];
+  state.logsWarning = "";
+  state.livechatSearch = "";
+  state.helpdeskSearch = "";
+  state.helpdeskSync = null;
+  state.helpdeskWorkflows.workflows = [];
+  state.helpdeskWorkflows.runs = [];
+  state.helpdeskWorkflows.runsFor = "";
+  state.helpdeskWorkflows.webhookStats = { total: 0, receivedLast24h: 0, receivedLast10m: 0, recent: [] };
+  state.helpdeskWorkflows.analytics.data = null;
+  state.helpdeskTickets.tickets = [];
+  state.helpdeskTickets.counts = { statuses: {} };
+  state.helpdeskTickets.tags = [];
+  state.helpdeskTickets.mergeLogs = [];
+  state.helpdeskTickets.updatedAt = "";
+  state.helpdeskTickets.page = {
+    pageIndex: 0,
+    totalResults: 0,
+    totalPages: 0,
+    nextCursor: null,
+    prevCursor: null,
+    cursorPagination: true,
+    cursorStack: [],
+  };
+  state.analytics.data = null;
+  state.helpdesk_analytics.data = null;
+  state.livechatSelectedAgentIds.clear();
+  state.livechatSelectedGroupIds.clear();
+  state.helpdeskSelectedAgentIds.clear();
+  state.helpdeskSelectedTeamIds.clear();
+  state.modalOpen = false;
+  state.modalAgent = null;
+  state.modalType = null;
+}
+
+async function switchAccount(accountId) {
+  const nextAccountId = normalizeAccountId(accountId);
+  if (nextAccountId === state.accountId) return;
+  state.accountId = nextAccountId;
+  try {
+    localStorage.setItem(ACCOUNT_STORAGE_KEY, nextAccountId);
+  } catch (_error) {}
+  resetAccountScopedState();
+  syncAccountSwitcher();
+  setMessage(statusMessage, `Switching to ${accountLabel(nextAccountId)}...`);
+  await refreshData();
+  runHelpdeskAutoSync();
 }
 
 function renderLoginChallenge() {
@@ -4656,7 +4745,9 @@ async function fetchLiveChatRawExportPage(filters, pageId = "") {
     params.set("page_id", pageId);
   }
 
-  const response = await fetch(`/api/livechat/analytics?${params.toString()}`);
+  const response = await fetch(`/api/livechat/analytics?${params.toString()}`, {
+    headers: accountRequestHeaders(),
+  });
   const nextCsrfToken = response.headers.get("X-CSRF-Token");
   if (nextCsrfToken) {
     state.csrfToken = nextCsrfToken;
@@ -5024,7 +5115,9 @@ async function downloadHelpdeskTicketsCsv(limit) {
   params.set("limit", String(safeLimit));
 
   setMessage(statusMessage, `Preparing HelpDesk CSV for last ${safeLimit} ticket(s)...`);
-  const response = await fetch(`/api/helpdesk/tickets?${params.toString()}`);
+  const response = await fetch(`/api/helpdesk/tickets?${params.toString()}`, {
+    headers: accountRequestHeaders(),
+  });
   const nextCsrfToken = response.headers.get("X-CSRF-Token");
   if (nextCsrfToken) {
     state.csrfToken = nextCsrfToken;
@@ -5846,6 +5939,11 @@ function rerenderPreservingInput(inputId) {
 }
 
 function bindAppEvents() {
+  if (accountSelect) {
+    accountSelect.value = normalizeAccountId(state.accountId);
+    accountSelect.onchange = () => switchAccount(accountSelect.value);
+  }
+
   document.querySelectorAll(".sidebar-link").forEach((button) => {
     button.onclick = () => {
       state.section = button.dataset.section;

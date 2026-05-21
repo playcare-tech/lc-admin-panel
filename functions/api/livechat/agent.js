@@ -1,4 +1,5 @@
 import { requireAuth } from "../../_lib/auth.js";
+import { withAccountContext } from "../../_lib/accounts.js";
 import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 import { getLiveChatAgent } from "../../_lib/livechat.js";
 
@@ -11,6 +12,7 @@ export async function onRequest(context) {
   if (auth.error) {
     return auth.error;
   }
+  context = withAccountContext(context);
 
   try {
     const url = new URL(context.request.url);

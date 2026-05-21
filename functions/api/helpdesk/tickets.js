@@ -1,4 +1,5 @@
 import { requireAuth } from "../../_lib/auth.js";
+import { withAccountContext } from "../../_lib/accounts.js";
 import {
   buildHelpDeskAgentDirectory,
   getHelpDeskDashboard,
@@ -2237,6 +2238,7 @@ export async function onRequest(context) {
 
   const auth = await requireAuth(context);
   if (auth.error) return auth.error;
+  context = withAccountContext(context);
 
   try {
     if (context.request.method === "GET") {

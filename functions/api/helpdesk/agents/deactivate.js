@@ -1,4 +1,5 @@
 import { requirePermission } from "../../../_lib/auth.js";
+import { withAccountContext } from "../../../_lib/accounts.js";
 import { helpdeskRequest } from "../../../_lib/helpdesk.js";
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../../_lib/http.js";
 import { writeLog } from "../../../_lib/logs.js";
@@ -12,6 +13,7 @@ export async function onRequest(context) {
   if (auth.error) {
     return auth.error;
   }
+  context = withAccountContext(context);
 
   try {
     const body = await readJson(context.request);

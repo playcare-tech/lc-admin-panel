@@ -1,4 +1,5 @@
 import { requireAuth } from "../../_lib/auth.js";
+import { withAccountContext } from "../../_lib/accounts.js";
 import { helpdeskRequestWithMeta, normalizeHelpDeskTicketList } from "../../_lib/helpdesk.js";
 import {
   getHelpdeskWorkflowAnalytics,
@@ -87,6 +88,7 @@ export async function onRequest(context) {
 
   const auth = await requireAuth(context);
   if (auth.error) return auth.error;
+  context = withAccountContext(context);
 
   const url = new URL(context.request.url);
   const from = url.searchParams.get("from") || "";

@@ -20,7 +20,7 @@ function extractErrorMessage(payload, fallback) {
 function getAuthHeader(env) {
   const value = `${env.TEXT_BASIC_AUTH_B64 || ""}`.trim();
   if (!value) {
-    throw new Error("Missing TEXT_BASIC_AUTH_B64 environment variable.");
+    throw new Error(`Missing ${env.LC_AUTH_SECRET_NAME || "TEXT_BASIC_AUTH_B64"} environment variable.`);
   }
 
   return /^Basic\s+/i.test(value) ? value : `Basic ${value}`;

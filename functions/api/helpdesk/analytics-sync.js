@@ -1,4 +1,5 @@
 import { requireAuth, safeEqualText } from "../../_lib/auth.js";
+import { withAccountContext } from "../../_lib/accounts.js";
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import { syncHelpDeskAnalyticsWindow } from "./analytics.js";
 
@@ -78,6 +79,7 @@ async function authenticate(context) {
 export async function onRequest(context) {
   if (!["GET", "POST"].includes(context.request.method)) return methodNotAllowed(["GET", "POST"]);
 
+  context = withAccountContext(context);
   const authError = await authenticate(context);
   if (authError) return authError;
 

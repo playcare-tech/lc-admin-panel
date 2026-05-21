@@ -1,4 +1,5 @@
 import { requireAuth } from "../../_lib/auth.js";
+import { withAccountContext } from "../../_lib/accounts.js";
 import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 import { getHelpDeskDashboard, helpdeskRequest } from "../../_lib/helpdesk.js";
 
@@ -436,6 +437,7 @@ export async function onRequest(context) {
 
   const auth = await requireAuth(context);
   if (auth.error) return auth.error;
+  context = withAccountContext(context);
 
   try {
     await ensureHelpDeskAnalyticsCache(context.env.DB);

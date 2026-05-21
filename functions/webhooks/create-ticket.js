@@ -1,3 +1,4 @@
+import { withAccountContext } from "../_lib/accounts.js";
 import { helpdeskRequest, normalizeHelpDeskTicketSummary } from "../_lib/helpdesk.js";
 import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../_lib/http.js";
 import {
@@ -131,6 +132,7 @@ export async function onRequest(context) {
   if (context.request.method !== "POST") {
     return methodNotAllowed(["POST"]);
   }
+  context = withAccountContext(context);
 
   const secretError = webhookSecretError(context);
   if (secretError) return secretError;
