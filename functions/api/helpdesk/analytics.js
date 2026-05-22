@@ -137,10 +137,6 @@ function isPublicAgentMessageEvent(event) {
   return isMessageEvent(event) && !Boolean(event.isPrivate || event.private) && eventAuthorType(event) === "agent" && Boolean(eventMessageText(event));
 }
 
-function isRequesterMessageEvent(event) {
-  return ["client", "requester", "customer"].includes(eventAuthorType(event));
-}
-
 function publicMessageEvents(ticket) {
   return (Array.isArray(ticket.events) ? ticket.events : [])
     .filter((event) => isMessageEvent(event) && !Boolean(event.isPrivate || event.private) && eventMessageText(event))
@@ -151,33 +147,18 @@ function publicMessageEvents(ticket) {
     });
 }
 
-function validAnalyticsAgentMessageEvents(ticket, agentDirectory) {
+function validAnalyticsAgentMessageEvents(ticket) {
   const events = publicMessageEvents(ticket);
   const firstMessage = events[0];
-  if (!firstMessage || !isRequesterMessageEvent(firstMessage)) return [];
+  if (!firstMessage) return [];
 
   const agentMessages = events.filter(isPublicAgentMessageEvent);
   if (!agentMessages.length) return [];
 
   const firstText = eventMessageText(firstMessage).toLowerCase();
-  if (!firstText.includes("conversation transcript:")) return agentMessages;
-
-  const secondPublicMessage = events[1];
-  if (!secondPublicMessage || !isPublicAgentMessageEvent(secondPublicMessage)) return [];
-
-  const secondReplyAgent = authorProfile(secondPublicMessage, agentDirectory);
-  if (!secondReplyAgent.id) return [];
-
-  const secondMessageDate = normalizeEventDate(secondPublicMessage);
-  const hasFollowUpFromSecondReplyAgent = agentMessages.some((event) => {
-    if (event === secondPublicMessage) return false;
-    const agent = authorProfile(event, agentDirectory);
-    if (agent.id !== secondReplyAgent.id) return false;
-    const eventDate = normalizeEventDate(event);
-    return !secondMessageDate || !eventDate || eventDate >= secondMessageDate;
-  });
-
-  return hasFollowUpFromSecondReplyAgent ? agentMessages : [];
+  const isOnlyPublicTranscriptFromAgent =
+    events.length === 1 && isPublicAgentMessageEvent(firstMessage) && firstText.includes("conversation transcript:");
+  return isOnlyPublicTranscriptFromAgent ? [] : agentMessages;
 }
 
 function dailyTable(env) {
@@ -368,7 +349,7 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory) 
 
   for (const ticket of tickets) {
     const shortId = normalizeTicketShortId(ticket);
-    const events = validAnalyticsAgentMessageEvents(ticket, agentDirectory);
+    const events = validAnalyticsAgentMessageEvents(ticket);
 
     for (const event of events) {
       const eventDate = normalizeEventDate(event);
