@@ -241,6 +241,16 @@ body {
   min-width: 0;
 }
 
+.analytics-date-time {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px;
+  gap: 8px;
+}
+
+.analytics-date-time .form-control {
+  min-width: 0;
+}
+
 .analytics-filter-search {
   margin-bottom: 8px;
 }

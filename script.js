@@ -600,8 +600,16 @@ function localDateValue(date) {
   return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`;
 }
 
-function localEndDateValue(date) {
-  return localDateValue(new Date(date.getTime() - 1));
+function localTimeValue(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  return `${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}`;
+}
+
+function combineLocalDateAndTime(dateValue, timeValue, fallbackTime = "00:00") {
+  if (!dateValue) return null;
+  const safeTime = /^\d{2}:\d{2}$/.test(timeValue || "") ? timeValue : fallbackTime;
+  const date = new Date(`${dateValue}T${safeTime}:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function offsetForDate(date) {
@@ -2428,7 +2436,7 @@ function helpdeskAnalyticsAgentDayMap(agent) {
 
 function helpdeskAnalyticsPeriodLabel(filters = activeHelpdeskAnalyticsFilters()) {
   if (!filters.from || !filters.to) return "Selected period";
-  return `${localDateValue(filters.from)} to ${localEndDateValue(filters.to)}`;
+  return `${localDateValue(filters.from)} ${localTimeValue(filters.from)} to ${localDateValue(filters.to)} ${localTimeValue(filters.to)}`;
 }
 
 function helpdeskAnalyticsExportDays(filters = activeHelpdeskAnalyticsFilters()) {
@@ -3665,10 +3673,42 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const HELPDESK_IMPORT_MAX_ATTEMPTS = 2;
+const HELPDESK_IMPORT_SPLIT_THRESHOLD_MS = 60 * 60 * 1000;
+
+function isSkippableHelpdeskImportError(message) {
+  return /too many requests|rate limit|429|too many tickets|503|service unavailable|failed to load helpdesk analytics|request failed with 5|cpu|exceeded/i.test(
+    message || "",
+  );
+}
+
+function skippedHelpdeskImportResponse(range, error) {
+  const progress = state.helpdesk_analytics.loadProgress;
+  if (progress) progress.skippedChunks = (progress.skippedChunks || 0) + 1;
+  return {
+    period: { from: range.from.toISOString(), to: range.to.toISOString() },
+    summary: { total_tickets: 0, active_agents: 0, prev_period: { total_tickets: 0, active_agents: 0 } },
+    agents: [],
+    timeline: [],
+    cache: {
+      date: localDateValue(range.from),
+      skipped: true,
+      saved: false,
+      missing: false,
+      source: "helpdesk_import_skipped",
+      error: error.message || "HelpDesk import failed.",
+    },
+    capabilities: {},
+  };
+}
+
 function mergeHelpdeskAnalyticsResponses(responses, filters) {
   const responseByDate = new Map();
   for (const response of responses) {
-    responseByDate.set(response.cache?.date || response.period?.from || String(responseByDate.size), response);
+    const responseKey = response.cache?.skipped
+      ? `skipped:${response.period?.from || responseByDate.size}`
+      : response.cache?.date || response.period?.from || String(responseByDate.size);
+    responseByDate.set(responseKey, response);
   }
 
   const agentsById = new Map();
@@ -3676,8 +3716,14 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
   let missingDays = 0;
   let importedDays = 0;
   let cachedDays = 0;
+  let skippedSlices = 0;
 
   for (const response of responseByDate.values()) {
+    if (response.cache?.skipped) {
+      skippedSlices += 1;
+      continue;
+    }
+    skippedSlices += Number(response.cache?.skipped_slices || 0);
     if (response.cache?.missing) missingDays += 1;
     if (response.cache?.saved || response.cache?.source === "helpdesk_import") importedDays += 1;
     if (response.cache?.hit) cachedDays += 1;
@@ -3716,12 +3762,12 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
     },
     agents,
     timeline: Array.from(timelineByDate.values()).sort((left, right) => left.date.localeCompare(right.date)),
-    cache: { missing_days: missingDays, imported_days: importedDays, cached_days: cachedDays },
+    cache: { missing_days: missingDays, imported_days: importedDays, cached_days: cachedDays, skipped_slices: skippedSlices },
     capabilities: responses[0]?.capabilities || {},
   };
 }
 
-async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode = false, rateRetry = 0) {
+async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode = false, attempt = 1) {
   if (importMode && depth === 0 && range.cacheFullDay) {
     return importHelpdeskAnalyticsFullDay(range, filters);
   }
@@ -3759,51 +3805,47 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
   } catch (error) {
     const duration = range.to.getTime() - range.from.getTime();
     const isRateLimited = /too many requests|rate limit|429/i.test(error.message || "");
-    if (importMode && isRateLimited) {
-      const waitMs = 10000;
-      state.helpdesk_analytics.loadStatus = `HelpDesk is rate limiting imports. Waiting ${Math.round(waitMs / 1000)}s before retry...`;
-      renderHelpdeskAnalytics();
-      await sleep(waitMs);
-      return fetchHelpdeskAnalyticsRange(range, filters, depth, importMode, rateRetry + 1);
-    }
-
     const message = error.message || "";
-    const canRetrySmaller =
-      importMode &&
-      /too many tickets|503|service unavailable|failed to load helpdesk analytics|request failed with 5|cpu|exceeded/i.test(message);
-    if (!canRetrySmaller) {
+    const canSkipImportRange = importMode && isSkippableHelpdeskImportError(message);
+
+    if (!canSkipImportRange) {
       throw error;
     }
 
-    if (duration <= 1000 || depth >= 24) {
-      const waitMs = 10000;
-      state.helpdesk_analytics.loadStatus = `HelpDesk slice is still overloaded. Retrying in ${Math.round(waitMs / 1000)}s...`;
+    if (duration > HELPDESK_IMPORT_SPLIT_THRESHOLD_MS && depth < 24) {
+      const middle = new Date(range.from.getTime() + Math.floor(duration / 2));
+      state.helpdesk_analytics.loadStatus = "HelpDesk request was too large. Waiting 10s, then loading smaller portions...";
       renderHelpdeskAnalytics();
-      await sleep(waitMs);
-      return fetchHelpdeskAnalyticsRange(range, filters, depth, importMode, rateRetry + 1);
+      await sleep(10000);
+      const first = await fetchHelpdeskAnalyticsRange(
+        { from: range.from, to: middle, cacheFullDay: false },
+        filters,
+        depth + 1,
+        importMode,
+      );
+      await sleep(500);
+      const second = await fetchHelpdeskAnalyticsRange(
+        { from: middle, to: range.to, cacheFullDay: false },
+        filters,
+        depth + 1,
+        importMode,
+      );
+      return [...first, ...second];
     }
 
-    const middle = new Date(range.from.getTime() + Math.floor(duration / 2));
-    state.helpdesk_analytics.loadStatus = "HelpDesk request was too large. Waiting 10s, then loading smaller portions...";
-    renderHelpdeskAnalytics();
-    await sleep(10000);
-    const first = await fetchHelpdeskAnalyticsRange(
-      { from: range.from, to: middle, cacheFullDay: false },
-      filters,
-      depth + 1,
-      importMode,
-    );
-    await sleep(500);
-    const second = await fetchHelpdeskAnalyticsRange(
-      { from: middle, to: range.to, cacheFullDay: false },
-      filters,
-      depth + 1,
-      importMode,
-    );
-    if (depth === 0 && state.helpdesk_analytics.loadProgress) {
-      state.helpdesk_analytics.loadProgress.liveDays += 1;
+    if (attempt >= HELPDESK_IMPORT_MAX_ATTEMPTS) {
+      state.helpdesk_analytics.loadStatus = `Skipped ${localDateValue(range.from)} ${localTimeValue(range.from)}-${localTimeValue(range.to)} after ${HELPDESK_IMPORT_MAX_ATTEMPTS} failed attempts. Continuing...`;
+      renderHelpdeskAnalytics();
+      return [skippedHelpdeskImportResponse(range, error)];
     }
-    return [...first, ...second];
+
+    const waitMs = 10000;
+    state.helpdesk_analytics.loadStatus = isRateLimited
+      ? `HelpDesk is rate limiting imports. Waiting ${Math.round(waitMs / 1000)}s before retry ${attempt + 1}/${HELPDESK_IMPORT_MAX_ATTEMPTS}...`
+      : `HelpDesk import failed. Waiting ${Math.round(waitMs / 1000)}s before retry ${attempt + 1}/${HELPDESK_IMPORT_MAX_ATTEMPTS}...`;
+    renderHelpdeskAnalytics();
+    await sleep(waitMs);
+    return fetchHelpdeskAnalyticsRange(range, filters, depth, importMode, attempt + 1);
   }
 }
 
@@ -3846,6 +3888,7 @@ async function runHelpdeskImportChunkBatch(chunks, filters, dayLabel, completedO
 async function importHelpdeskAnalyticsFullDay(range, filters) {
   const chunks = [];
   const chunkMs = helpdeskImportSliceMs();
+  const skippedBefore = state.helpdesk_analytics.loadProgress?.skippedChunks || 0;
   for (let start = range.from.getTime(); start < range.to.getTime(); start += chunkMs) {
     chunks.push({
       from: new Date(start),
@@ -3866,7 +3909,10 @@ async function importHelpdeskAnalyticsFullDay(range, filters) {
 
   state.helpdesk_analytics.loadStatus = `Saving ${dayLabel} analytics...`;
   renderHelpdeskAnalytics();
-  return [await finalizeHelpdeskAnalyticsDay(range, filters)];
+  const finalized = await finalizeHelpdeskAnalyticsDay(range, filters);
+  const skippedChunks = (state.helpdesk_analytics.loadProgress?.skippedChunks || 0) - skippedBefore;
+  if (skippedChunks) finalized.cache = { ...(finalized.cache || {}), skipped_slices: skippedChunks };
+  return [finalized];
 }
 
 async function fetchHelpdeskAnalyticsDayResponses(filters, importMode = false) {
@@ -3880,6 +3926,7 @@ async function fetchHelpdeskAnalyticsDayResponses(filters, importMode = false) {
       cacheHits: 0,
       savedDays: 0,
       liveDays: 0,
+      skippedChunks: 0,
     };
   }
 
@@ -3915,6 +3962,7 @@ function renderHelpdeskAnalyticsLoading(container) {
   const cacheHits = loadProgress?.cacheHits || 0;
   const savedDays = loadProgress?.savedDays || 0;
   const liveDays = loadProgress?.liveDays || 0;
+  const skippedChunks = loadProgress?.skippedChunks || 0;
 
   const loadingDiv = document.createElement("div");
   loadingDiv.className = "alert alert-info helpdesk-analytics-loading";
@@ -3930,6 +3978,7 @@ function renderHelpdeskAnalyticsLoading(container) {
       <span>D1 hits: ${cacheHits}</span>
       <span>Fetched and saved: ${savedDays}</span>
       <span>Live only: ${liveDays}</span>
+      ${skippedChunks ? `<span>Skipped: ${skippedChunks}</span>` : ""}
     </div>
   `;
   container.appendChild(loadingDiv);
@@ -3938,6 +3987,15 @@ function renderHelpdeskAnalyticsLoading(container) {
 // Task 8: Create fetchAnalytics Function for HelpDesk
 async function fetchHelpdeskAnalytics() {
   const filters = cloneHelpdeskAnalyticsFilters();
+  if (!filters.from || !filters.to || filters.to <= filters.from) {
+    state.helpdesk_analytics.error = "Select a valid HelpDesk analytics range.";
+    state.helpdesk_analytics.data = null;
+    state.helpdesk_analytics.loading = false;
+    state.helpdesk_analytics.loadStatus = "";
+    state.helpdesk_analytics.loadProgress = null;
+    renderHelpdeskAnalytics();
+    return;
+  }
   state.helpdesk_analytics.appliedFilters = filters;
   state.helpdesk_analytics.loading = true;
   state.helpdesk_analytics.error = null;
@@ -3966,6 +4024,15 @@ async function fetchHelpdeskAnalytics() {
 
 async function importHelpdeskAnalytics() {
   const filters = cloneHelpdeskAnalyticsFilters();
+  if (!filters.from || !filters.to || filters.to <= filters.from) {
+    state.helpdesk_analytics.error = "Select a valid HelpDesk analytics range.";
+    state.helpdesk_analytics.data = null;
+    state.helpdesk_analytics.loading = false;
+    state.helpdesk_analytics.loadStatus = "";
+    state.helpdesk_analytics.loadProgress = null;
+    renderHelpdeskAnalytics();
+    return;
+  }
   state.helpdesk_analytics.appliedFilters = filters;
   state.helpdesk_analytics.loading = true;
   state.helpdesk_analytics.error = null;
@@ -4052,8 +4119,18 @@ function renderHelpdeskAnalytics() {
   fromInput.id = "from-date";
   fromInput.className = "form-control";
   fromInput.value = filters.from ? localDateValue(filters.from) : "";
+  const fromTimeInput = document.createElement("input");
+  fromTimeInput.type = "time";
+  fromTimeInput.id = "from-time";
+  fromTimeInput.className = "form-control";
+  fromTimeInput.value = filters.from ? localTimeValue(filters.from) : "00:00";
+  fromTimeInput.setAttribute("aria-label", "From time");
+  const fromDateTimeRow = document.createElement("div");
+  fromDateTimeRow.className = "analytics-date-time";
+  fromDateTimeRow.appendChild(fromInput);
+  fromDateTimeRow.appendChild(fromTimeInput);
   customDatesDiv.appendChild(fromLabel);
-  customDatesDiv.appendChild(fromInput);
+  customDatesDiv.appendChild(fromDateTimeRow);
   filterBar.appendChild(customDatesDiv);
 
   const customDatesToDiv = document.createElement("div");
@@ -4067,9 +4144,19 @@ function renderHelpdeskAnalytics() {
   toInput.type = "date";
   toInput.id = "to-date";
   toInput.className = "form-control";
-  toInput.value = filters.to ? localEndDateValue(filters.to) : "";
+  toInput.value = filters.to ? localDateValue(filters.to) : "";
+  const toTimeInput = document.createElement("input");
+  toTimeInput.type = "time";
+  toTimeInput.id = "to-time";
+  toTimeInput.className = "form-control";
+  toTimeInput.value = filters.to ? localTimeValue(filters.to) : "23:59";
+  toTimeInput.setAttribute("aria-label", "To time");
+  const toDateTimeRow = document.createElement("div");
+  toDateTimeRow.className = "analytics-date-time";
+  toDateTimeRow.appendChild(toInput);
+  toDateTimeRow.appendChild(toTimeInput);
   customDatesToDiv.appendChild(toLabel);
-  customDatesToDiv.appendChild(toInput);
+  customDatesToDiv.appendChild(toDateTimeRow);
   filterBar.appendChild(customDatesToDiv);
 
   // Groups filter
@@ -4162,21 +4249,20 @@ function renderHelpdeskAnalytics() {
     }
   });
 
-  document.getElementById("from-date")?.addEventListener("change", (e) => {
-    filters.from = e.target.value ? new Date(`${e.target.value}T00:00:00`) : null;
+  const syncCustomHelpdeskRange = () => {
+    const fromDate = document.getElementById("from-date")?.value || "";
+    const fromTime = document.getElementById("from-time")?.value || "00:00";
+    const toDate = document.getElementById("to-date")?.value || "";
+    const toTime = document.getElementById("to-time")?.value || "23:59";
+    filters.from = combineLocalDateAndTime(fromDate, fromTime, "00:00");
+    filters.to = combineLocalDateAndTime(toDate, toTime, "23:59");
     renderHelpdeskAnalytics();
-  });
+  };
 
-  document.getElementById("to-date")?.addEventListener("change", (e) => {
-    if (e.target.value) {
-      const selected = new Date(`${e.target.value}T00:00:00`);
-      selected.setDate(selected.getDate() + 1);
-      filters.to = selected;
-    } else {
-      filters.to = null;
-    }
-    renderHelpdeskAnalytics();
-  });
+  document.getElementById("from-date")?.addEventListener("change", syncCustomHelpdeskRange);
+  document.getElementById("from-time")?.addEventListener("change", syncCustomHelpdeskRange);
+  document.getElementById("to-date")?.addEventListener("change", syncCustomHelpdeskRange);
+  document.getElementById("to-time")?.addEventListener("change", syncCustomHelpdeskRange);
 
   if (filters.preset === "custom") {
     customDatesDiv.classList.remove("d-none");
@@ -4220,6 +4306,12 @@ function renderHelpdeskAnalytics() {
       missingDiv.className = "alert alert-warning";
       missingDiv.textContent = `${data.cache.missing_days} selected day(s) are not imported into D1 yet. Click "Import from HelpDesk" to load and save them.`;
       container.appendChild(missingDiv);
+    }
+    if (!loading && data.cache?.skipped_slices) {
+      const skippedDiv = document.createElement("div");
+      skippedDiv.className = "alert alert-warning";
+      skippedDiv.textContent = `${data.cache.skipped_slices} HelpDesk import slice(s) failed twice and were skipped. The import continued with the next slice.`;
+      container.appendChild(skippedDiv);
     }
     renderMetricsAndPanels();
     renderLeaderboard();
