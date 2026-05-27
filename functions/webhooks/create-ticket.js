@@ -1,6 +1,5 @@
 import { withAccountContext } from "../_lib/accounts.js";
 import { helpdeskRequest, normalizeHelpDeskTicketSummary } from "../_lib/helpdesk.js";
-import { recordHelpDeskAnalyticsWebhookReceived } from "../_lib/helpdesk-analytics-webhooks.js";
 import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../_lib/http.js";
 import {
   finishHelpdeskWebhookEvent,
@@ -9,7 +8,6 @@ import {
 } from "../_lib/helpdesk-workflows.js";
 import { writeLogSafely } from "../_lib/logs.js";
 import { runEnabledHelpdeskWorkflowsForWebhook } from "../api/helpdesk/tickets.js";
-import { processHelpDeskAnalyticsMessagePayload, processHelpDeskAnalyticsTicketDetail } from "./helpdesk-analytics-message.js";
 
 function safeEqualText(left, right) {
   const leftText = `${left || ""}`;
@@ -154,11 +152,6 @@ export async function onRequest(context) {
 
     const eventType = `${payload.eventType || ""}`.trim();
     if (eventType && eventType !== "tickets.create") {
-      let analytics = null;
-      if (["tickets.events.message", "tickets.update"].includes(eventType)) {
-        await recordHelpDeskAnalyticsWebhookReceived(context.env);
-        analytics = await processHelpDeskAnalyticsMessagePayload(context.env, payload);
-      }
       await finishHelpdeskWebhookEvent(context.env, webhookEvent.id, {
         status: "ignored",
       });
@@ -167,7 +160,6 @@ export async function onRequest(context) {
         ignored: true,
         webhookEventId: webhookEvent.id,
         eventType,
-        analytics,
       });
     }
 
@@ -181,11 +173,6 @@ export async function onRequest(context) {
 
     const ticketDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(ticketId)}`);
     const ticket = normalizeHelpDeskTicketSummary(ticketDetail);
-    await recordHelpDeskAnalyticsWebhookReceived(context.env);
-    const analytics = await processHelpDeskAnalyticsTicketDetail(context.env, ticketDetail, {
-      receivedAt: new Date(),
-      payload,
-    });
     const timezoneOffsetMinutes = Number(context.env.HELPDESK_ANALYTICS_TZ_OFFSET || 0);
     const runs = await runEnabledHelpdeskWorkflowsForWebhook(
       context,
@@ -214,7 +201,6 @@ export async function onRequest(context) {
         shortId: ticket.short_id || ticketShortId,
         workflowRuns: runs.length,
         actions,
-        analytics,
       },
     });
 
@@ -225,7 +211,6 @@ export async function onRequest(context) {
       ticketShortId: ticket.short_id || ticketShortId,
       workflowRuns: runs.length,
       actions,
-      analytics,
       runs,
     });
   } catch (error) {

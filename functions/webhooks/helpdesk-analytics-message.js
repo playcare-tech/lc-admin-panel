@@ -85,9 +85,6 @@ function collectTicketIdCandidates(value, candidates = []) {
   if (ticket && typeof ticket === "object") {
     candidates.push(ticket.ID, ticket.id, ticket.ticketId, ticket.ticketID, ticket.ticket_id);
   }
-  if (looksLikeTicketPayload(value)) {
-    candidates.push(value.ID, value.id);
-  }
   candidates.push(value.ticketId, value.ticketID, value.ticket_id);
 
   for (const nestedValue of Object.values(value)) {
@@ -101,20 +98,39 @@ function collectTicketIdCandidates(value, candidates = []) {
 
 function extractTicketId(payload) {
   return firstString([
-    payload?.payload?.ID,
-    payload?.payload?.id,
     payload?.payload?.ticket?.ID,
     payload?.payload?.ticket?.id,
-    payload?.data?.ID,
-    payload?.data?.id,
     payload?.data?.ticket?.ID,
     payload?.data?.ticket?.id,
     payload?.ticket?.ID,
     payload?.ticket?.id,
-    payload?.ID,
-    payload?.id,
     ...collectTicketIdCandidates(payload),
   ]);
+}
+
+function findTicketDetailCandidate(value, seen = new Set()) {
+  if (!value || typeof value !== "object" || seen.has(value)) return null;
+  seen.add(value);
+
+  if (!Array.isArray(value) && Array.isArray(value.events) && looksLikeTicketPayload(value)) {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const candidate = findTicketDetailCandidate(item, seen);
+      if (candidate) return candidate;
+    }
+    return null;
+  }
+
+  for (const nestedValue of Object.values(value)) {
+    if (nestedValue && typeof nestedValue === "object") {
+      const candidate = findTicketDetailCandidate(nestedValue, seen);
+      if (candidate) return candidate;
+    }
+  }
+  return null;
 }
 
 function eventTicketId(event, payload) {
@@ -404,10 +420,37 @@ export async function onRequest(context) {
     const directResult = await processHelpDeskAnalyticsMessagePayload(context.env, payload);
     if (directResult.counted) return json(directResult);
 
+    const ticketCandidate = findTicketDetailCandidate(payload);
+    if (ticketCandidate) {
+      const embeddedResult = await processHelpDeskAnalyticsTicketDetail(context.env, ticketCandidate, {
+        receivedAt: new Date(),
+        payload,
+      });
+      return json({
+        ...embeddedResult,
+        direct: directResult,
+        source: "embedded_ticket_detail",
+      });
+    }
+
     const ticketId = extractTicketId(payload);
     if (!ticketId) return json(directResult);
 
-    const ticketDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(ticketId)}`);
+    let ticketDetail = null;
+    try {
+      ticketDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(ticketId)}`);
+    } catch (error) {
+      if (error?.status === 404) {
+        return json({
+          ok: true,
+          ignored: true,
+          reason: "ticket_not_found",
+          direct: directResult,
+          ticketId,
+        });
+      }
+      throw error;
+    }
     const ticketResult = await processHelpDeskAnalyticsTicketDetail(context.env, ticketDetail, {
       receivedAt: new Date(),
       payload,
