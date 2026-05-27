@@ -9,7 +9,7 @@ import {
 } from "../_lib/helpdesk-workflows.js";
 import { writeLogSafely } from "../_lib/logs.js";
 import { runEnabledHelpdeskWorkflowsForWebhook } from "../api/helpdesk/tickets.js";
-import { processHelpDeskAnalyticsMessagePayload } from "./helpdesk-analytics-message.js";
+import { processHelpDeskAnalyticsMessagePayload, processHelpDeskAnalyticsTicketDetail } from "./helpdesk-analytics-message.js";
 
 function safeEqualText(left, right) {
   const leftText = `${left || ""}`;
@@ -181,6 +181,11 @@ export async function onRequest(context) {
 
     const ticketDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(ticketId)}`);
     const ticket = normalizeHelpDeskTicketSummary(ticketDetail);
+    await recordHelpDeskAnalyticsWebhookReceived(context.env);
+    const analytics = await processHelpDeskAnalyticsTicketDetail(context.env, ticketDetail, {
+      receivedAt: new Date(),
+      payload,
+    });
     const timezoneOffsetMinutes = Number(context.env.HELPDESK_ANALYTICS_TZ_OFFSET || 0);
     const runs = await runEnabledHelpdeskWorkflowsForWebhook(
       context,
@@ -209,6 +214,7 @@ export async function onRequest(context) {
         shortId: ticket.short_id || ticketShortId,
         workflowRuns: runs.length,
         actions,
+        analytics,
       },
     });
 
@@ -219,6 +225,7 @@ export async function onRequest(context) {
       ticketShortId: ticket.short_id || ticketShortId,
       workflowRuns: runs.length,
       actions,
+      analytics,
       runs,
     });
   } catch (error) {
