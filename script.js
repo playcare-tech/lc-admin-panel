@@ -141,7 +141,7 @@ const HELPDESK_TICKET_DATE_SORTS = new Set(["createdAt", "updatedAt", "lastMessa
 const LIVECHAT_GROUP_BUCKETS = ["VIP", "SS", "TL", "S2B"];
 const ACCOUNT_STORAGE_KEY = "lc-admin-selected-account";
 const ACCOUNT_OPTIONS = [
-  { id: "default", label: "PAM" },
+  { id: "default", label: "Playcare" },
   { id: "playtraffpartners", label: "playtraffpartners" },
 ];
 const LIVECHAT_PRIORITY_OPTIONS = [
@@ -200,7 +200,7 @@ function storedAccountId() {
 }
 
 function accountLabel(accountId = state.accountId) {
-  return ACCOUNT_OPTIONS.find((account) => account.id === accountId)?.label || "PAM";
+  return ACCOUNT_OPTIONS.find((account) => account.id === accountId)?.label || "Playcare";
 }
 
 const state = {
@@ -343,7 +343,6 @@ const state = {
     },
     data: null,
     webhookStats: null,
-    webhookStatsTimer: null,
     expandedAgents: new Set(),
     defaultAgentsApplied: false,
     ticketModal: {
@@ -453,7 +452,6 @@ function syncAccountSwitcher() {
 function resetAccountScopedState() {
   stopHelpdeskTicketsRealtime();
   stopHelpdeskWorkflowsRealtime();
-  stopHelpdeskAnalyticsWebhookStatsRealtime();
   state.livechat = { agents: [], groups: [] };
   state.helpdesk = { agents: [], teams: [] };
   state.logs = [];
@@ -4673,11 +4671,21 @@ function renderLeaderboard() {
 
   const summaryRow = document.createElement("tr");
   summaryRow.className = "summary-row";
-  const summaryCell = document.createElement("td");
-  summaryCell.colSpan = 3;
-  summaryCell.style.fontWeight = "600";
-  summaryCell.textContent = "Account Summary";
-  summaryRow.appendChild(summaryCell);
+  const summaryRankCell = document.createElement("td");
+  summaryRankCell.className = "col-rank sticky-left";
+  summaryRankCell.textContent = "";
+  summaryRow.appendChild(summaryRankCell);
+
+  const summaryAgentCell = document.createElement("td");
+  summaryAgentCell.className = "col-agent sticky-left";
+  summaryAgentCell.style.fontWeight = "600";
+  summaryAgentCell.textContent = "Account Summary";
+  summaryRow.appendChild(summaryAgentCell);
+
+  const summaryTicketsCell = document.createElement("td");
+  summaryTicketsCell.className = "col-tickets sticky-left";
+  summaryTicketsCell.textContent = "";
+  summaryRow.appendChild(summaryTicketsCell);
 
   columnHeaders.forEach((col) => {
     const dayData = summarizeDays(col.days);
@@ -4998,12 +5006,6 @@ function stopHelpdeskWorkflowsRealtime() {
   state.helpdeskWorkflows.timer = null;
 }
 
-function stopHelpdeskAnalyticsWebhookStatsRealtime() {
-  if (!state.helpdesk_analytics.webhookStatsTimer) return;
-  clearInterval(state.helpdesk_analytics.webhookStatsTimer);
-  state.helpdesk_analytics.webhookStatsTimer = null;
-}
-
 function startHelpdeskTicketsRealtime() {
   if (state.helpdeskTickets.timer) return;
   state.helpdeskTickets.timer = setInterval(() => {
@@ -5018,15 +5020,6 @@ function startHelpdeskWorkflowsRealtime() {
   state.helpdeskWorkflows.timer = setInterval(() => {
     if (state.section === "helpdesk-workflows") {
       fetchHelpdeskWorkflows({ silent: true });
-    }
-  }, 5 * 1000);
-}
-
-function startHelpdeskAnalyticsWebhookStatsRealtime() {
-  if (state.helpdesk_analytics.webhookStatsTimer) return;
-  state.helpdesk_analytics.webhookStatsTimer = setInterval(() => {
-    if (state.section === "helpdesk-analytics") {
-      refreshHelpdeskAnalyticsWebhookStats({ render: true });
     }
   }, 5 * 1000);
 }
@@ -5793,9 +5786,6 @@ function renderApp() {
   if (state.section !== "helpdesk-workflows") {
     stopHelpdeskWorkflowsRealtime();
   }
-  if (state.section !== "helpdesk-analytics") {
-    stopHelpdeskAnalyticsWebhookStatsRealtime();
-  }
   document.querySelectorAll(".sidebar-link").forEach((button) => {
     button.classList.toggle("active", button.dataset.section === state.section);
   });
@@ -5850,12 +5840,6 @@ function renderApp() {
     state.helpdesk_analytics.filters.from = range.from;
     state.helpdesk_analytics.filters.to = range.to;
     fetchHelpdeskAnalytics();
-  }
-  if (state.section === "helpdesk-analytics") {
-    startHelpdeskAnalyticsWebhookStatsRealtime();
-    if (!state.helpdesk_analytics.webhookStats) {
-      refreshHelpdeskAnalyticsWebhookStats({ render: Boolean(state.helpdesk_analytics.data) });
-    }
   }
 
   if (state.section === "helpdesk-tickets") {

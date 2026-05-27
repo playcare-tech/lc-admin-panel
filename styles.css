@@ -342,7 +342,7 @@ body {
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
   border-right: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.86);
+  background: #fff;
   text-align: left;
   vertical-align: middle;
   white-space: nowrap;
@@ -371,19 +371,19 @@ body {
 }
 
 .helpdesk-leaderboard-table .col-rank {
-  left: 84px;
+  left: 0;
   min-width: 64px;
   text-align: left;
 }
 
 .helpdesk-leaderboard-table .col-agent {
-  left: 148px;
+  left: 64px;
   min-width: 280px;
   max-width: 320px;
 }
 
 .helpdesk-leaderboard-table .col-tickets {
-  left: 428px;
+  left: 344px;
   min-width: 132px;
   text-align: left;
   border-right: 1px solid var(--line);
@@ -392,10 +392,12 @@ body {
 .helpdesk-leaderboard-table .sticky-left {
   position: sticky;
   z-index: 2;
+  background: #fff;
 }
 
 .helpdesk-leaderboard-table thead .sticky-left {
   z-index: 4;
+  background: #f7f9ff;
 }
 
 .helpdesk-leaderboard-table tbody tr:hover td {
@@ -405,6 +407,10 @@ body {
 .helpdesk-leaderboard-table .summary-row td {
   background: rgba(109, 40, 217, 0.08);
   font-weight: 800;
+}
+
+.helpdesk-leaderboard-table .summary-row .sticky-left {
+  background: #ece8fb;
 }
 
 .analytics-agent-detail-row td {
