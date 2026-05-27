@@ -4,8 +4,10 @@ import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } 
 import { syncHelpDeskAnalyticsWindow } from "./analytics.js";
 
 const SYNC_META_TABLE_BASE = "helpdesk_analytics_sync_meta";
-const DEFAULT_WINDOW_MINUTES = 35;
-const DEFAULT_OVERLAP_MINUTES = 5;
+const SYNC_STRATEGY = "last_message_hourly_v1";
+const DEFAULT_WINDOW_MINUTES = 60;
+const DEFAULT_DELAY_MINUTES = 60;
+const DEFAULT_OVERLAP_MINUTES = 0;
 const MAX_WINDOW_MINUTES = 120;
 
 function syncMetaTable(env) {
@@ -47,6 +49,7 @@ async function writeSyncMeta(env, entries) {
 
 function syncStatusFromMeta(meta) {
   return {
+    sync_strategy: meta.sync_strategy || "",
     last_started_at: meta.last_started_at || "",
     last_finished_at: meta.last_finished_at || "",
     last_success_at: meta.last_success_at || "",
@@ -99,29 +102,48 @@ export async function onRequest(context) {
 
     const body = await readJson(context.request).catch(() => ({}));
     const now = new Date();
-    const lastTo = parseDate(meta.last_to);
+    const targetTo = new Date(now.getTime() - numberOption(body.delayMinutes, DEFAULT_DELAY_MINUTES, { min: 0, max: 24 * 60 }) * 60000);
+    const lastTo = meta.sync_strategy === SYNC_STRATEGY ? parseDate(meta.last_to) : null;
     const windowMinutes = numberOption(body.windowMinutes, DEFAULT_WINDOW_MINUTES, { min: 5, max: MAX_WINDOW_MINUTES });
     const overlapMinutes = numberOption(body.overlapMinutes, DEFAULT_OVERLAP_MINUTES, { min: 0, max: 30 });
     const timezoneOffsetMinutes = numberOption(body.tzOffset, Number(context.env.HELPDESK_ANALYTICS_TZ_OFFSET || -120), {
       min: -14 * 60,
       max: 14 * 60,
     });
-    const from = lastTo
-      ? new Date(Math.max(lastTo.getTime() - overlapMinutes * 60000, now.getTime() - MAX_WINDOW_MINUTES * 60000))
-      : new Date(now.getTime() - windowMinutes * 60000);
+    const to = targetTo;
+    const from = lastTo && lastTo < to
+      ? new Date(Math.max(lastTo.getTime() - overlapMinutes * 60000, to.getTime() - MAX_WINDOW_MINUTES * 60000))
+      : new Date(to.getTime() - windowMinutes * 60000);
+
+    if (to <= from) {
+      await writeSyncMeta(context.env, {
+        sync_strategy: SYNC_STRATEGY,
+        last_started_at: now.toISOString(),
+        last_finished_at: now.toISOString(),
+        last_status: "success",
+        last_error: "",
+        last_from: from.toISOString(),
+        last_to: to.toISOString(),
+        last_detail_rows: "0",
+        last_dates: "",
+      });
+      return json({ sync: syncStatusFromMeta(await readSyncMeta(context.env)), result: { skipped: true } });
+    }
 
     await writeSyncMeta(context.env, {
+      sync_strategy: SYNC_STRATEGY,
       last_started_at: now.toISOString(),
       last_status: "running",
       last_error: "",
       last_from: from.toISOString(),
-      last_to: now.toISOString(),
+      last_to: to.toISOString(),
     });
 
     try {
-      const result = await syncHelpDeskAnalyticsWindow(context.env, { from, to: now, timezoneOffsetMinutes });
+      const result = await syncHelpDeskAnalyticsWindow(context.env, { from, to, timezoneOffsetMinutes });
       const finishedAt = new Date().toISOString();
       await writeSyncMeta(context.env, {
+        sync_strategy: SYNC_STRATEGY,
         last_finished_at: finishedAt,
         last_success_at: finishedAt,
         last_status: "success",

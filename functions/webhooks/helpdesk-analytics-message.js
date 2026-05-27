@@ -35,6 +35,18 @@ function eventMessageText(event) {
   );
 }
 
+function eventSourceType(value) {
+  const source = value?.source || value?.message?.source || {};
+  if (typeof source === "string") return source.toLowerCase();
+  return `${source.type || value?.sourceType || value?.source_type || ""}`.toLowerCase();
+}
+
+function isEmailMessageEvent(event, ticket) {
+  const eventSource = eventSourceType(event);
+  if (eventSource) return eventSource === "email";
+  return eventSourceType(ticket) === "email";
+}
+
 function eventAuthor(event) {
   const author = event?.author || event?.createdBy || {};
   const id =
@@ -68,7 +80,15 @@ function ticketId(ticket) {
 }
 
 function isPrivateEvent(event) {
-  return Boolean(event?.isPrivate || event?.private || event?.is_private);
+  const message = event?.message || {};
+  return Boolean(
+    event?.isPrivate ||
+      event?.private ||
+      event?.is_private ||
+      message.isPrivate ||
+      message.private ||
+      message.is_private,
+  );
 }
 
 function isConversationTranscriptEvent(event) {
@@ -220,6 +240,9 @@ async function processHelpDeskMessageWebhook(env, webhookPayload) {
   if (!agent.id) return { ok: true, ignored: true, reason: "missing_agent_id" };
   if (!messageDate) return { ok: true, ignored: true, reason: "missing_message_date" };
   if (isPrivateEvent(event)) return { ok: true, ignored: true, reason: "private_message" };
+  if (!isEmailMessageEvent(event, ticket)) {
+    return { ok: true, ignored: true, reason: "not_email_source", sourceType: eventSourceType(event) || eventSourceType(ticket) };
+  }
   if (!text) return { ok: true, ignored: true, reason: "empty_message" };
   if (isConversationTranscriptEvent(event)) return { ok: true, ignored: true, reason: "conversation_transcript" };
 

@@ -5099,7 +5099,7 @@ async function runHelpdeskAutoSync({ force = false } = {}) {
   if (state.helpdeskSyncInFlight) return;
   const lastRun = state.helpdeskSync?.last_started_at || state.helpdeskSync?.last_finished_at || state.helpdeskSync?.last_success_at;
   const lastRunDate = lastRun ? new Date(lastRun) : null;
-  const isDue = force || !lastRunDate || Number.isNaN(lastRunDate.getTime()) || Date.now() - lastRunDate.getTime() >= 30 * 60 * 1000;
+  const isDue = force || !lastRunDate || Number.isNaN(lastRunDate.getTime()) || Date.now() - lastRunDate.getTime() >= 60 * 60 * 1000;
   if (!isDue) return;
 
   state.helpdeskSyncInFlight = true;
@@ -5107,8 +5107,9 @@ async function runHelpdeskAutoSync({ force = false } = {}) {
     const response = await api("/api/helpdesk/analytics-sync", {
       method: "POST",
       body: {
-        windowMinutes: 35,
-        overlapMinutes: 5,
+        windowMinutes: 60,
+        delayMinutes: 60,
+        overlapMinutes: 0,
         tzOffset: new Date().getTimezoneOffset(),
       },
     });
@@ -5130,7 +5131,7 @@ function startHelpdeskAutoSync() {
   if (state.helpdeskSyncTimer) return;
   state.helpdeskSyncTimer = setInterval(() => {
     runHelpdeskAutoSync();
-  }, 30 * 60 * 1000);
+  }, 60 * 60 * 1000);
 }
 
 function stopHelpdeskTicketsRealtime() {

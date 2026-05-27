@@ -27,6 +27,7 @@ function analyticsTables(context) {
   const currentTables = [
     accountTableName(context.env, "analytics_agent_daily"),
     accountTableName(context.env, "helpdesk_analytics_daily_v4"),
+    accountTableName(context.env, "helpdesk_analytics_message_events"),
     accountTableName(context.env, "helpdesk_analytics_sync_meta"),
   ];
   return context.env.LC_ACCOUNT_ID === "default"
