@@ -141,7 +141,7 @@ const HELPDESK_TICKET_DATE_SORTS = new Set(["createdAt", "updatedAt", "lastMessa
 const LIVECHAT_GROUP_BUCKETS = ["VIP", "SS", "TL", "S2B"];
 const ACCOUNT_STORAGE_KEY = "lc-admin-selected-account";
 const ACCOUNT_OPTIONS = [
-  { id: "default", label: "Playcare" },
+  { id: "default", label: "PAM" },
   { id: "playtraffpartners", label: "playtraffpartners" },
 ];
 const LIVECHAT_PRIORITY_OPTIONS = [
@@ -185,7 +185,7 @@ function defaultHelpdeskWorkflowForm() {
 }
 
 function normalizeAccountId(value) {
-  if (["2", "pam", "second", "secondary"].includes(`${value || ""}`.trim().toLowerCase())) {
+  if (["2", "second", "secondary", "playtraffpartners"].includes(`${value || ""}`.trim().toLowerCase())) {
     return "playtraffpartners";
   }
   return ACCOUNT_OPTIONS.some((account) => account.id === value) ? value : "default";
@@ -200,7 +200,7 @@ function storedAccountId() {
 }
 
 function accountLabel(accountId = state.accountId) {
-  return ACCOUNT_OPTIONS.find((account) => account.id === accountId)?.label || "Playcare";
+  return ACCOUNT_OPTIONS.find((account) => account.id === accountId)?.label || "PAM";
 }
 
 const state = {

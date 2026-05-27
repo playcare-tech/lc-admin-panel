@@ -399,20 +399,29 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory) 
 }
 
 function rowsToResponse(rows, from, to, agentDirectory, cache = {}) {
-  const agents = rows
-    .map((row) => {
-      const profile = agentDirectory.get(String(row.agent_id)) || {};
-      const agentId = String(row.agent_id);
-      return {
+  const agentsById = new Map();
+  for (const row of rows) {
+    const profile = agentDirectory.get(String(row.agent_id)) || {};
+    const agentId = String(row.agent_id);
+    const tickets = Number(row.handled_tickets || 0);
+    if (!agentsById.has(agentId)) {
+      agentsById.set(agentId, {
         agent_id: agentId,
         id: agentId,
-        name: row.agent_name || profile.name || String(row.agent_id),
-        email: row.agent_email || profile.email || String(row.agent_id),
-        total_tickets: Number(row.handled_tickets || 0),
-        days: [{ date: row.date, tickets: Number(row.handled_tickets || 0) }],
-      };
-    })
-    .sort((left, right) => right.total_tickets - left.total_tickets);
+        name: row.agent_name || profile.name || agentId,
+        email: row.agent_email || profile.email || agentId,
+        total_tickets: 0,
+        days: [],
+      });
+    }
+    const agent = agentsById.get(agentId);
+    agent.name = agent.name || row.agent_name || profile.name || agentId;
+    agent.email = agent.email || row.agent_email || profile.email || agentId;
+    agent.total_tickets += tickets;
+    agent.days.push({ date: row.date, tickets });
+  }
+
+  const agents = Array.from(agentsById.values()).sort((left, right) => right.total_tickets - left.total_tickets);
 
   const totalTickets = agents.reduce((sum, agent) => sum + agent.total_tickets, 0);
   const timelineByDate = new Map();

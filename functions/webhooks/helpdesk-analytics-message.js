@@ -1,37 +1,9 @@
 import { accountIndexName, accountTableName, withAccountContext } from "../_lib/accounts.js";
 import { recordHelpDeskAnalyticsWebhookReceived } from "../_lib/helpdesk-analytics-webhooks.js";
-import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../_lib/http.js";
+import { json, methodNotAllowed, serverErrorResponse } from "../_lib/http.js";
 
 const DAILY_TABLE_BASE = "helpdesk_analytics_daily_v4";
 const DEFAULT_ANALYTICS_TIME_ZONE = "Asia/Nicosia";
-
-function safeEqualText(left, right) {
-  const leftText = `${left || ""}`;
-  const rightText = `${right || ""}`;
-  if (leftText.length !== rightText.length) return false;
-
-  let diff = 0;
-  for (let index = 0; index < leftText.length; index += 1) {
-    diff |= leftText.charCodeAt(index) ^ rightText.charCodeAt(index);
-  }
-  return diff === 0;
-}
-
-function webhookSecretError(context) {
-  const expectedSecret = `${context.env.HELPDESK_WEBHOOK_SECRET || ""}`.trim();
-  if (!expectedSecret) return null;
-
-  const url = new URL(context.request.url);
-  const submittedSecret =
-    `${context.request.headers.get("X-HelpDesk-Webhook-Secret") || ""}`.trim() ||
-    `${context.request.headers.get("X-Webhook-Secret") || ""}`.trim() ||
-    `${url.searchParams.get("secret") || ""}`.trim();
-
-  if (!submittedSecret || !safeEqualText(submittedSecret, expectedSecret)) {
-    return errorResponse("Unauthorized.", 401);
-  }
-  return null;
-}
 
 async function readWebhookPayload(request) {
   const text = await request.text();
@@ -198,9 +170,6 @@ async function incrementAgentHandledTicket(env, { date, agent }) {
 export async function onRequest(context) {
   if (context.request.method !== "POST") return methodNotAllowed(["POST"]);
   context = withAccountContext(context);
-
-  const secretError = webhookSecretError(context);
-  if (secretError) return secretError;
 
   try {
     const payload = await readWebhookPayload(context.request);

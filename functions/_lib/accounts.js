@@ -6,7 +6,7 @@ const SECOND_ACCOUNT_TABLE_SUFFIX = "playtraffpartners";
 
 export function normalizeAccountId(value) {
   const normalized = `${value || ""}`.trim().toLowerCase();
-  if (["2", "second", "secondary", "pam", "playtraffpartners"].includes(normalized)) return SECOND_ACCOUNT_ID;
+  if (["2", "second", "secondary", "playtraffpartners"].includes(normalized)) return SECOND_ACCOUNT_ID;
   return DEFAULT_ACCOUNT_ID;
 }
 
