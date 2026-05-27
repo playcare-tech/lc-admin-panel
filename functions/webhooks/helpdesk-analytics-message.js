@@ -1,4 +1,5 @@
 import { accountIndexName, accountTableName, withAccountContext } from "../_lib/accounts.js";
+import { recordRawHelpDeskAnalyticsWebhook } from "../_lib/helpdesk-analytics-raw-webhooks.js";
 import { recordHelpDeskAnalyticsWebhookReceived } from "../_lib/helpdesk-analytics-webhooks.js";
 import { json, methodNotAllowed, serverErrorResponse } from "../_lib/http.js";
 
@@ -7,8 +8,7 @@ const MESSAGE_EVENTS_TABLE_BASE = "helpdesk_analytics_message_events";
 const DEFAULT_ANALYTICS_TIME_ZONE = "Asia/Nicosia";
 const MESSAGE_EVENT_TYPE = "tickets.events.message";
 
-async function readWebhookPayload(request) {
-  const text = await request.text();
+function parseWebhookPayload(text) {
   if (!text) return {};
   try {
     return JSON.parse(text);
@@ -245,7 +245,9 @@ export async function onRequest(context) {
   context = withAccountContext(context);
 
   try {
-    const payload = await readWebhookPayload(context.request);
+    const bodyText = await context.request.text();
+    const payload = parseWebhookPayload(bodyText);
+    await recordRawHelpDeskAnalyticsWebhook(context.env, context.request, bodyText);
     await recordHelpDeskAnalyticsWebhookReceived(context.env);
     return json(await processHelpDeskMessageWebhook(context.env, payload));
   } catch (error) {
