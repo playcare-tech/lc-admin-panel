@@ -321,6 +321,7 @@ const state = {
     },
   },
   helpdesk_analytics: {
+    view: "report",
     loading: false,
     error: null,
     loadStatus: "",
@@ -343,6 +344,11 @@ const state = {
     },
     data: null,
     webhookStats: null,
+    rawWebhooks: {
+      loading: false,
+      error: null,
+      events: null,
+    },
     expandedAgents: new Set(),
     defaultAgentsApplied: false,
     ticketModal: {
@@ -4009,6 +4015,28 @@ async function refreshHelpdeskAnalyticsWebhookStats({ render = false } = {}) {
   }
 }
 
+async function fetchHelpdeskAnalyticsRawWebhooks({ render = true } = {}) {
+  state.helpdesk_analytics.rawWebhooks.loading = true;
+  state.helpdesk_analytics.rawWebhooks.error = null;
+  if (render && state.section === "helpdesk-analytics") {
+    renderHelpdeskAnalytics();
+  }
+
+  try {
+    const response = await api("/api/helpdesk/analytics-raw-webhooks?limit=20");
+    state.helpdesk_analytics.rawWebhooks.events = response.events || [];
+  } catch (error) {
+    console.error("Failed to load raw HelpDesk analytics webhooks.", error);
+    state.helpdesk_analytics.rawWebhooks.error = error.message;
+    state.helpdesk_analytics.rawWebhooks.events = [];
+  } finally {
+    state.helpdesk_analytics.rawWebhooks.loading = false;
+    if (render && state.section === "helpdesk-analytics") {
+      renderHelpdeskAnalytics();
+    }
+  }
+}
+
 async function fetchHelpdeskAnalytics() {
   const filters = cloneHelpdeskAnalyticsFilters();
   if (!filters.from || !filters.to || filters.to <= filters.from) {
@@ -4087,6 +4115,108 @@ async function importHelpdeskAnalytics() {
   }
 }
 
+function renderHelpdeskAnalyticsViewTabs(filterBarContainer) {
+  const currentView = state.helpdesk_analytics.view || "report";
+  const tabs = document.createElement("div");
+  tabs.className = "analytics-view-tabs";
+  tabs.innerHTML = `
+    <button class="filter-chip ${currentView === "report" ? "active" : ""}" type="button" data-helpdesk-analytics-view="report">Report</button>
+    <button class="filter-chip ${currentView === "raw" ? "active" : ""}" type="button" data-helpdesk-analytics-view="raw">Raw webhooks</button>
+  `;
+  filterBarContainer.appendChild(tabs);
+  tabs.querySelectorAll("[data-helpdesk-analytics-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextView = button.dataset.helpdeskAnalyticsView || "report";
+      state.helpdesk_analytics.view = nextView;
+      renderHelpdeskAnalytics();
+      if (nextView === "raw" && state.helpdesk_analytics.rawWebhooks.events === null) {
+        fetchHelpdeskAnalyticsRawWebhooks();
+      }
+    });
+  });
+}
+
+function renderHelpdeskAnalyticsRawWebhooks(container, filterBarContainer) {
+  const debugUrl = `${window.location.origin}/webhooks/helpdesk-analytics-raw`;
+  const { loading, error, events } = state.helpdesk_analytics.rawWebhooks;
+  const actionBar = document.createElement("div");
+  actionBar.className = "helpdesk-analytics-actions";
+  actionBar.innerHTML = `
+    <button id="helpdeskRawWebhookRefreshBtn" class="btn btn-primary" type="button" ${loading ? "disabled" : ""}>Refresh</button>
+    <code class="raw-webhook-url">${escapeHtml(debugUrl)}</code>
+  `;
+  filterBarContainer.appendChild(actionBar);
+
+  document.getElementById("helpdeskRawWebhookRefreshBtn")?.addEventListener("click", () => {
+    fetchHelpdeskAnalyticsRawWebhooks();
+  });
+
+  const page = document.createElement("div");
+  page.className = "raw-webhook-page";
+  page.innerHTML = `
+    <div class="alert alert-info">
+      Use this test URL in HelpDesk to inspect the exact raw webhook body. It stores only the latest 50 requests.
+    </div>
+  `;
+  container.appendChild(page);
+
+  if (loading) {
+    const loadingDiv = document.createElement("div");
+    loadingDiv.className = "empty-state";
+    loadingDiv.textContent = "Loading raw webhook requests...";
+    page.appendChild(loadingDiv);
+    return;
+  }
+
+  if (error) {
+    const errorDiv = document.createElement("div");
+    errorDiv.className = "alert alert-danger";
+    errorDiv.textContent = `Error: ${error}`;
+    page.appendChild(errorDiv);
+  }
+
+  if (!events || !events.length) {
+    const emptyDiv = document.createElement("div");
+    emptyDiv.className = "empty-state";
+    emptyDiv.textContent = "No raw webhook requests recorded yet.";
+    page.appendChild(emptyDiv);
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "raw-webhook-list";
+  list.innerHTML = events
+    .map((event) => {
+      const headersText = JSON.stringify(event.headers || {}, null, 2);
+      return `
+        <article class="raw-webhook-entry">
+          <div class="raw-webhook-entry-head">
+            <div>
+              <strong>${escapeHtml(event.eventType || "No eventType")}</strong>
+              <div class="subtle">${escapeHtml(formatHelpdeskDateTime(event.receivedAt))}</div>
+            </div>
+            <div class="raw-webhook-entry-meta">
+              <span class="chip">${escapeHtml(event.method || "POST")}</span>
+              <span class="chip">${Number(event.bodySize || 0).toLocaleString()} bytes${event.bodyTruncated ? " truncated" : ""}</span>
+              ${event.webhookId ? `<span class="chip">${escapeHtml(event.webhookId)}</span>` : ""}
+            </div>
+          </div>
+          <div class="raw-webhook-url-line">${escapeHtml(event.url || "")}</div>
+          <details open>
+            <summary>Raw body</summary>
+            <pre class="raw-webhook-pre">${escapeHtml(event.bodyText || "")}</pre>
+          </details>
+          <details>
+            <summary>Headers</summary>
+            <pre class="raw-webhook-pre">${escapeHtml(headersText)}</pre>
+          </details>
+        </article>
+      `;
+    })
+    .join("");
+  page.appendChild(list);
+}
+
 // Task 9: Create renderAnalytics Function with Filter Bar
 function renderHelpdeskAnalytics() {
   const container = document.getElementById("appContent");
@@ -4102,6 +4232,15 @@ function renderHelpdeskAnalytics() {
   container.innerHTML = "";
   filterBarContainer.innerHTML = "";
   filterBarContainer.classList.remove("d-none");
+  renderHelpdeskAnalyticsViewTabs(filterBarContainer);
+
+  if (state.helpdesk_analytics.view === "raw") {
+    renderHelpdeskAnalyticsRawWebhooks(container, filterBarContainer);
+    if (!state.helpdesk_analytics.rawWebhooks.loading && state.helpdesk_analytics.rawWebhooks.events === null) {
+      fetchHelpdeskAnalyticsRawWebhooks({ render: true });
+    }
+    return;
+  }
 
   const filterBar = document.createElement("div");
   filterBar.className = "helpdesk-analytics-filters";
@@ -5835,7 +5974,13 @@ function renderApp() {
     fetchAnalytics();
   }
 
-  if (state.section === "helpdesk-analytics" && !state.helpdesk_analytics.loading && !state.helpdesk_analytics.data && !state.helpdesk_analytics.error) {
+  if (
+    state.section === "helpdesk-analytics" &&
+    state.helpdesk_analytics.view !== "raw" &&
+    !state.helpdesk_analytics.loading &&
+    !state.helpdesk_analytics.data &&
+    !state.helpdesk_analytics.error
+  ) {
     const range = getDateRange(state.helpdesk_analytics.filters.preset);
     state.helpdesk_analytics.filters.from = range.from;
     state.helpdesk_analytics.filters.to = range.to;
