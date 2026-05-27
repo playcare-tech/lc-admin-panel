@@ -1,4 +1,5 @@
 import { accountIndexName, accountTableName, withAccountContext } from "../_lib/accounts.js";
+import { recordHelpDeskAnalyticsWebhookReceived } from "../_lib/helpdesk-analytics-webhooks.js";
 import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../_lib/http.js";
 
 const DAILY_TABLE_BASE = "helpdesk_analytics_daily_v4";
@@ -203,6 +204,7 @@ export async function onRequest(context) {
 
   try {
     const payload = await readWebhookPayload(context.request);
+    await recordHelpDeskAnalyticsWebhookReceived(context.env);
     const eventType = `${payload.eventType || payload.payload?.eventType || payload.data?.eventType || ""}`.trim();
     if (eventType && eventType !== "tickets.events.message") {
       return json({ ok: true, ignored: true, reason: "event_type", eventType });

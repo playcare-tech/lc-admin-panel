@@ -342,6 +342,7 @@ const state = {
       concurrency: 1,
     },
     data: null,
+    webhookStats: null,
     expandedAgents: new Set(),
     defaultAgentsApplied: false,
     ticketModal: {
@@ -3985,6 +3986,14 @@ function renderHelpdeskAnalyticsLoading(container) {
 }
 
 // Task 8: Create fetchAnalytics Function for HelpDesk
+async function refreshHelpdeskAnalyticsWebhookStats() {
+  try {
+    state.helpdesk_analytics.webhookStats = await api("/api/helpdesk/analytics-webhooks");
+  } catch (error) {
+    console.warn("Failed to load HelpDesk analytics webhook stats.", error);
+  }
+}
+
 async function fetchHelpdeskAnalytics() {
   const filters = cloneHelpdeskAnalyticsFilters();
   if (!filters.from || !filters.to || filters.to <= filters.from) {
@@ -4006,6 +4015,7 @@ async function fetchHelpdeskAnalytics() {
 
   try {
     const responses = await fetchHelpdeskAnalyticsDayResponses(filters);
+    await refreshHelpdeskAnalyticsWebhookStats();
     state.helpdesk_analytics.data = mergeHelpdeskAnalyticsResponses(responses, filters);
     renderHelpdeskAnalytics();
   } catch (error) {
@@ -4043,6 +4053,7 @@ async function importHelpdeskAnalytics() {
 
   try {
     const responses = await fetchHelpdeskAnalyticsDayResponses(filters, true);
+    await refreshHelpdeskAnalyticsWebhookStats();
     state.helpdesk_analytics.data = mergeHelpdeskAnalyticsResponses(responses, filters);
     renderHelpdeskAnalytics();
   } catch (error) {
@@ -4463,6 +4474,7 @@ function renderMetricsAndPanels() {
   if (!state.helpdesk_analytics.data) return;
 
   const { summary } = state.helpdesk_analytics.data;
+  const webhookStats = state.helpdesk_analytics.webhookStats || {};
   const container = document.getElementById("appContent");
 
   const currentSummary = summary;
@@ -4498,6 +4510,22 @@ function renderMetricsAndPanels() {
   metricsRow.appendChild(createMetricCard(
     "Active Agents",
     currentSummary.active_agents
+  ));
+  metricsRow.appendChild(createMetricCard(
+    "Webhooks 24h",
+    Number(webhookStats.received24h || 0).toLocaleString()
+  ));
+  metricsRow.appendChild(createMetricCard(
+    "Webhooks 7d",
+    Number(webhookStats.received7d || 0).toLocaleString()
+  ));
+  metricsRow.appendChild(createMetricCard(
+    "Webhooks 30d",
+    Number(webhookStats.received30d || 0).toLocaleString()
+  ));
+  metricsRow.appendChild(createMetricCard(
+    "Webhooks all-time",
+    Number(webhookStats.receivedAllTime || 0).toLocaleString()
   ));
 
   const metricsSection = document.createElement("div");
