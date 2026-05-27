@@ -137,6 +137,11 @@ function isPublicAgentMessageEvent(event) {
   return isMessageEvent(event) && !Boolean(event.isPrivate || event.private) && eventAuthorType(event) === "agent" && Boolean(eventMessageText(event));
 }
 
+function isConversationTranscriptEvent(event) {
+  const text = eventMessageText(event).toLowerCase();
+  return text.includes("conversation transcript:") || text.includes("conversation trancript:");
+}
+
 function publicMessageEvents(ticket) {
   return (Array.isArray(ticket.events) ? ticket.events : [])
     .filter((event) => isMessageEvent(event) && !Boolean(event.isPrivate || event.private) && eventMessageText(event))
@@ -147,18 +152,8 @@ function publicMessageEvents(ticket) {
     });
 }
 
-function validAnalyticsAgentMessageEvents(ticket) {
-  const events = publicMessageEvents(ticket);
-  const firstMessage = events[0];
-  if (!firstMessage) return [];
-
-  const agentMessages = events.filter(isPublicAgentMessageEvent);
-  if (!agentMessages.length) return [];
-
-  const firstText = eventMessageText(firstMessage).toLowerCase();
-  const isOnlyPublicTranscriptFromAgent =
-    events.length === 1 && isPublicAgentMessageEvent(firstMessage) && firstText.includes("conversation transcript:");
-  return isOnlyPublicTranscriptFromAgent ? [] : agentMessages;
+function analyticsAgentMessageEvents(ticket) {
+  return publicMessageEvents(ticket).filter((event) => isPublicAgentMessageEvent(event) && !isConversationTranscriptEvent(event));
 }
 
 function dailyTable(env) {
@@ -345,11 +340,11 @@ async function listTicketsForRange(env, from, to) {
 
 async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory) {
   const tickets = await listTicketsForRange(env, from, to);
-  const handled = new Map();
+  const handled = [];
 
   for (const ticket of tickets) {
     const shortId = normalizeTicketShortId(ticket);
-    const events = validAnalyticsAgentMessageEvents(ticket);
+    const events = analyticsAgentMessageEvents(ticket);
 
     for (const event of events) {
       const eventDate = normalizeEventDate(event);
@@ -359,25 +354,20 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory) 
       if (!agent.id) continue;
 
       const localDay = dateKey(eventDate, timezoneOffsetMinutes);
-      const countKey = `${localDay}|${agent.id}|${shortId}`;
-      const existing = handled.get(countKey);
-
-      if (!existing) {
-        const row = {
-          date: localDay,
-          agent_id: agent.id,
-          agent_name: agent.name || agent.id,
-          agent_email: agent.email || "",
-          short_id: shortId,
-        };
-        handled.set(countKey, row);
-      }
+      handled.push({
+        date: localDay,
+        agent_id: agent.id,
+        agent_name: agent.name || agent.id,
+        agent_email: agent.email || "",
+        short_id: shortId,
+        event_date: eventDate.toISOString(),
+      });
     }
   }
 
-  return Array.from(handled.values()).sort((left, right) => {
+  return handled.sort((left, right) => {
     const agentOrder = left.agent_name.localeCompare(right.agent_name);
-    return agentOrder || left.short_id.localeCompare(right.short_id);
+    return agentOrder || left.short_id.localeCompare(right.short_id) || left.event_date.localeCompare(right.event_date);
   });
 }
 
