@@ -199,6 +199,19 @@ async function readCachedDay(env, date) {
   return results?.length ? results : null;
 }
 
+async function readCachedRange(env, fromDate, toDate) {
+  const table = dailyTable(env);
+  const { results } = await env.DB.prepare(
+    `SELECT date, agent_id, agent_name, agent_email, handled_tickets
+     FROM ${table}
+     WHERE date >= ? AND date <= ?
+     ORDER BY date ASC, handled_tickets DESC`,
+  )
+    .bind(fromDate, toDate)
+    .all();
+  return results || [];
+}
+
 async function hasCachedDay(env, date) {
   return Boolean(await env.DB.prepare(`SELECT date FROM ${dailyTable(env)} WHERE date = ? LIMIT 1`).bind(date).first());
 }
@@ -283,6 +296,20 @@ async function finalizeCachedDay(env, date) {
 
 function filterRows(rows, filters, agentDirectory = new Map()) {
   return rows.filter((row) => matchesFilters(row.agent_id, filters, agentDirectory));
+}
+
+function addDateKeyDays(value, days) {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function dateKeysBetween(fromDate, toDate) {
+  const dates = [];
+  for (let current = fromDate; current <= toDate; current = addDateKeyDays(current, 1)) {
+    dates.push(current);
+  }
+  return dates;
 }
 
 async function listTicketsForRange(env, from, to) {
@@ -492,8 +519,32 @@ export async function onRequest(context) {
       groupIds: splitParam(url.searchParams.get("groups")),
     };
 
-    const dashboard = await getHelpDeskDashboard(context.env);
-    const agentDirectory = buildAgentDirectory(dashboard);
+    const needsAgentDirectory = shouldImport || shouldFinalizeDate || filters.groupIds.length > 0;
+    const agentDirectory = needsAgentDirectory ? buildAgentDirectory(await getHelpDeskDashboard(context.env)) : new Map();
+
+    if (!shouldImport && !shouldFinalizeDate) {
+      const rangeFromDate = dateKey(from, timezoneOffsetMinutes);
+      const rangeToDate = dateKey(new Date(to.getTime() - 1), timezoneOffsetMinutes);
+      const cachedRangeRows = await readCachedRange(context.env, rangeFromDate, rangeToDate);
+      const rows = filterRows(cachedRangeRows, filters, agentDirectory);
+      const expectedDates = dateKeysBetween(rangeFromDate, rangeToDate);
+      const datesWithRows = new Set(cachedRangeRows.map((row) => row.date));
+      const missingDays = expectedDates.filter((date) => !datesWithRows.has(date)).length;
+      return json(
+        rowsToResponse(rows, from, to, agentDirectory, {
+          date: rangeFromDate,
+          from_date: rangeFromDate,
+          to_date: rangeToDate,
+          checked: true,
+          hit: cachedRangeRows.length > 0,
+          source: "d1_range",
+          missing: missingDays > 0,
+          missing_days: missingDays,
+          saved: false,
+        }),
+      );
+    }
+
     const cachedRows = shouldImport || shouldFinalizeDate ? null : await readCachedDay(context.env, localDate);
     const cacheMeta = {
       date: localDate,

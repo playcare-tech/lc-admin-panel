@@ -343,6 +343,7 @@ const state = {
     },
     data: null,
     webhookStats: null,
+    webhookStatsTimer: null,
     expandedAgents: new Set(),
     defaultAgentsApplied: false,
     ticketModal: {
@@ -452,6 +453,7 @@ function syncAccountSwitcher() {
 function resetAccountScopedState() {
   stopHelpdeskTicketsRealtime();
   stopHelpdeskWorkflowsRealtime();
+  stopHelpdeskAnalyticsWebhookStatsRealtime();
   state.livechat = { agents: [], groups: [] };
   state.helpdesk = { agents: [], teams: [] };
   state.logs = [];
@@ -480,6 +482,7 @@ function resetAccountScopedState() {
   };
   state.analytics.data = null;
   state.helpdesk_analytics.data = null;
+  state.helpdesk_analytics.webhookStats = null;
   state.livechatSelectedAgentIds.clear();
   state.livechatSelectedGroupIds.clear();
   state.helpdeskSelectedAgentIds.clear();
@@ -3850,6 +3853,17 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
   }
 }
 
+async function fetchHelpdeskAnalyticsCachedRange(filters) {
+  const params = new URLSearchParams();
+  params.append("from", dateWithOffset(filters.from));
+  params.append("to", dateWithOffset(filters.to));
+  if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
+  if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
+  if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
+  params.append("tz_offset", String(new Date().getTimezoneOffset()));
+  return api(`/api/helpdesk/analytics?${params.toString()}`);
+}
+
 async function finalizeHelpdeskAnalyticsDay(range, filters) {
   const params = new URLSearchParams();
   params.append("from", dateWithOffset(range.from));
@@ -3986,9 +4000,12 @@ function renderHelpdeskAnalyticsLoading(container) {
 }
 
 // Task 8: Create fetchAnalytics Function for HelpDesk
-async function refreshHelpdeskAnalyticsWebhookStats() {
+async function refreshHelpdeskAnalyticsWebhookStats({ render = false } = {}) {
   try {
     state.helpdesk_analytics.webhookStats = await api("/api/helpdesk/analytics-webhooks");
+    if (render && state.section === "helpdesk-analytics") {
+      renderHelpdeskAnalytics();
+    }
   } catch (error) {
     console.warn("Failed to load HelpDesk analytics webhook stats.", error);
   }
@@ -4014,9 +4031,11 @@ async function fetchHelpdeskAnalytics() {
   renderHelpdeskAnalytics();
 
   try {
-    const responses = await fetchHelpdeskAnalyticsDayResponses(filters);
-    await refreshHelpdeskAnalyticsWebhookStats();
-    state.helpdesk_analytics.data = mergeHelpdeskAnalyticsResponses(responses, filters);
+    const [analyticsResponse] = await Promise.all([
+      fetchHelpdeskAnalyticsCachedRange(filters),
+      refreshHelpdeskAnalyticsWebhookStats(),
+    ]);
+    state.helpdesk_analytics.data = analyticsResponse;
     renderHelpdeskAnalytics();
   } catch (error) {
     console.error("Fetch analytics error:", error);
@@ -4979,6 +4998,12 @@ function stopHelpdeskWorkflowsRealtime() {
   state.helpdeskWorkflows.timer = null;
 }
 
+function stopHelpdeskAnalyticsWebhookStatsRealtime() {
+  if (!state.helpdesk_analytics.webhookStatsTimer) return;
+  clearInterval(state.helpdesk_analytics.webhookStatsTimer);
+  state.helpdesk_analytics.webhookStatsTimer = null;
+}
+
 function startHelpdeskTicketsRealtime() {
   if (state.helpdeskTickets.timer) return;
   state.helpdeskTickets.timer = setInterval(() => {
@@ -4993,6 +5018,15 @@ function startHelpdeskWorkflowsRealtime() {
   state.helpdeskWorkflows.timer = setInterval(() => {
     if (state.section === "helpdesk-workflows") {
       fetchHelpdeskWorkflows({ silent: true });
+    }
+  }, 5 * 1000);
+}
+
+function startHelpdeskAnalyticsWebhookStatsRealtime() {
+  if (state.helpdesk_analytics.webhookStatsTimer) return;
+  state.helpdesk_analytics.webhookStatsTimer = setInterval(() => {
+    if (state.section === "helpdesk-analytics") {
+      refreshHelpdeskAnalyticsWebhookStats({ render: true });
     }
   }, 5 * 1000);
 }
@@ -5759,6 +5793,9 @@ function renderApp() {
   if (state.section !== "helpdesk-workflows") {
     stopHelpdeskWorkflowsRealtime();
   }
+  if (state.section !== "helpdesk-analytics") {
+    stopHelpdeskAnalyticsWebhookStatsRealtime();
+  }
   document.querySelectorAll(".sidebar-link").forEach((button) => {
     button.classList.toggle("active", button.dataset.section === state.section);
   });
@@ -5813,6 +5850,12 @@ function renderApp() {
     state.helpdesk_analytics.filters.from = range.from;
     state.helpdesk_analytics.filters.to = range.to;
     fetchHelpdeskAnalytics();
+  }
+  if (state.section === "helpdesk-analytics") {
+    startHelpdeskAnalyticsWebhookStatsRealtime();
+    if (!state.helpdesk_analytics.webhookStats) {
+      refreshHelpdeskAnalyticsWebhookStats({ render: Boolean(state.helpdesk_analytics.data) });
+    }
   }
 
   if (state.section === "helpdesk-tickets") {
