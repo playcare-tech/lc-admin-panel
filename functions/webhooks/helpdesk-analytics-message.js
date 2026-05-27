@@ -3,6 +3,7 @@ import { recordHelpDeskAnalyticsWebhookReceived } from "../_lib/helpdesk-analyti
 import { json, methodNotAllowed, serverErrorResponse } from "../_lib/http.js";
 
 const DAILY_TABLE_BASE = "helpdesk_analytics_daily_v4";
+const MESSAGE_EVENTS_TABLE_BASE = "helpdesk_analytics_message_events";
 const DEFAULT_ANALYTICS_TIME_ZONE = "Asia/Nicosia";
 
 async function readWebhookPayload(request) {
@@ -51,6 +52,67 @@ function eventDate(event) {
   const value = event?.date || event?.createdAt || event?.timestamp || event?.created_at;
   const date = value ? new Date(value) : null;
   return date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+function eventTicketId(event, payload) {
+  return [
+    event?.ticketID,
+    event?.ticketId,
+    event?.ticket_id,
+    event?.ticket?.ID,
+    event?.ticket?.id,
+    payload?.ticketID,
+    payload?.ticketId,
+    payload?.ticket_id,
+    payload?.ticket?.ID,
+    payload?.ticket?.id,
+    payload?.payload?.ticketID,
+    payload?.payload?.ticketId,
+    payload?.payload?.ticket?.ID,
+    payload?.payload?.ticket?.id,
+    payload?.data?.ticketID,
+    payload?.data?.ticketId,
+    payload?.data?.ticket?.ID,
+    payload?.data?.ticket?.id,
+  ]
+    .map((value) => `${value || ""}`.trim())
+    .find(Boolean) || "";
+}
+
+async function sha256Text(value) {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function eventUniqueKey(event, payload, agent, messageDate) {
+  const directId = [
+    event?.ID,
+    event?.id,
+    event?.eventID,
+    event?.eventId,
+    event?.messageID,
+    event?.messageId,
+    event?.message?.ID,
+    event?.message?.id,
+    payload?.eventID,
+    payload?.eventId,
+    payload?.payload?.eventID,
+    payload?.payload?.eventId,
+    payload?.data?.eventID,
+    payload?.data?.eventId,
+  ]
+    .map((value) => `${value || ""}`.trim())
+    .find(Boolean);
+  if (directId) return `direct:${directId}`;
+
+  const fingerprint = JSON.stringify({
+    ticketId: eventTicketId(event, payload),
+    agentId: agent.id,
+    date: messageDate.toISOString(),
+    text: eventMessageText(event),
+  });
+  return `hash:${await sha256Text(fingerprint)}`;
 }
 
 function isMessageEvent(event) {
@@ -150,6 +212,34 @@ async function ensureHelpDeskAnalyticsCache(env) {
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${DAILY_TABLE_BASE}_agent`)} ON ${table}(agent_id)`).run();
 }
 
+function messageEventsTable(env) {
+  return accountTableName(env, MESSAGE_EVENTS_TABLE_BASE);
+}
+
+async function ensureHelpDeskAnalyticsMessageEvents(env) {
+  if (!env?.DB) throw new Error("Missing DB binding.");
+  await env.DB
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS ${messageEventsTable(env)} (
+        event_key TEXT PRIMARY KEY,
+        recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+    )
+    .run();
+}
+
+async function reserveMessageEvent(env, eventKey) {
+  await ensureHelpDeskAnalyticsMessageEvents(env);
+  const result = await env.DB.prepare(
+    `INSERT INTO ${messageEventsTable(env)} (event_key, recorded_at)
+     VALUES (?, CURRENT_TIMESTAMP)
+     ON CONFLICT(event_key) DO NOTHING`,
+  )
+    .bind(eventKey)
+    .run();
+  return Number(result?.meta?.changes || 0) > 0;
+}
+
 async function incrementAgentHandledTicket(env, { date, agent }) {
   const table = dailyTable(env);
   await ensureHelpDeskAnalyticsCache(env);
@@ -167,6 +257,43 @@ async function incrementAgentHandledTicket(env, { date, agent }) {
     .run();
 }
 
+export async function processHelpDeskAnalyticsMessagePayload(env, payload) {
+  const eventType = `${payload.eventType || payload.payload?.eventType || payload.data?.eventType || ""}`.trim();
+  if (eventType && !["tickets.events.message", "tickets.update"].includes(eventType)) {
+    return { ok: true, ignored: true, reason: "event_type", eventType };
+  }
+
+  const event = extractMessageEvent(payload);
+  if (!event) {
+    return { ok: true, ignored: true, reason: "no_agent_message_event" };
+  }
+
+  const agent = eventAuthor(event);
+  const messageDate = eventDate(event);
+  if (!agent.id) return { ok: true, ignored: true, reason: "missing_agent_id" };
+  if (!messageDate) return { ok: true, ignored: true, reason: "missing_message_date" };
+  if (isPrivateEvent(event)) return { ok: true, ignored: true, reason: "private_message" };
+  if (!eventMessageText(event)) return { ok: true, ignored: true, reason: "empty_message" };
+  if (isConversationTranscriptEvent(event)) return { ok: true, ignored: true, reason: "conversation_transcript" };
+
+  const eventKey = await eventUniqueKey(event, payload, agent, messageDate);
+  const reserved = await reserveMessageEvent(env, eventKey);
+  if (!reserved) {
+    return { ok: true, ignored: true, reason: "duplicate_message_event", eventKey };
+  }
+
+  const statDate = dateKeyForTimeZone(messageDate, env.HELPDESK_ANALYTICS_TIME_ZONE || DEFAULT_ANALYTICS_TIME_ZONE);
+  await incrementAgentHandledTicket(env, { date: statDate, agent });
+
+  return {
+    ok: true,
+    counted: true,
+    date: statDate,
+    agentId: agent.id,
+    eventKey,
+  };
+}
+
 export async function onRequest(context) {
   if (context.request.method !== "POST") return methodNotAllowed(["POST"]);
   context = withAccountContext(context);
@@ -174,33 +301,7 @@ export async function onRequest(context) {
   try {
     const payload = await readWebhookPayload(context.request);
     await recordHelpDeskAnalyticsWebhookReceived(context.env);
-    const eventType = `${payload.eventType || payload.payload?.eventType || payload.data?.eventType || ""}`.trim();
-    if (eventType && eventType !== "tickets.events.message") {
-      return json({ ok: true, ignored: true, reason: "event_type", eventType });
-    }
-
-    const event = extractMessageEvent(payload);
-    if (!event) {
-      return json({ ok: true, ignored: true, reason: "no_agent_message_event" });
-    }
-
-    const agent = eventAuthor(event);
-    const messageDate = eventDate(event);
-    if (!agent.id) return json({ ok: true, ignored: true, reason: "missing_agent_id" });
-    if (!messageDate) return json({ ok: true, ignored: true, reason: "missing_message_date" });
-    if (isPrivateEvent(event)) return json({ ok: true, ignored: true, reason: "private_message" });
-    if (!eventMessageText(event)) return json({ ok: true, ignored: true, reason: "empty_message" });
-    if (isConversationTranscriptEvent(event)) return json({ ok: true, ignored: true, reason: "conversation_transcript" });
-
-    const statDate = dateKeyForTimeZone(messageDate, context.env.HELPDESK_ANALYTICS_TIME_ZONE || DEFAULT_ANALYTICS_TIME_ZONE);
-    await incrementAgentHandledTicket(context.env, { date: statDate, agent });
-
-    return json({
-      ok: true,
-      counted: true,
-      date: statDate,
-      agentId: agent.id,
-    });
+    return json(await processHelpDeskAnalyticsMessagePayload(context.env, payload));
   } catch (error) {
     return serverErrorResponse(error, "Failed to process HelpDesk analytics message webhook.");
   }

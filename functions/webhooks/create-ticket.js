@@ -1,5 +1,6 @@
 import { withAccountContext } from "../_lib/accounts.js";
 import { helpdeskRequest, normalizeHelpDeskTicketSummary } from "../_lib/helpdesk.js";
+import { recordHelpDeskAnalyticsWebhookReceived } from "../_lib/helpdesk-analytics-webhooks.js";
 import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../_lib/http.js";
 import {
   finishHelpdeskWebhookEvent,
@@ -8,6 +9,7 @@ import {
 } from "../_lib/helpdesk-workflows.js";
 import { writeLogSafely } from "../_lib/logs.js";
 import { runEnabledHelpdeskWorkflowsForWebhook } from "../api/helpdesk/tickets.js";
+import { processHelpDeskAnalyticsMessagePayload } from "./helpdesk-analytics-message.js";
 
 function safeEqualText(left, right) {
   const leftText = `${left || ""}`;
@@ -152,6 +154,11 @@ export async function onRequest(context) {
 
     const eventType = `${payload.eventType || ""}`.trim();
     if (eventType && eventType !== "tickets.create") {
+      let analytics = null;
+      if (["tickets.events.message", "tickets.update"].includes(eventType)) {
+        await recordHelpDeskAnalyticsWebhookReceived(context.env);
+        analytics = await processHelpDeskAnalyticsMessagePayload(context.env, payload);
+      }
       await finishHelpdeskWebhookEvent(context.env, webhookEvent.id, {
         status: "ignored",
       });
@@ -160,6 +167,7 @@ export async function onRequest(context) {
         ignored: true,
         webhookEventId: webhookEvent.id,
         eventType,
+        analytics,
       });
     }
 
