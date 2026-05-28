@@ -4109,7 +4109,7 @@ function renderHelpdeskAnalyticsViewTabs(filterBarContainer) {
 }
 
 function renderHelpdeskAnalyticsRawWebhooks(container, filterBarContainer) {
-  const debugUrl = `${window.location.origin}/webhooks/helpdesk-analytics-raw`;
+  const debugUrl = `${window.location.origin}/webhooks/helpdesk-analytics-message`;
   const { loading, error, events } = state.helpdesk_analytics.rawWebhooks;
   const actionBar = document.createElement("div");
   actionBar.className = "helpdesk-analytics-actions";
@@ -4127,7 +4127,7 @@ function renderHelpdeskAnalyticsRawWebhooks(container, filterBarContainer) {
   page.className = "raw-webhook-page";
   page.innerHTML = `
     <div class="alert alert-info">
-      Use this test URL in HelpDesk to inspect the exact raw webhook body. It stores only the latest 50 requests.
+      Active HelpDesk webhook endpoint. Stores the latest 50 incoming requests for inspection.
     </div>
   `;
   container.appendChild(page);
