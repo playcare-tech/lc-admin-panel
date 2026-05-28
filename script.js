@@ -217,9 +217,6 @@ const state = {
   logsWarning: "",
   livechatSearch: "",
   helpdeskSearch: "",
-  helpdeskSync: null,
-  helpdeskSyncTimer: null,
-  helpdeskSyncInFlight: false,
   helpdeskWorkflows: {
     loading: false,
     error: null,
@@ -365,7 +362,6 @@ const loginForm = document.getElementById("loginForm");
 const loginChallengeFields = document.getElementById("loginChallengeFields");
 const loginMessage = document.getElementById("loginMessage");
 const statusMessage = document.getElementById("statusMessage");
-const syncStatusMessage = document.getElementById("syncStatusMessage");
 const sessionBadge = document.getElementById("sessionBadge");
 const accountSelect = document.getElementById("accountSelect");
 const pageTitle = document.getElementById("pageTitle");
@@ -432,7 +428,6 @@ function showApp() {
   loginView.classList.add("d-none");
   appView.classList.remove("d-none");
   syncAccountSwitcher();
-  startHelpdeskAutoSync();
 }
 
 function showLogin() {
@@ -441,10 +436,6 @@ function showLogin() {
   state.csrfToken = "";
   appView.classList.add("d-none");
   loginView.classList.remove("d-none");
-  if (state.helpdeskSyncTimer) {
-    clearInterval(state.helpdeskSyncTimer);
-    state.helpdeskSyncTimer = null;
-  }
   stopHelpdeskTicketsRealtime();
 }
 
@@ -464,7 +455,6 @@ function resetAccountScopedState() {
   state.logsWarning = "";
   state.livechatSearch = "";
   state.helpdeskSearch = "";
-  state.helpdeskSync = null;
   state.helpdeskWorkflows.workflows = [];
   state.helpdeskWorkflows.runs = [];
   state.helpdeskWorkflows.runsFor = "";
@@ -507,7 +497,6 @@ async function switchAccount(accountId) {
   syncAccountSwitcher();
   setMessage(statusMessage, `Switching to ${accountLabel(nextAccountId)}...`);
   await refreshData();
-  runHelpdeskAutoSync();
 }
 
 function renderLoginChallenge() {
@@ -3601,23 +3590,6 @@ function renderHelpdeskWorkflows() {
   `;
 }
 
-function formatHelpdeskSyncStatus(sync = state.helpdeskSync) {
-  if (!sync) return "HelpDesk auto sync: loading...";
-  const lastRun = sync.last_success_at || sync.last_finished_at || sync.last_started_at;
-  if (!lastRun) return "HelpDesk auto sync: not run yet";
-  const date = new Date(lastRun);
-  const label = Number.isNaN(date.getTime()) ? lastRun : date.toLocaleString();
-  const status = sync.last_status === "error" ? `failed: ${sync.last_error || "unknown error"}` : sync.last_status || "unknown";
-  const rows = Number(sync.last_detail_rows || 0);
-  return `HelpDesk auto sync: ${label} (${status}, ${rows} ticket rows)`;
-}
-
-function renderHelpdeskSyncStatus() {
-  if (!syncStatusMessage) return;
-  syncStatusMessage.textContent = formatHelpdeskSyncStatus();
-  syncStatusMessage.dataset.tone = state.helpdeskSync?.last_status === "error" ? "error" : "info";
-}
-
 function plainMessageText(value) {
   return `${value || ""}`.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -5089,51 +5061,6 @@ async function downloadLiveChatRawAnalytics(format) {
   setMessage(statusMessage, `Downloaded ${records.length} LiveChat raw chat row(s).`, "success");
 }
 
-async function fetchHelpdeskSyncStatus() {
-  const response = await api("/api/helpdesk/analytics-sync");
-  state.helpdeskSync = response.sync || null;
-  renderHelpdeskSyncStatus();
-}
-
-async function runHelpdeskAutoSync({ force = false } = {}) {
-  if (state.helpdeskSyncInFlight) return;
-  const lastRun = state.helpdeskSync?.last_started_at || state.helpdeskSync?.last_finished_at || state.helpdeskSync?.last_success_at;
-  const lastRunDate = lastRun ? new Date(lastRun) : null;
-  const isDue = force || !lastRunDate || Number.isNaN(lastRunDate.getTime()) || Date.now() - lastRunDate.getTime() >= 60 * 60 * 1000;
-  if (!isDue) return;
-
-  state.helpdeskSyncInFlight = true;
-  try {
-    const response = await api("/api/helpdesk/analytics-sync", {
-      method: "POST",
-      body: {
-        windowMinutes: 60,
-        delayMinutes: 60,
-        overlapMinutes: 0,
-        tzOffset: new Date().getTimezoneOffset(),
-      },
-    });
-    state.helpdeskSync = response.sync || null;
-  } catch (error) {
-    state.helpdeskSync = {
-      ...(state.helpdeskSync || {}),
-      last_status: "error",
-      last_error: error.message,
-      last_finished_at: new Date().toISOString(),
-    };
-  } finally {
-    state.helpdeskSyncInFlight = false;
-    renderHelpdeskSyncStatus();
-  }
-}
-
-function startHelpdeskAutoSync() {
-  if (state.helpdeskSyncTimer) return;
-  state.helpdeskSyncTimer = setInterval(() => {
-    runHelpdeskAutoSync();
-  }, 60 * 60 * 1000);
-}
-
 function stopHelpdeskTicketsRealtime() {
   if (!state.helpdeskTickets.timer) return;
   clearInterval(state.helpdeskTickets.timer);
@@ -6019,12 +5946,11 @@ function renderApp() {
 async function refreshData() {
   setMessage(statusMessage, "Refreshing...");
 
-  const [livechatResult, helpdeskResult, adminUsersResult, logsResult, syncResult, workflowsResult] = await Promise.allSettled([
+  const [livechatResult, helpdeskResult, adminUsersResult, logsResult, workflowsResult] = await Promise.allSettled([
     api("/api/livechat/dashboard"),
     api("/api/helpdesk/dashboard"),
     api("/api/admin-users"),
     api("/api/logs"),
-    fetchHelpdeskSyncStatus(),
     api("/api/helpdesk/workflows"),
   ]);
 
@@ -6052,7 +5978,6 @@ async function refreshData() {
     helpdeskResult.status !== "fulfilled" ? `HelpDesk: ${helpdeskResult.reason.message}` : "",
     adminUsersResult.status !== "fulfilled" ? `Admin users: ${adminUsersResult.reason.message}` : "",
     state.logsWarning,
-    syncResult.status !== "fulfilled" ? `HelpDesk sync: ${syncResult.reason.message}` : "",
     workflowsResult.status !== "fulfilled" ? `Workflows: ${workflowsResult.reason.message}` : "",
   ].filter(Boolean);
 
@@ -7114,7 +7039,6 @@ loginForm?.addEventListener("submit", async (event) => {
     state.csrfToken = result.csrfToken || "";
     showApp();
     await refreshData();
-    runHelpdeskAutoSync();
   } catch (error) {
     setMessage(loginMessage, error.message, "error");
   }
@@ -7133,7 +7057,6 @@ async function bootstrap() {
     state.csrfToken = session.csrfToken || "";
     showApp();
     await refreshData();
-    runHelpdeskAutoSync();
   } catch {
     showLogin();
   }
