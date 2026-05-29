@@ -2433,7 +2433,7 @@ function helpdeskAnalyticsAgentDayMap(agent) {
 
 function helpdeskAnalyticsPeriodLabel(filters = activeHelpdeskAnalyticsFilters()) {
   if (!filters.from || !filters.to) return "Selected period";
-  return `${localDateValue(filters.from)} ${localTimeValue(filters.from)} to ${localDateValue(filters.to)} ${localTimeValue(filters.to)}`;
+  return `${localDateValue(filters.from)} to ${localDateValue(filters.to)}`;
 }
 
 function helpdeskAnalyticsExportDays(filters = activeHelpdeskAnalyticsFilters()) {
@@ -4029,10 +4029,7 @@ async function fetchHelpdeskAnalytics() {
   renderHelpdeskAnalytics();
 
   try {
-    const [analyticsResponse] = await Promise.all([
-      fetchHelpdeskAnalyticsCachedRange(filters),
-      refreshHelpdeskAnalyticsWebhookStats(),
-    ]);
+    const analyticsResponse = await fetchHelpdeskAnalyticsCachedRange(filters);
     state.helpdesk_analytics.data = analyticsResponse;
     renderHelpdeskAnalytics();
   } catch (error) {
@@ -4070,7 +4067,6 @@ async function importHelpdeskAnalytics() {
 
   try {
     const responses = await fetchHelpdeskAnalyticsDayResponses(filters, true);
-    await refreshHelpdeskAnalyticsWebhookStats();
     state.helpdesk_analytics.data = mergeHelpdeskAnalyticsResponses(responses, filters);
     renderHelpdeskAnalytics();
   } catch (error) {
@@ -4093,7 +4089,6 @@ function renderHelpdeskAnalyticsViewTabs(filterBarContainer) {
   tabs.className = "analytics-view-tabs";
   tabs.innerHTML = `
     <button class="filter-chip ${currentView === "report" ? "active" : ""}" type="button" data-helpdesk-analytics-view="report">Report</button>
-    <button class="filter-chip ${currentView === "raw" ? "active" : ""}" type="button" data-helpdesk-analytics-view="raw">Raw webhooks</button>
   `;
   filterBarContainer.appendChild(tabs);
   tabs.querySelectorAll("[data-helpdesk-analytics-view]").forEach((button) => {
@@ -4258,18 +4253,8 @@ function renderHelpdeskAnalytics() {
   fromInput.id = "from-date";
   fromInput.className = "form-control";
   fromInput.value = filters.from ? localDateValue(filters.from) : "";
-  const fromTimeInput = document.createElement("input");
-  fromTimeInput.type = "time";
-  fromTimeInput.id = "from-time";
-  fromTimeInput.className = "form-control";
-  fromTimeInput.value = filters.from ? localTimeValue(filters.from) : "00:00";
-  fromTimeInput.setAttribute("aria-label", "From time");
-  const fromDateTimeRow = document.createElement("div");
-  fromDateTimeRow.className = "analytics-date-time";
-  fromDateTimeRow.appendChild(fromInput);
-  fromDateTimeRow.appendChild(fromTimeInput);
   customDatesDiv.appendChild(fromLabel);
-  customDatesDiv.appendChild(fromDateTimeRow);
+  customDatesDiv.appendChild(fromInput);
   filterBar.appendChild(customDatesDiv);
 
   const customDatesToDiv = document.createElement("div");
@@ -4284,18 +4269,8 @@ function renderHelpdeskAnalytics() {
   toInput.id = "to-date";
   toInput.className = "form-control";
   toInput.value = filters.to ? localDateValue(filters.to) : "";
-  const toTimeInput = document.createElement("input");
-  toTimeInput.type = "time";
-  toTimeInput.id = "to-time";
-  toTimeInput.className = "form-control";
-  toTimeInput.value = filters.to ? localTimeValue(filters.to) : "23:59";
-  toTimeInput.setAttribute("aria-label", "To time");
-  const toDateTimeRow = document.createElement("div");
-  toDateTimeRow.className = "analytics-date-time";
-  toDateTimeRow.appendChild(toInput);
-  toDateTimeRow.appendChild(toTimeInput);
   customDatesToDiv.appendChild(toLabel);
-  customDatesToDiv.appendChild(toDateTimeRow);
+  customDatesToDiv.appendChild(toInput);
   filterBar.appendChild(customDatesToDiv);
 
   // Groups filter
@@ -4390,18 +4365,14 @@ function renderHelpdeskAnalytics() {
 
   const syncCustomHelpdeskRange = () => {
     const fromDate = document.getElementById("from-date")?.value || "";
-    const fromTime = document.getElementById("from-time")?.value || "00:00";
     const toDate = document.getElementById("to-date")?.value || "";
-    const toTime = document.getElementById("to-time")?.value || "23:59";
-    filters.from = combineLocalDateAndTime(fromDate, fromTime, "00:00");
-    filters.to = combineLocalDateAndTime(toDate, toTime, "23:59");
+    filters.from = combineLocalDateAndTime(fromDate, "00:00", "00:00");
+    filters.to = combineLocalDateAndTime(toDate, "23:59", "23:59");
     renderHelpdeskAnalytics();
   };
 
   document.getElementById("from-date")?.addEventListener("change", syncCustomHelpdeskRange);
-  document.getElementById("from-time")?.addEventListener("change", syncCustomHelpdeskRange);
   document.getElementById("to-date")?.addEventListener("change", syncCustomHelpdeskRange);
-  document.getElementById("to-time")?.addEventListener("change", syncCustomHelpdeskRange);
 
   if (filters.preset === "custom") {
     customDatesDiv.classList.remove("d-none");
@@ -4460,6 +4431,11 @@ function renderHelpdeskAnalytics() {
     errorDiv.className = "alert alert-danger";
     errorDiv.textContent = `Error: ${error}`;
     container.appendChild(errorDiv);
+  } else if (!loading) {
+    const hint = document.createElement("div");
+    hint.className = "empty-state";
+    hint.textContent = 'No data loaded. Click "Filter" to read from cache or "Import from HelpDesk" to fetch fresh data.';
+    container.appendChild(hint);
   }
 }
 
@@ -4602,7 +4578,6 @@ function renderMetricsAndPanels() {
   if (!state.helpdesk_analytics.data) return;
 
   const { summary } = state.helpdesk_analytics.data;
-  const webhookStats = state.helpdesk_analytics.webhookStats || {};
   const container = document.getElementById("appContent");
 
   const currentSummary = summary;
@@ -4638,22 +4613,6 @@ function renderMetricsAndPanels() {
   metricsRow.appendChild(createMetricCard(
     "Active Agents",
     currentSummary.active_agents
-  ));
-  metricsRow.appendChild(createMetricCard(
-    "Webhooks 24h",
-    Number(webhookStats.received24h || 0).toLocaleString()
-  ));
-  metricsRow.appendChild(createMetricCard(
-    "Webhooks 7d",
-    Number(webhookStats.received7d || 0).toLocaleString()
-  ));
-  metricsRow.appendChild(createMetricCard(
-    "Webhooks 30d",
-    Number(webhookStats.received30d || 0).toLocaleString()
-  ));
-  metricsRow.appendChild(createMetricCard(
-    "Webhooks all-time",
-    Number(webhookStats.receivedAllTime || 0).toLocaleString()
   ));
 
   const metricsSection = document.createElement("div");
