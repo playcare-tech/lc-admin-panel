@@ -8,6 +8,7 @@ const PAGE_SIZE = 100;
 const MAX_PAGES_PER_RANGE = 20;
 const DAILY_TABLE_BASE = "helpdesk_analytics_daily_v4";
 const MESSAGE_EVENTS_TABLE_BASE = "helpdesk_analytics_message_events";
+const REPLY_DETAILS_TABLE_BASE = "helpdesk_analytics_reply_details_v1";
 const OBSOLETE_ANALYTICS_TABLES = [
   "helpdesk_analytics_daily",
   "helpdesk_analytics_daily_fetches",
@@ -214,6 +215,10 @@ function messageEventsTable(env) {
   return accountTableName(env, MESSAGE_EVENTS_TABLE_BASE);
 }
 
+function replyDetailsTable(env) {
+  return accountTableName(env, REPLY_DETAILS_TABLE_BASE);
+}
+
 async function ensureHelpDeskAnalyticsCache(env) {
   if (!env?.DB) throw new Error("Missing DB binding.");
   const table = dailyTable(env);
@@ -238,6 +243,7 @@ async function ensureHelpDeskAnalyticsCache(env) {
     .run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${DAILY_TABLE_BASE}_date`)} ON ${table}(date)`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${DAILY_TABLE_BASE}_agent`)} ON ${table}(agent_id)`).run();
+  await ensureHelpDeskAnalyticsReplyDetails(env);
 }
 
 async function ensureHelpDeskAnalyticsMessageEvents(env) {
@@ -250,6 +256,29 @@ async function ensureHelpDeskAnalyticsMessageEvents(env) {
       )`,
     )
     .run();
+}
+
+async function ensureHelpDeskAnalyticsReplyDetails(env) {
+  if (!env?.DB) throw new Error("Missing DB binding.");
+  const table = replyDetailsTable(env);
+  await env.DB
+    .prepare(
+      `CREATE TABLE IF NOT EXISTS ${table} (
+        event_key TEXT PRIMARY KEY,
+        date TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        agent_name TEXT,
+        agent_email TEXT,
+        ticket_id TEXT,
+        short_id TEXT,
+        event_date TEXT,
+        cached_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )`,
+    )
+    .run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${REPLY_DETAILS_TABLE_BASE}_date`)} ON ${table}(date)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${REPLY_DETAILS_TABLE_BASE}_agent`)} ON ${table}(agent_id)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${REPLY_DETAILS_TABLE_BASE}_date_agent`)} ON ${table}(date, agent_id)`).run();
 }
 
 async function sha256Text(value) {
@@ -322,12 +351,31 @@ async function readCachedRange(env, fromDate, toDate) {
   return results || [];
 }
 
+async function readCachedDetailsRange(env, fromDate, toDate) {
+  const table = replyDetailsTable(env);
+  const { results } = await env.DB.prepare(
+    `SELECT date, agent_id, agent_name, agent_email, ticket_id, short_id, event_date, event_key
+     FROM ${table}
+     WHERE date >= ? AND date <= ?
+     ORDER BY date ASC, event_date ASC, short_id ASC`,
+  )
+    .bind(fromDate, toDate)
+    .all();
+  return results || [];
+}
+
 async function hasCachedDay(env, date) {
   return Boolean(await env.DB.prepare(`SELECT date FROM ${dailyTable(env)} WHERE date = ? LIMIT 1`).bind(date).first());
 }
 
 async function resetCachedDay(env, date) {
-  await env.DB.prepare(`DELETE FROM ${dailyTable(env)} WHERE date = ?`).bind(date).run();
+  await resetCachedDates(env, [date]);
+}
+
+async function resetCachedDates(env, dates) {
+  const uniqueDates = [...new Set(dates)].filter(Boolean);
+  await runBatches(env.DB, uniqueDates.map((date) => env.DB.prepare(`DELETE FROM ${dailyTable(env)} WHERE date = ?`).bind(date)));
+  await runBatches(env.DB, uniqueDates.map((date) => env.DB.prepare(`DELETE FROM ${replyDetailsTable(env)} WHERE date = ?`).bind(date)));
 }
 
 async function runBatches(db, statements, size = 80) {
@@ -404,7 +452,100 @@ async function finalizeCachedDay(env, date) {
   await env.DB.prepare(`UPDATE ${dailyTable(env)} SET cached_at = CURRENT_TIMESTAMP WHERE date = ?`).bind(date).run();
 }
 
+async function finalizeCachedDates(env, dates) {
+  await runBatches(
+    env.DB,
+    [...new Set(dates)].map((date) => env.DB.prepare(`UPDATE ${dailyTable(env)} SET cached_at = CURRENT_TIMESTAMP WHERE date = ?`).bind(date)),
+  );
+}
+
+function datesFromDetails(detailRows, fallbackDate) {
+  const dates = new Set();
+  for (const row of detailRows || []) {
+    const date = row.date || fallbackDate;
+    if (date) dates.add(date);
+  }
+  return dates;
+}
+
+async function insertReplyDetails(env, detailRows) {
+  const table = replyDetailsTable(env);
+  await runBatches(
+    env.DB,
+    (detailRows || [])
+      .filter((row) => row.event_key && row.date && row.agent_id)
+      .map((row) =>
+        env.DB.prepare(
+          `INSERT INTO ${table}
+            (event_key, date, agent_id, agent_name, agent_email, ticket_id, short_id, event_date, cached_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(event_key) DO UPDATE SET
+            date = excluded.date,
+            agent_id = excluded.agent_id,
+            agent_name = COALESCE(NULLIF(excluded.agent_name, ''), ${table}.agent_name),
+            agent_email = COALESCE(NULLIF(excluded.agent_email, ''), ${table}.agent_email),
+            ticket_id = COALESCE(NULLIF(excluded.ticket_id, ''), ${table}.ticket_id),
+            short_id = COALESCE(NULLIF(excluded.short_id, ''), ${table}.short_id),
+            event_date = COALESCE(NULLIF(excluded.event_date, ''), ${table}.event_date),
+            cached_at = CURRENT_TIMESTAMP`,
+        ).bind(
+          row.event_key,
+          row.date,
+          row.agent_id,
+          row.agent_name || "",
+          row.agent_email || "",
+          row.ticket_id || "",
+          row.short_id || "",
+          row.event_date || "",
+        ),
+      ),
+  );
+}
+
+async function recomputeCachedDatesFromDetails(env, dates) {
+  const uniqueDates = [...new Set(dates)].filter(Boolean);
+  const daily = dailyTable(env);
+  const details = replyDetailsTable(env);
+
+  for (const date of uniqueDates) {
+    await env.DB.prepare(`DELETE FROM ${daily} WHERE date = ?`).bind(date).run();
+    await env.DB
+      .prepare(
+        `INSERT INTO ${daily}
+          (date, agent_id, agent_name, agent_email, handled_tickets, cached_at)
+         SELECT
+          date,
+          agent_id,
+          COALESCE(MAX(NULLIF(agent_name, '')), agent_id),
+          COALESCE(MAX(NULLIF(agent_email, '')), ''),
+          COUNT(*),
+          CURRENT_TIMESTAMP
+         FROM ${details}
+         WHERE date = ?
+         GROUP BY date, agent_id`,
+      )
+      .bind(date)
+      .run();
+  }
+}
+
+async function writeCachedDetailsByDate(env, fallbackDate, detailRows, { resetDates = [] } = {}) {
+  const dates = new Set([...resetDates, ...datesFromDetails(detailRows, fallbackDate)]);
+  if (resetDates.length) await resetCachedDates(env, resetDates);
+
+  await insertReplyDetails(env, detailRows);
+  await recomputeCachedDatesFromDetails(env, dates);
+
+  if (!dates.size) return [];
+  const sortedDates = [...dates].sort();
+  return readCachedRange(env, sortedDates[0], sortedDates[sortedDates.length - 1]);
+}
+
 function filterRows(rows, filters, agentDirectory = new Map()) {
+  return rows.filter((row) => matchesFilters(row.agent_id, filters, agentDirectory));
+}
+
+function filterDetailRows(rows, filters, agentDirectory = new Map()) {
   return rows.filter((row) => matchesFilters(row.agent_id, filters, agentDirectory));
 }
 
@@ -420,6 +561,10 @@ function dateKeysBetween(fromDate, toDate) {
     dates.push(current);
   }
   return dates;
+}
+
+function dateKeysForRange(from, to, timezoneOffsetMinutes) {
+  return dateKeysBetween(dateKey(from, timezoneOffsetMinutes), dateKey(new Date(to.getTime() - 1), timezoneOffsetMinutes));
 }
 
 async function listTicketsForRange(env, from, to) {
@@ -480,6 +625,7 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory, 
   const handled = [];
 
   for (const ticket of tickets) {
+    const ticketId = normalizeTicketId(ticket);
     const shortId = normalizeTicketShortId(ticket);
     const events = analyticsAgentMessageEvents(ticket);
 
@@ -496,6 +642,7 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory, 
         agent_id: agent.id,
         agent_name: agent.name || agent.id,
         agent_email: agent.email || "",
+        ticket_id: ticketId,
         short_id: shortId,
         event_date: eventDate.toISOString(),
         event_key: await analyticsEventUniqueKey({ event, ticket, agent, messageDate: eventDate }),
@@ -520,7 +667,7 @@ async function computeNewAnalyticsEvents(env, from, to, timezoneOffsetMinutes, a
   return reserved;
 }
 
-function rowsToResponse(rows, from, to, agentDirectory, cache = {}) {
+function rowsToResponse(rows, from, to, agentDirectory, cache = {}, detailRows = []) {
   const agentsById = new Map();
   for (const row of rows) {
     const profile = agentDirectory.get(String(row.agent_id)) || {};
@@ -543,6 +690,40 @@ function rowsToResponse(rows, from, to, agentDirectory, cache = {}) {
     agent.total_tickets += replies;
     agent.total_replies += replies;
     agent.days.push({ date: row.date, tickets: replies, replies });
+  }
+
+  for (const detail of detailRows || []) {
+    const agentId = String(detail.agent_id || "");
+    if (!agentId) continue;
+    const profile = agentDirectory.get(agentId) || {};
+    if (!agentsById.has(agentId)) {
+      agentsById.set(agentId, {
+        agent_id: agentId,
+        id: agentId,
+        name: detail.agent_name || profile.name || agentId,
+        email: detail.agent_email || profile.email || agentId,
+        total_tickets: 0,
+        total_replies: 0,
+        days: [],
+      });
+    }
+    const agent = agentsById.get(agentId);
+    if (!agent.reply_details) agent.reply_details = [];
+    agent.reply_details.push({
+      date: detail.date || "",
+      ticket_id: detail.ticket_id || "",
+      short_id: detail.short_id || detail.ticket_id || "",
+      event_date: detail.event_date || "",
+      event_key: detail.event_key || "",
+      points: 1,
+    });
+  }
+
+  for (const agent of agentsById.values()) {
+    agent.reply_details = (agent.reply_details || []).sort((left, right) => {
+      const dateOrder = `${left.date || ""}`.localeCompare(`${right.date || ""}`);
+      return dateOrder || `${left.event_date || ""}`.localeCompare(`${right.event_date || ""}`) || `${left.short_id || ""}`.localeCompare(`${right.short_id || ""}`);
+    });
   }
 
   const agents = Array.from(agentsById.values()).sort((left, right) => right.total_tickets - left.total_tickets);
@@ -574,6 +755,7 @@ function rowsToResponse(rows, from, to, agentDirectory, cache = {}) {
       account_daily_timeline: true,
       cached_past_days: true,
       public_agent_reply_counts: true,
+      agent_reply_details: true,
       source: "ticket_last_message_scan_agent_public_reply_events",
     },
   };
@@ -608,7 +790,7 @@ export async function syncHelpDeskAnalyticsWindow(env, { from, to, timezoneOffse
 
   for (const range of splitRangeByLocalDay(from, to, timezoneOffsetMinutes)) {
     const importedDetails = await computeNewAnalyticsEvents(env, range.from, range.to, timezoneOffsetMinutes, agentDirectory);
-    await writeCachedDay(env, range.date, importedDetails, { markFetched: false });
+    await writeCachedDetailsByDate(env, range.date, importedDetails);
     affectedDates.add(range.date);
     detailRows += importedDetails.length;
   }
@@ -648,6 +830,8 @@ export async function onRequest(context) {
     if (!Number.isFinite(timezoneOffsetMinutes)) return errorResponse("Invalid timezone offset", 400);
 
     const localDate = dateKey(eventFrom, timezoneOffsetMinutes);
+    const rangeDates = dateKeysForRange(eventFrom, eventTo, timezoneOffsetMinutes);
+    const rangeToDate = rangeDates[rangeDates.length - 1] || localDate;
     const shouldImport = url.searchParams.get("import") === "1";
     const shouldResetDate = url.searchParams.get("reset_date") === "1";
     const shouldFinalizeDate = url.searchParams.get("finalize_date") === "1";
@@ -665,22 +849,31 @@ export async function onRequest(context) {
       const rangeFromDate = dateKey(from, timezoneOffsetMinutes);
       const rangeToDate = dateKey(new Date(to.getTime() - 1), timezoneOffsetMinutes);
       const cachedRangeRows = await readCachedRange(context.env, rangeFromDate, rangeToDate);
+      const cachedDetailRows = await readCachedDetailsRange(context.env, rangeFromDate, rangeToDate);
       const rows = filterRows(cachedRangeRows, filters, agentDirectory);
+      const detailRows = filterDetailRows(cachedDetailRows, filters, agentDirectory);
       const expectedDates = dateKeysBetween(rangeFromDate, rangeToDate);
       const datesWithRows = new Set(cachedRangeRows.map((row) => row.date));
       const missingDays = expectedDates.filter((date) => !datesWithRows.has(date)).length;
       return json(
-        rowsToResponse(rows, from, to, agentDirectory, {
-          date: rangeFromDate,
-          from_date: rangeFromDate,
-          to_date: rangeToDate,
-          checked: true,
-          hit: cachedRangeRows.length > 0,
-          source: "d1_range",
-          missing: missingDays > 0,
-          missing_days: missingDays,
-          saved: false,
-        }),
+        rowsToResponse(
+          rows,
+          from,
+          to,
+          agentDirectory,
+          {
+            date: rangeFromDate,
+            from_date: rangeFromDate,
+            to_date: rangeToDate,
+            checked: true,
+            hit: cachedRangeRows.length > 0,
+            source: "d1_range",
+            missing: missingDays > 0,
+            missing_days: missingDays,
+            saved: false,
+          },
+          detailRows,
+        ),
       );
     }
 
@@ -697,22 +890,33 @@ export async function onRequest(context) {
     let rows = cachedRows ? filterRows(cachedRows, filters, agentDirectory) : [];
 
     if (shouldFinalizeDate) {
-      await finalizeCachedDay(context.env, localDate);
-      const finalizedRows = await readCachedDay(context.env, localDate);
+      await finalizeCachedDates(context.env, rangeDates);
+      const finalizedRows = await readCachedRange(context.env, localDate, rangeToDate);
+      const finalizedDetailRows = await readCachedDetailsRange(context.env, localDate, rangeToDate);
       rows = filterRows(finalizedRows || [], filters, agentDirectory);
+      const detailRows = filterDetailRows(finalizedDetailRows || [], filters, agentDirectory);
       cacheMeta.hit = true;
       cacheMeta.missing = false;
       cacheMeta.saved = true;
       cacheMeta.source = "helpdesk_import_finalized";
+      cacheMeta.from_date = localDate;
+      cacheMeta.to_date = rangeToDate;
+      return json(rowsToResponse(rows, from, to, agentDirectory, cacheMeta, detailRows));
     } else if (shouldImport) {
-      if (shouldResetDate) await resetCachedDay(context.env, localDate);
       const importedDetails = await computeDay(context.env, from, to, timezoneOffsetMinutes, agentDirectory, { eventFrom, eventTo });
-      const summaryRows = await writeCachedDay(context.env, localDate, importedDetails, { markFetched: isFullDayCacheWrite });
+      const summaryRows = await writeCachedDetailsByDate(context.env, localDate, importedDetails, {
+        resetDates: shouldResetDate ? rangeDates : [],
+      });
+      const savedDetailRows = await readCachedDetailsRange(context.env, localDate, rangeToDate);
       rows = filterRows(summaryRows, filters, agentDirectory);
+      const detailRows = filterDetailRows(savedDetailRows || [], filters, agentDirectory);
       cacheMeta.hit = false;
       cacheMeta.missing = !isFullDayCacheWrite;
       cacheMeta.saved = true;
       cacheMeta.source = isFullDayCacheWrite ? "helpdesk_import_saved" : "helpdesk_import_partial_saved";
+      cacheMeta.from_date = localDate;
+      cacheMeta.to_date = rangeToDate;
+      return json(rowsToResponse(rows, from, to, agentDirectory, cacheMeta, detailRows));
     } else if (!cachedRows && (await hasCachedDay(context.env, localDate))) {
       cacheMeta.hit = true;
       cacheMeta.missing = false;

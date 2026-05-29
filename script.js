@@ -2507,6 +2507,54 @@ function helpdeskAnalyticsAgentDayMap(agent) {
   return new Map((agent.days || []).map((day) => [day.date, day]));
 }
 
+function helpdeskAgentReplyDetails(agent) {
+  return [...(agent.reply_details || [])].sort((left, right) => {
+    const dateOrder = `${left.date || ""}`.localeCompare(`${right.date || ""}`);
+    return dateOrder || `${left.event_date || ""}`.localeCompare(`${right.event_date || ""}`) || `${left.short_id || ""}`.localeCompare(`${right.short_id || ""}`);
+  });
+}
+
+function renderHelpdeskAgentReplyDetail(agent, colSpan) {
+  const details = helpdeskAgentReplyDetails(agent);
+  const rows = details.length
+    ? details
+        .map(
+          (detail) => `
+            <tr>
+              <td>${escapeHtml(detail.date || "-")}</td>
+              <td><strong>${escapeHtml(detail.short_id || detail.ticket_id || "-")}</strong></td>
+              <td>${escapeHtml(formatHelpdeskDateTime(detail.event_date))}</td>
+              <td>${Number(detail.points || 1)}</td>
+            </tr>
+          `,
+        )
+        .join("")
+    : `<tr><td colspan="4"><div class="empty-state">No reply details for this agent in the selected range.</div></td></tr>`;
+
+  return `
+    <tr class="analytics-agent-detail-row">
+      <td colspan="${colSpan}">
+        <div class="analytics-ticket-detail">
+          <div class="analytics-ticket-detail-title">${escapeHtml(helpdeskAgentLabel(agent))} reply points</div>
+          <div class="analytics-ticket-table-wrap">
+            <table class="analytics-ticket-table">
+              <thead>
+                <tr>
+                  <th>Counted date</th>
+                  <th>Ticket short ID</th>
+                  <th>Reply time</th>
+                  <th>Points</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
 function helpdeskAnalyticsPeriodLabel(filters = activeHelpdeskAnalyticsFilters()) {
   if (!filters.from || !filters.to) return "Selected period";
   return `${localDateValue(filters.from)} to ${localDateValue(filters.to)}`;
@@ -3801,6 +3849,7 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
           total_tickets: 0,
           total_replies: 0,
           days: [],
+          reply_details: [],
         });
       }
       const current = agentsById.get(key);
@@ -3810,6 +3859,7 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
       current.total_tickets += replies;
       current.total_replies += replies;
       current.days.push(...(agent.days || []));
+      current.reply_details.push(...(agent.reply_details || []));
     }
   }
 
@@ -3940,7 +3990,7 @@ async function fetchHelpdeskAnalyticsCachedRange(filters) {
   return api(`/api/helpdesk/analytics?${params.toString()}`);
 }
 
-async function finalizeHelpdeskAnalyticsDay(range, filters) {
+async function finalizeHelpdeskAnalyticsRange(range, filters) {
   const params = new URLSearchParams();
   params.append("from", dateWithOffset(range.from));
   params.append("to", dateWithOffset(range.to));
@@ -3953,7 +4003,7 @@ async function finalizeHelpdeskAnalyticsDay(range, filters) {
   return api(`/api/helpdesk/analytics?${params.toString()}`);
 }
 
-function helpdeskImportScanChunks(range, scanTo = new Date()) {
+function helpdeskImportScanChunks(range, scanTo = range.to) {
   const chunks = [];
   const scanEnd = new Date(Math.max(range.from.getTime(), scanTo.getTime()));
 
@@ -3984,57 +4034,53 @@ function helpdeskImportScanChunks(range, scanTo = new Date()) {
 
 async function importHelpdeskAnalyticsFullDay(range, filters) {
   const skippedBefore = state.helpdesk_analytics.loadProgress?.skippedChunks || 0;
-  const dayLabel = range.from.toLocaleDateString("en-US", { month: "short", day: "numeric" });
   const chunks = helpdeskImportScanChunks(range);
+  const rangeLabel = `${range.from.toLocaleDateString("en-US", { month: "short", day: "numeric" })} - ${range.to.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
 
   for (const [index, chunk] of chunks.entries()) {
-    state.helpdesk_analytics.loadStatus = `Scanning ${dayLabel} replies by last message (${index + 1}/${chunks.length})...`;
+    if (state.helpdesk_analytics.loadProgress) state.helpdesk_analytics.loadProgress.current = index;
+    state.helpdesk_analytics.loadStatus = `Scanning ${rangeLabel} replies by last message (${index + 1}/${chunks.length})...`;
     renderHelpdeskAnalytics();
     await fetchHelpdeskAnalyticsRange(chunk, filters, 0, true);
+    if (state.helpdesk_analytics.loadProgress) state.helpdesk_analytics.loadProgress.current = index + 1;
+    renderHelpdeskAnalytics();
     if (index < chunks.length - 1) await sleep(250);
   }
 
-  state.helpdesk_analytics.loadStatus = `Saving ${dayLabel} analytics...`;
+  state.helpdesk_analytics.loadStatus = `Saving ${rangeLabel} analytics...`;
   renderHelpdeskAnalytics();
-  const finalized = await finalizeHelpdeskAnalyticsDay(range, filters);
+  const finalized = await finalizeHelpdeskAnalyticsRange(range, filters);
   const skippedChunks = (state.helpdesk_analytics.loadProgress?.skippedChunks || 0) - skippedBefore;
   if (skippedChunks) finalized.cache = { ...(finalized.cache || {}), skipped_slices: skippedChunks };
   return [finalized];
 }
 
 async function fetchHelpdeskAnalyticsDayResponses(filters, importMode = false) {
-  const ranges = helpdeskAnalyticsDayRanges(filters.from, filters.to);
-  const responses = [];
-
   if (importMode) {
+    const range = {
+      from: filters.from,
+      to: filters.to,
+      cacheFullDay: true,
+    };
+    const chunks = helpdeskImportScanChunks(range);
     state.helpdesk_analytics.loadProgress = {
       current: 0,
-      total: ranges.length,
+      total: chunks.length,
+      unit: "requests",
       cacheHits: 0,
       savedDays: 0,
       liveDays: 0,
       skippedChunks: 0,
     };
+    return importHelpdeskAnalyticsFullDay(range, filters);
   }
 
-  for (const [index, range] of ranges.entries()) {
-    if (importMode) {
-      state.helpdesk_analytics.loadProgress.current = index;
-      state.helpdesk_analytics.loadStatus = `Preparing import ${index + 1}/${ranges.length}...`;
-      renderHelpdeskAnalytics();
-    }
+  const ranges = helpdeskAnalyticsDayRanges(filters.from, filters.to);
+  const responses = [];
 
+  for (const [index, range] of ranges.entries()) {
     const result = await fetchHelpdeskAnalyticsRange(range, filters, 0, importMode);
     responses.push(...result);
-
-    if (importMode) {
-      state.helpdesk_analytics.loadProgress.current = index + 1;
-      renderHelpdeskAnalytics();
-    }
-
-    if (importMode && index < ranges.length - 1) {
-      await sleep(250);
-    }
   }
 
   return responses;
@@ -4842,6 +4888,9 @@ function renderLeaderboard() {
   sortedAgents.forEach((agent, index) => {
     const rank = index + 1;
     const rankLabel = rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : String(rank);
+    const agentKey = String(agent.agent_id || agent.id || "");
+    const isExpanded = state.helpdesk_analytics.expandedAgents.has(agentKey);
+    const detailCount = helpdeskAgentReplyDetails(agent).length;
 
     const row = document.createElement("tr");
 
@@ -4854,9 +4903,17 @@ function renderLeaderboard() {
     agentCell.className = "col-agent sticky-left";
     agentCell.innerHTML = `
       <div class="analytics-agent-cell">
+          <button
+            class="btn btn-sm btn-outline-secondary analytics-agent-toggle"
+            type="button"
+            data-helpdesk-agent-toggle="${escapeHtml(agentKey)}"
+            title="${isExpanded ? "Hide reply tickets" : "Show reply tickets"}"
+            aria-label="${isExpanded ? "Hide reply tickets" : "Show reply tickets"}"
+          >${isExpanded ? "-" : "+"}</button>
         <div class="analytics-agent-copy">
           <div class="analytics-agent-main">${escapeHtml(helpdeskAgentLabel(agent))}</div>
           ${helpdeskAgentSubLabel(agent) ? `<div class="analytics-agent-sub">${escapeHtml(helpdeskAgentSubLabel(agent))}</div>` : ""}
+            <div class="analytics-agent-sub">${detailCount} ticket point${detailCount === 1 ? "" : "s"}</div>
         </div>
       </div>
     `;
@@ -4878,8 +4935,10 @@ function renderLeaderboard() {
       td.textContent = dayData.tickets || "—";
       row.appendChild(td);
     });
-
     tbody.appendChild(row);
+    if (isExpanded) {
+      tbody.insertAdjacentHTML("beforeend", renderHelpdeskAgentReplyDetail(agent, 3 + columnHeaders.length));
+    }
   });
 
   table.appendChild(tbody);
@@ -4891,6 +4950,18 @@ function renderLeaderboard() {
     container.appendChild(leaderboardSection);
   }
   leaderboardSection.appendChild(wrapper);
+  wrapper.querySelectorAll("[data-helpdesk-agent-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const agentId = button.getAttribute("data-helpdesk-agent-toggle") || "";
+      if (!agentId) return;
+      if (state.helpdesk_analytics.expandedAgents.has(agentId)) {
+        state.helpdesk_analytics.expandedAgents.delete(agentId);
+      } else {
+        state.helpdesk_analytics.expandedAgents.add(agentId);
+      }
+      renderHelpdeskAnalytics();
+    });
+  });
 }
 
 async function fetchAnalytics() {

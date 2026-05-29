@@ -302,6 +302,7 @@ body {
 .analytics-agent-toggle {
   padding: 3px 8px;
   font-size: 12px;
+  min-width: 30px;
 }
 
 .analytics-filter-empty {
@@ -403,9 +404,16 @@ body {
   background: #ece8fb;
 }
 
+.helpdesk-leaderboard-table .analytics-agent-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .analytics-agent-detail-row td {
   background: rgba(248, 251, 255, 0.96);
   padding: 14px;
+  white-space: normal;
 }
 
 .analytics-ticket-detail {
