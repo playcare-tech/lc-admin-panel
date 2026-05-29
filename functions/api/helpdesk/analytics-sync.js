@@ -1,10 +1,12 @@
 import { requireAuth, safeEqualText } from "../../_lib/auth.js";
 import { accountTableName, withAccountContext } from "../../_lib/accounts.js";
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
+import { writeLogSafely } from "../../_lib/logs.js";
 import { syncHelpDeskAnalyticsWindow } from "./analytics.js";
 
 const SYNC_META_TABLE_BASE = "helpdesk_analytics_sync_meta";
 const SYNC_STRATEGY = "last_message_hourly_v1";
+const SYNC_LOG_ACTION = "helpdesk_sync_tickets";
 const DEFAULT_WINDOW_MINUTES = 60;
 const DEFAULT_DELAY_MINUTES = 60;
 const DEFAULT_OVERLAP_MINUTES = 0;
@@ -80,18 +82,37 @@ function hasBearerAccess(request, env) {
   return safeEqualText(header, `Bearer ${token}`);
 }
 
+function syncActor(context) {
+  return hasBearerAccess(context.request, context.env) ? "system:helpdesk-sync" : "admin";
+}
+
 async function authenticate(context) {
-  if (hasBearerAccess(context.request, context.env)) return null;
+  if (hasBearerAccess(context.request, context.env)) return { session: null };
   const auth = await requireAuth(context);
-  return auth.error || null;
+  return auth.error ? { error: auth.error } : auth;
+}
+
+function syncLogMetadata({ body = {}, from, to, timezoneOffsetMinutes, result = null, error = null } = {}) {
+  return {
+    from: from?.toISOString?.() || "",
+    to: to?.toISOString?.() || "",
+    timezoneOffsetMinutes,
+    windowMinutes: body.windowMinutes ?? DEFAULT_WINDOW_MINUTES,
+    delayMinutes: body.delayMinutes ?? DEFAULT_DELAY_MINUTES,
+    overlapMinutes: body.overlapMinutes ?? DEFAULT_OVERLAP_MINUTES,
+    detailRows: Number(result?.detail_rows || 0),
+    dates: result?.dates || [],
+    skipped: Boolean(result?.skipped),
+    error: error?.message || "",
+  };
 }
 
 export async function onRequest(context) {
   if (!["GET", "POST"].includes(context.request.method)) return methodNotAllowed(["GET", "POST"]);
 
   context = withAccountContext(context);
-  const authError = await authenticate(context);
-  if (authError) return authError;
+  const auth = await authenticate(context);
+  if (auth.error) return auth.error;
 
   try {
     const meta = await readSyncMeta(context.env);
@@ -116,6 +137,7 @@ export async function onRequest(context) {
       : new Date(to.getTime() - windowMinutes * 60000);
 
     if (to <= from) {
+      const result = { skipped: true };
       await writeSyncMeta(context.env, {
         sync_strategy: SYNC_STRATEGY,
         last_started_at: now.toISOString(),
@@ -127,8 +149,27 @@ export async function onRequest(context) {
         last_detail_rows: "0",
         last_dates: "",
       });
-      return json({ sync: syncStatusFromMeta(await readSyncMeta(context.env)), result: { skipped: true } });
+      await writeLogSafely(context.env, {
+        actor: auth.session?.user || syncActor(context),
+        area: "helpdesk",
+        action: SYNC_LOG_ACTION,
+        target: `${from.toISOString()} - ${to.toISOString()}`,
+        status: "skipped",
+        details: "HelpDesk sync tickets skipped because the sync window was empty.",
+        metadata: syncLogMetadata({ body, from, to, timezoneOffsetMinutes, result }),
+      });
+      return json({ sync: syncStatusFromMeta(await readSyncMeta(context.env)), result });
     }
+
+    await writeLogSafely(context.env, {
+      actor: auth.session?.user || syncActor(context),
+      area: "helpdesk",
+      action: SYNC_LOG_ACTION,
+      target: `${from.toISOString()} - ${to.toISOString()}`,
+      status: "started",
+      details: "HelpDesk sync tickets started.",
+      metadata: syncLogMetadata({ body, from, to, timezoneOffsetMinutes }),
+    });
 
     await writeSyncMeta(context.env, {
       sync_strategy: SYNC_STRATEGY,
@@ -153,6 +194,15 @@ export async function onRequest(context) {
         last_detail_rows: String(result.detail_rows || 0),
         last_dates: (result.dates || []).join(","),
       });
+      await writeLogSafely(context.env, {
+        actor: auth.session?.user || syncActor(context),
+        area: "helpdesk",
+        action: SYNC_LOG_ACTION,
+        target: `${result.from} - ${result.to}`,
+        status: "success",
+        details: `HelpDesk sync tickets completed with ${Number(result.detail_rows || 0)} reply event(s).`,
+        metadata: syncLogMetadata({ body, from, to, timezoneOffsetMinutes, result }),
+      });
       return json({ sync: syncStatusFromMeta(await readSyncMeta(context.env)), result });
     } catch (error) {
       const finishedAt = new Date().toISOString();
@@ -160,6 +210,15 @@ export async function onRequest(context) {
         last_finished_at: finishedAt,
         last_status: "error",
         last_error: "HelpDesk sync failed.",
+      });
+      await writeLogSafely(context.env, {
+        actor: auth.session?.user || syncActor(context),
+        area: "helpdesk",
+        action: SYNC_LOG_ACTION,
+        target: `${from.toISOString()} - ${to.toISOString()}`,
+        status: "error",
+        details: "HelpDesk sync tickets failed.",
+        metadata: syncLogMetadata({ body, from, to, timezoneOffsetMinutes, error }),
       });
       throw error;
     }

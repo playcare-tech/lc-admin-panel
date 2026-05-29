@@ -214,6 +214,8 @@ const state = {
   helpdesk: { agents: [], teams: [] },
   adminUsers: [],
   logs: [],
+  helpdeskSyncLogs: [],
+  logsView: "audit",
   logsWarning: "",
   livechatSearch: "",
   helpdeskSearch: "",
@@ -335,10 +337,6 @@ const state = {
       groupSearch: "",
     },
     appliedFilters: null,
-    importOptions: {
-      sliceMinutes: 1,
-      concurrency: 1,
-    },
     data: null,
     webhookStats: null,
     rawWebhooks: {
@@ -452,6 +450,8 @@ function resetAccountScopedState() {
   state.livechat = { agents: [], groups: [] };
   state.helpdesk = { agents: [], teams: [] };
   state.logs = [];
+  state.helpdeskSyncLogs = [];
+  state.logsView = "audit";
   state.logsWarning = "";
   state.livechatSearch = "";
   state.helpdeskSearch = "";
@@ -1608,8 +1608,8 @@ function renderNamedList(items, emptyLabel = "None") {
 
   return items
     .map((item) => {
-      const name = item.name || item.email || item.id || "-";
-      const priority = item.priority ? ` (${priorityLabel(item.priority)})` : "";
+      const name = typeof item === "string" ? item : item.name || item.email || item.id || "-";
+      const priority = typeof item === "string" ? "" : item.priority ? ` (${priorityLabel(item.priority)})` : "";
       return `<span class="chip">${escapeHtml(`${name}${priority}`)}</span>`;
     })
     .join("");
@@ -1818,39 +1818,115 @@ function renderLogMetadata(entry) {
     `);
   }
 
+  if (metadata.from || metadata.to) {
+    rows.push(`
+      <div class="log-grid-two">
+        <div class="log-row">
+          <div class="log-label">From</div>
+          <div class="log-value">${escapeHtml(metadata.from || "n/a")}</div>
+        </div>
+        <div class="log-row">
+          <div class="log-label">To</div>
+          <div class="log-value">${escapeHtml(metadata.to || "n/a")}</div>
+        </div>
+      </div>
+    `);
+  }
+
+  if (metadata.detailRows !== undefined || metadata.windowMinutes !== undefined || metadata.delayMinutes !== undefined) {
+    rows.push(`
+      <div class="log-grid-three">
+        <div class="log-row">
+          <div class="log-label">Ticket events</div>
+          <div class="log-value">${escapeHtml(String(metadata.detailRows ?? 0))}</div>
+        </div>
+        <div class="log-row">
+          <div class="log-label">Window</div>
+          <div class="log-value">${escapeHtml(String(metadata.windowMinutes ?? "n/a"))} min</div>
+        </div>
+        <div class="log-row">
+          <div class="log-label">Delay</div>
+          <div class="log-value">${escapeHtml(String(metadata.delayMinutes ?? "n/a"))} min</div>
+        </div>
+      </div>
+    `);
+  }
+
+  if (metadata.dates?.length) {
+    rows.push(`
+      <div class="log-row">
+        <div class="log-label">Dates</div>
+        <div class="log-value chip-list">${renderNamedList(metadata.dates)}</div>
+      </div>
+    `);
+  }
+
+  if (metadata.error) {
+    rows.push(`
+      <div class="log-row">
+        <div class="log-label">Error</div>
+        <div class="log-value">${escapeHtml(metadata.error)}</div>
+      </div>
+    `);
+  }
+
   return rows.length ? `<div class="log-details">${rows.join("")}</div>` : "";
 }
 
+function isHelpdeskSyncLog(entry) {
+  return entry?.area === "helpdesk" && entry?.action === "helpdesk_sync_tickets";
+}
+
+function renderLogCards(entries, emptyText) {
+  return entries.length
+    ? entries
+        .map(
+          (entry) => `
+            <div class="card-shell mb-2">
+              <div class="chip-list mb-2">
+                <span class="chip">${escapeHtml(entry.area)}</span>
+                <span class="chip">${escapeHtml(entry.action)}</span>
+                <span class="chip">${escapeHtml(entry.status)}</span>
+                <span class="chip">${new Date(entry.created_at).toLocaleString()}</span>
+              </div>
+              <div class="log-target">${escapeHtml(entry.target || "")}</div>
+              <div class="subtle mt-1">${escapeHtml(entry.details || "")}</div>
+              ${renderLogMetadata(entry)}
+            </div>
+          `,
+        )
+        .join("")
+    : `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
+}
+
 function renderLogs() {
+  const activeView = state.logsView === "helpdesk_sync" ? "helpdesk_sync" : "audit";
+  const auditLogs = state.logs.filter((entry) => !isHelpdeskSyncLog(entry));
+  const helpdeskSyncLogs = state.helpdeskSyncLogs.length
+    ? state.helpdeskSyncLogs
+    : state.logs.filter((entry) => isHelpdeskSyncLog(entry));
+  const visibleLogs = activeView === "helpdesk_sync" ? helpdeskSyncLogs : auditLogs;
+  const emptyText = activeView === "helpdesk_sync"
+    ? state.logsWarning || "No HelpDesk sync tickets logs available."
+    : state.logsWarning || "No audit logs available.";
+
   return `
     ${renderStats([
-      { label: "Rows", value: state.logs.length, meta: "Loaded from D1" },
+      { label: "Rows", value: visibleLogs.length, meta: "Loaded from D1" },
       { label: "Status", value: state.logsWarning ? "Warn" : "OK", meta: state.logsWarning || "Logs available" },
-      { label: "Area", value: "Audit", meta: "Latest events" },
+      { label: "Area", value: activeView === "helpdesk_sync" ? "HelpDesk" : "Audit", meta: "Latest events" },
       { label: "Mode", value: "Read", meta: "Newest first" },
     ])}
+    <div class="analytics-view-tabs log-view-tabs">
+      <button class="btn btn-sm ${activeView === "audit" ? "btn-primary" : "btn-outline-secondary"}" type="button" data-log-view="audit">
+        Audit
+      </button>
+      <button class="btn btn-sm ${activeView === "helpdesk_sync" ? "btn-primary" : "btn-outline-secondary"}" type="button" data-log-view="helpdesk_sync">
+        HelpDesk sync tickets
+      </button>
+    </div>
     <div class="table-shell">
-      ${
-        state.logs.length
-          ? state.logs
-              .map(
-                (entry) => `
-                  <div class="card-shell mb-2">
-                    <div class="chip-list mb-2">
-                      <span class="chip">${escapeHtml(entry.area)}</span>
-                      <span class="chip">${escapeHtml(entry.action)}</span>
-                      <span class="chip">${escapeHtml(entry.status)}</span>
-                      <span class="chip">${new Date(entry.created_at).toLocaleString()}</span>
-                    </div>
-                    <div class="log-target">${escapeHtml(entry.target || "")}</div>
-                    <div class="subtle mt-1">${escapeHtml(entry.details || "")}</div>
-                    ${renderLogMetadata(entry)}
-                  </div>
-                `,
-              )
-              .join("")
-          : `<div class="empty-state">${escapeHtml(state.logsWarning || "No logs available.")}</div>`
-      }
+      ${renderLogCards(visibleLogs, emptyText)}
     </div>
   `;
 }
@@ -2482,7 +2558,7 @@ function htmlTableForHelpdeskAnalyticsExport() {
   const { days, rows, summary } = helpdeskAnalyticsExportRows();
   const totalTickets = state.helpdesk_analytics.data?.summary?.total_tickets || 0;
   const periodLabel = helpdeskAnalyticsPeriodLabel();
-  const headerCells = ["Rank", "Agent", "Email / ID", "Period tickets", ...days]
+  const headerCells = ["Rank", "Agent", "Email / ID", "Period replies", ...days]
     .map((value) => `<th>${escapeHtml(value)}</th>`)
     .join("");
   const summaryCells = [
@@ -3655,6 +3731,7 @@ function sleep(ms) {
 
 const HELPDESK_IMPORT_MAX_ATTEMPTS = 2;
 const HELPDESK_IMPORT_SPLIT_THRESHOLD_MS = 60 * 60 * 1000;
+const HELPDESK_IMPORT_SCAN_CHUNK_MS = 4 * 60 * 60 * 1000;
 
 function isSkippableHelpdeskImportError(message) {
   return /too many requests|rate limit|429|too many tickets|503|service unavailable|failed to load helpdesk analytics|request failed with 5|cpu|exceeded/i.test(
@@ -3667,11 +3744,11 @@ function skippedHelpdeskImportResponse(range, error) {
   if (progress) progress.skippedChunks = (progress.skippedChunks || 0) + 1;
   return {
     period: { from: range.from.toISOString(), to: range.to.toISOString() },
-    summary: { total_tickets: 0, active_agents: 0, prev_period: { total_tickets: 0, active_agents: 0 } },
+    summary: { total_tickets: 0, total_replies: 0, active_agents: 0, prev_period: { total_tickets: 0, total_replies: 0, active_agents: 0 } },
     agents: [],
     timeline: [],
     cache: {
-      date: localDateValue(range.from),
+      date: localDateValue(range.eventFrom || range.from),
       skipped: true,
       saved: false,
       missing: false,
@@ -3709,8 +3786,11 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
     if (response.cache?.hit) cachedDays += 1;
 
     for (const day of response.timeline || []) {
-      if (!timelineByDate.has(day.date)) timelineByDate.set(day.date, { date: day.date, tickets: 0 });
-      timelineByDate.get(day.date).tickets += Number(day.tickets || 0);
+      if (!timelineByDate.has(day.date)) timelineByDate.set(day.date, { date: day.date, tickets: 0, replies: 0 });
+      const replies = Number(day.replies ?? day.tickets ?? 0);
+      const timelineDay = timelineByDate.get(day.date);
+      timelineDay.tickets += replies;
+      timelineDay.replies += replies;
     }
 
     for (const agent of response.agents || []) {
@@ -3719,13 +3799,16 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
         agentsById.set(key, {
           ...agent,
           total_tickets: 0,
+          total_replies: 0,
           days: [],
         });
       }
       const current = agentsById.get(key);
       current.name = current.name || agent.name;
       current.email = current.email || agent.email;
-      current.total_tickets += Number(agent.total_tickets || 0);
+      const replies = Number(agent.total_replies ?? agent.total_tickets ?? 0);
+      current.total_tickets += replies;
+      current.total_replies += replies;
       current.days.push(...(agent.days || []));
     }
   }
@@ -3737,8 +3820,9 @@ function mergeHelpdeskAnalyticsResponses(responses, filters) {
     period: { from: filters.from.toISOString(), to: filters.to.toISOString() },
     summary: {
       total_tickets: totalTickets,
+      total_replies: totalTickets,
       active_agents: agents.filter((agent) => agent.total_tickets > 0).length,
-      prev_period: { total_tickets: 0, active_agents: 0 },
+      prev_period: { total_tickets: 0, total_replies: 0, active_agents: 0 },
     },
     agents,
     timeline: Array.from(timelineByDate.values()).sort((left, right) => left.date.localeCompare(right.date)),
@@ -3755,6 +3839,8 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
   const params = new URLSearchParams();
   params.append("from", dateWithOffset(range.from));
   params.append("to", dateWithOffset(range.to));
+  if (range.eventFrom) params.append("event_from", dateWithOffset(range.eventFrom));
+  if (range.eventTo) params.append("event_to", dateWithOffset(range.eventTo));
   if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
   if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
   if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
@@ -3763,7 +3849,7 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
   if (importMode && (range.resetDate || (depth === 0 && range.resetDate !== false))) params.append("reset_date", "1");
   params.append("tz_offset", String(new Date().getTimezoneOffset()));
 
-  const dayLabel = range.from.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const dayLabel = (range.eventFrom || range.from).toLocaleDateString("en-US", { month: "short", day: "numeric" });
   if (importMode) {
     state.helpdesk_analytics.loadStatus = `Importing ${dayLabel} from HelpDesk...`;
     renderHelpdeskAnalytics();
@@ -3798,14 +3884,28 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
       renderHelpdeskAnalytics();
       await sleep(10000);
       const first = await fetchHelpdeskAnalyticsRange(
-        { from: range.from, to: middle, cacheFullDay: false },
+        {
+          from: range.from,
+          to: middle,
+          eventFrom: range.eventFrom,
+          eventTo: range.eventTo,
+          cacheFullDay: false,
+          resetDate: range.resetDate,
+        },
         filters,
         depth + 1,
         importMode,
       );
       await sleep(500);
       const second = await fetchHelpdeskAnalyticsRange(
-        { from: middle, to: range.to, cacheFullDay: false },
+        {
+          from: middle,
+          to: range.to,
+          eventFrom: range.eventFrom,
+          eventTo: range.eventTo,
+          cacheFullDay: false,
+          resetDate: false,
+        },
         filters,
         depth + 1,
         importMode,
@@ -3814,7 +3914,7 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
     }
 
     if (attempt >= HELPDESK_IMPORT_MAX_ATTEMPTS) {
-      state.helpdesk_analytics.loadStatus = `Skipped ${localDateValue(range.from)} ${localTimeValue(range.from)}-${localTimeValue(range.to)} after ${HELPDESK_IMPORT_MAX_ATTEMPTS} failed attempts. Continuing...`;
+      state.helpdesk_analytics.loadStatus = `Skipped ${localDateValue(range.eventFrom || range.from)} scan ${localTimeValue(range.from)}-${localTimeValue(range.to)} after ${HELPDESK_IMPORT_MAX_ATTEMPTS} failed attempts. Continuing...`;
       renderHelpdeskAnalytics();
       return [skippedHelpdeskImportResponse(range, error)];
     }
@@ -3853,50 +3953,46 @@ async function finalizeHelpdeskAnalyticsDay(range, filters) {
   return api(`/api/helpdesk/analytics?${params.toString()}`);
 }
 
-function helpdeskImportSliceMs() {
-  const minutes = Number(state.helpdesk_analytics.importOptions.sliceMinutes || 10);
-  const safeMinutes = [1, 5, 10, 15, 30, 60].includes(minutes) ? minutes : 1;
-  return safeMinutes * 60 * 1000;
-}
-
-function helpdeskImportConcurrency() {
-  const concurrency = Number(state.helpdesk_analytics.importOptions.concurrency || 1);
-  return Math.min(10, Math.max(1, Number.isFinite(concurrency) ? Math.floor(concurrency) : 1));
-}
-
-async function runHelpdeskImportChunkBatch(chunks, filters, dayLabel, completedOffset = 0) {
-  const concurrency = helpdeskImportConcurrency();
-  for (let index = 0; index < chunks.length; index += concurrency) {
-    const batch = chunks.slice(index, index + concurrency);
-    const completed = completedOffset + index;
-    state.helpdesk_analytics.loadStatus = `Importing ${dayLabel} from HelpDesk (${completed + 1}-${completed + batch.length}/${completedOffset + chunks.length})...`;
-    renderHelpdeskAnalytics();
-    await Promise.all(batch.map((chunk) => fetchHelpdeskAnalyticsRange(chunk, filters, 0, true)));
-    if (index + concurrency < chunks.length) await sleep(500);
-  }
-}
-
-async function importHelpdeskAnalyticsFullDay(range, filters) {
+function helpdeskImportScanChunks(range, scanTo = new Date()) {
   const chunks = [];
-  const chunkMs = helpdeskImportSliceMs();
-  const skippedBefore = state.helpdesk_analytics.loadProgress?.skippedChunks || 0;
-  for (let start = range.from.getTime(); start < range.to.getTime(); start += chunkMs) {
+  const scanEnd = new Date(Math.max(range.from.getTime(), scanTo.getTime()));
+
+  for (let start = range.from.getTime(); start < scanEnd.getTime(); start += HELPDESK_IMPORT_SCAN_CHUNK_MS) {
     chunks.push({
       from: new Date(start),
-      to: new Date(Math.min(start + chunkMs, range.to.getTime())),
+      to: new Date(Math.min(start + HELPDESK_IMPORT_SCAN_CHUNK_MS, scanEnd.getTime())),
+      eventFrom: range.from,
+      eventTo: range.to,
       cacheFullDay: false,
       resetDate: chunks.length === 0,
     });
   }
 
-  const dayLabel = range.from.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  const firstChunk = chunks.shift();
-  if (firstChunk) {
-    state.helpdesk_analytics.loadStatus = `Importing ${dayLabel} from HelpDesk (1/${chunks.length + 1})...`;
-    renderHelpdeskAnalytics();
-    await fetchHelpdeskAnalyticsRange(firstChunk, filters, 0, true);
+  if (!chunks.length) {
+    chunks.push({
+      from: range.from,
+      to: new Date(range.from.getTime() + 1),
+      eventFrom: range.from,
+      eventTo: range.to,
+      cacheFullDay: false,
+      resetDate: true,
+    });
   }
-  await runHelpdeskImportChunkBatch(chunks, filters, dayLabel, firstChunk ? 1 : 0);
+
+  return chunks;
+}
+
+async function importHelpdeskAnalyticsFullDay(range, filters) {
+  const skippedBefore = state.helpdesk_analytics.loadProgress?.skippedChunks || 0;
+  const dayLabel = range.from.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const chunks = helpdeskImportScanChunks(range);
+
+  for (const [index, chunk] of chunks.entries()) {
+    state.helpdesk_analytics.loadStatus = `Scanning ${dayLabel} replies by last message (${index + 1}/${chunks.length})...`;
+    renderHelpdeskAnalytics();
+    await fetchHelpdeskAnalyticsRange(chunk, filters, 0, true);
+    if (index < chunks.length - 1) await sleep(250);
+  }
 
   state.helpdesk_analytics.loadStatus = `Saving ${dayLabel} analytics...`;
   renderHelpdeskAnalytics();
@@ -4319,26 +4415,9 @@ function renderHelpdeskAnalytics() {
 
   const actionBar = document.createElement("div");
   actionBar.className = "helpdesk-analytics-actions";
-  const importOptions = state.helpdesk_analytics.importOptions;
   actionBar.innerHTML = `
     <button id="helpdeskAnalyticsApplyBtn" class="btn btn-primary" type="button">Filter</button>
     <button id="helpdeskAnalyticsImportBtn" class="btn btn-outline-primary" type="button">Import from HelpDesk</button>
-    <label class="helpdesk-import-option">
-      <span>Slice</span>
-      <select id="helpdeskImportSlice" class="form-select form-select-sm">
-        ${[1, 5, 10, 15, 30, 60]
-          .map((minutes) => `<option value="${minutes}" ${Number(importOptions.sliceMinutes) === minutes ? "selected" : ""}>${minutes} min</option>`)
-          .join("")}
-      </select>
-    </label>
-    <label class="helpdesk-import-option">
-      <span>At once</span>
-      <select id="helpdeskImportConcurrency" class="form-select form-select-sm">
-        ${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-          .map((count) => `<option value="${count}" ${Number(importOptions.concurrency) === count ? "selected" : ""}>${count}</option>`)
-          .join("")}
-      </select>
-    </label>
     <button id="helpdeskAnalyticsPdfBtn" class="btn btn-outline-secondary" type="button" ${data ? "" : "disabled"}>Export PDF</button>
     <button id="helpdeskAnalyticsExcelBtn" class="btn btn-outline-secondary" type="button" ${data ? "" : "disabled"}>Export Excel</button>
     <button id="helpdeskAnalyticsResetBtn" class="btn btn-outline-secondary" type="button">Reset filters</button>
@@ -4385,12 +4464,6 @@ function renderHelpdeskAnalytics() {
   document.getElementById("helpdeskAnalyticsImportBtn")?.addEventListener("click", () => {
     importHelpdeskAnalytics();
   });
-  document.getElementById("helpdeskImportSlice")?.addEventListener("change", (event) => {
-    state.helpdesk_analytics.importOptions.sliceMinutes = Number(event.target.value || 10);
-  });
-  document.getElementById("helpdeskImportConcurrency")?.addEventListener("change", (event) => {
-    state.helpdesk_analytics.importOptions.concurrency = Number(event.target.value || 1);
-  });
   document.getElementById("helpdeskAnalyticsPdfBtn")?.addEventListener("click", () => {
     exportHelpdeskAnalyticsPdf();
   });
@@ -4420,7 +4493,7 @@ function renderHelpdeskAnalytics() {
     if (!loading && data.cache?.skipped_slices) {
       const skippedDiv = document.createElement("div");
       skippedDiv.className = "alert alert-warning";
-      skippedDiv.textContent = `${data.cache.skipped_slices} HelpDesk import slice(s) failed twice and were skipped. The import continued with the next slice.`;
+      skippedDiv.textContent = `${data.cache.skipped_slices} HelpDesk import request(s) failed twice and were skipped. The import continued with the next request.`;
       container.appendChild(skippedDiv);
     }
     renderMetricsAndPanels();
@@ -4607,7 +4680,7 @@ function renderMetricsAndPanels() {
   }
 
   metricsRow.appendChild(createMetricCard(
-    "Processed Tickets",
+    "Public Replies",
     currentSummary.total_tickets
   ));
   metricsRow.appendChild(createMetricCard(
@@ -4626,7 +4699,7 @@ function renderMetricsAndPanels() {
   const top5TicketsPanel = document.createElement("div");
   top5TicketsPanel.className = "top5-panel";
   const top5TicketsTitle = document.createElement("h6");
-  top5TicketsTitle.textContent = "Top 5 by Processed Tickets";
+  top5TicketsTitle.textContent = "Top 5 by Public Replies";
   top5TicketsPanel.appendChild(top5TicketsTitle);
 
   const top5TicketsList = document.createElement("ul");
@@ -4636,7 +4709,7 @@ function renderMetricsAndPanels() {
     .slice(0, 5)
     .forEach((agent) => {
       const li = document.createElement("li");
-      li.textContent = `${helpdeskAgentLabel(agent)} — ${agent.total_tickets} tickets`;
+      li.textContent = `${helpdeskAgentLabel(agent)} - ${agent.total_tickets} replies`;
       top5TicketsList.appendChild(li);
     });
   top5TicketsPanel.appendChild(top5TicketsList);
@@ -4712,7 +4785,7 @@ function renderLeaderboard() {
   const th3 = document.createElement("th");
   th3.className = "col-tickets sticky-left";
   th3.rowSpan = 2;
-  th3.textContent = "Processed Tickets";
+  th3.textContent = "Public Replies";
 
   headerRow.appendChild(th1);
   headerRow.appendChild(th2);
@@ -4731,7 +4804,7 @@ function renderLeaderboard() {
   columnHeaders.forEach(() => {
     const th = document.createElement("th");
     th.className = "col-period-sub";
-    th.textContent = "Tickets";
+    th.textContent = "Replies";
     subHeaderRow.appendChild(th);
   });
   thead.appendChild(subHeaderRow);
@@ -5928,6 +6001,7 @@ async function refreshData() {
     state.helpdeskWorkflows.webhookStats = workflowsResult.value.webhookStats || state.helpdeskWorkflows.webhookStats;
   }
   state.logs = logsResult.status === "fulfilled" ? logsResult.value.logs || [] : [];
+  state.helpdeskSyncLogs = logsResult.status === "fulfilled" ? logsResult.value.helpdeskSyncLogs || [] : [];
   state.logsWarning = logsResult.status === "fulfilled" ? logsResult.value.warning || "" : "Logs unavailable.";
 
   renderApp();
@@ -6145,6 +6219,13 @@ function bindAppEvents() {
   bindSearch("livechatCreateSearchInput", "livechatCreateSearch");
   bindSearch("helpdeskCreateSearchInput", "helpdeskCreateSearch");
   bindSearch("modalSearchInput", "modalSearch");
+
+  document.querySelectorAll("[data-log-view]").forEach((button) => {
+    button.onclick = () => {
+      state.logsView = button.dataset.logView === "helpdesk_sync" ? "helpdesk_sync" : "audit";
+      renderApp();
+    };
+  });
 
   document.getElementById("analyticsPreset")?.addEventListener("change", (event) => {
     state.analytics.filters.preset = event.target.value;

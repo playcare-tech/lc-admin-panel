@@ -35,6 +35,10 @@ function parseDateParam(value, name) {
   return date;
 }
 
+function parseOptionalDateParam(value, name, fallback) {
+  return value ? parseDateParam(value, name) : fallback;
+}
+
 function splitParam(value) {
   return (value || "")
     .split(",")
@@ -65,7 +69,7 @@ function normalizeTicketLastMessageDate(ticket) {
 }
 
 function normalizeEventDate(event) {
-  const value = event.date || event.createdAt || event.timestamp || event.created_at;
+  const value = event?.date || event?.createdAt || event?.timestamp || event?.created_at;
   const date = value ? new Date(value) : null;
   return isValidDate(date) ? date : null;
 }
@@ -150,10 +154,18 @@ function eventSourceType(value) {
   return `${source.type || value?.sourceType || value?.source_type || ""}`.toLowerCase();
 }
 
+function eventSourceDetail(value) {
+  const source = value?.source || value?.message?.source || {};
+  if (typeof source === "string") return "";
+  return `${source.detailedSource || source.detailed_source || value?.detailedSource || value?.detailed_source || ""}`.toLowerCase();
+}
+
+function isEmailSource(value) {
+  return eventSourceType(value) === "email" || eventSourceDetail(value) === "email";
+}
+
 function isEmailMessageEvent(event, ticket) {
-  const eventSource = eventSourceType(event);
-  if (eventSource) return eventSource === "email";
-  return eventSourceType(ticket) === "email";
+  return isEmailSource(event) || isEmailSource(ticket);
 }
 
 function isPrivateMessageEvent(event) {
@@ -184,8 +196,13 @@ function publicMessageEvents(ticket) {
 }
 
 function analyticsAgentMessageEvents(ticket) {
-  return publicMessageEvents(ticket).filter(
-    (event) => isPublicAgentMessageEvent(event) && isEmailMessageEvent(event, ticket) && !isConversationTranscriptEvent(event),
+  const publicEvents = publicMessageEvents(ticket);
+  const isEmailConversation = isEmailSource(ticket) || publicEvents.some((event) => isEmailSource(event));
+  return publicEvents.filter(
+    (event) =>
+      isPublicAgentMessageEvent(event) &&
+      (isEmailMessageEvent(event, ticket) || isEmailConversation) &&
+      !isConversationTranscriptEvent(event),
   );
 }
 
@@ -242,6 +259,7 @@ async function sha256Text(value) {
 }
 
 async function analyticsEventUniqueKey({ event, ticket, agent, messageDate }) {
+  const ticketId = normalizeTicketId(ticket);
   const directId = [
     event?.ID,
     event?.id,
@@ -254,11 +272,11 @@ async function analyticsEventUniqueKey({ event, ticket, agent, messageDate }) {
   ]
     .map((value) => `${value || ""}`.trim())
     .find(Boolean);
-  if (directId) return `direct:${directId}`;
+  if (directId) return ticketId ? `direct:${ticketId}:${directId}` : `direct:${directId}`;
 
   return `hash:${await sha256Text(
     JSON.stringify({
-      ticketId: normalizeTicketId(ticket),
+      ticketId,
       agentId: agent.id,
       date: messageDate.toISOString(),
       text: eventMessageText(event),
@@ -417,6 +435,7 @@ async function listTicketsForRange(env, from, to) {
     do {
       const params = new URLSearchParams({
         pageSize: String(PAGE_SIZE),
+        eventsScope: "full",
         order: "asc",
         sortBy: "lastMessageAt",
         status,
@@ -456,7 +475,7 @@ async function listTicketsForRange(env, from, to) {
   return Array.from(ticketsById.values());
 }
 
-async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory) {
+async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory, { eventFrom = from, eventTo = to } = {}) {
   const tickets = await listTicketsForRange(env, from, to);
   const handled = [];
 
@@ -466,7 +485,7 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory) 
 
     for (const event of events) {
       const eventDate = normalizeEventDate(event);
-      if (!eventDate || eventDate < from || eventDate >= to) continue;
+      if (!eventDate || eventDate < eventFrom || eventDate >= eventTo) continue;
 
       const agent = authorProfile(event, agentDirectory);
       if (!agent.id) continue;
@@ -491,7 +510,7 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory) 
 }
 
 async function computeNewAnalyticsEvents(env, from, to, timezoneOffsetMinutes, agentDirectory) {
-  const details = await computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory);
+  const details = await computeDay(env, from, new Date(), timezoneOffsetMinutes, agentDirectory, { eventFrom: from, eventTo: to });
   const reserved = [];
   for (const detail of details) {
     if (!detail.event_key || (await reserveAnalyticsMessageEvent(env, detail.event_key))) {
@@ -506,7 +525,7 @@ function rowsToResponse(rows, from, to, agentDirectory, cache = {}) {
   for (const row of rows) {
     const profile = agentDirectory.get(String(row.agent_id)) || {};
     const agentId = String(row.agent_id);
-    const tickets = Number(row.handled_tickets || 0);
+    const replies = Number(row.handled_tickets || 0);
     if (!agentsById.has(agentId)) {
       agentsById.set(agentId, {
         agent_id: agentId,
@@ -514,14 +533,16 @@ function rowsToResponse(rows, from, to, agentDirectory, cache = {}) {
         name: row.agent_name || profile.name || agentId,
         email: row.agent_email || profile.email || agentId,
         total_tickets: 0,
+        total_replies: 0,
         days: [],
       });
     }
     const agent = agentsById.get(agentId);
     agent.name = agent.name || row.agent_name || profile.name || agentId;
     agent.email = agent.email || row.agent_email || profile.email || agentId;
-    agent.total_tickets += tickets;
-    agent.days.push({ date: row.date, tickets });
+    agent.total_tickets += replies;
+    agent.total_replies += replies;
+    agent.days.push({ date: row.date, tickets: replies, replies });
   }
 
   const agents = Array.from(agentsById.values()).sort((left, right) => right.total_tickets - left.total_tickets);
@@ -529,16 +550,20 @@ function rowsToResponse(rows, from, to, agentDirectory, cache = {}) {
   const totalTickets = agents.reduce((sum, agent) => sum + agent.total_tickets, 0);
   const timelineByDate = new Map();
   for (const row of rows) {
-    if (!timelineByDate.has(row.date)) timelineByDate.set(row.date, { date: row.date, tickets: 0 });
-    timelineByDate.get(row.date).tickets += Number(row.handled_tickets || 0);
+    if (!timelineByDate.has(row.date)) timelineByDate.set(row.date, { date: row.date, tickets: 0, replies: 0 });
+    const replies = Number(row.handled_tickets || 0);
+    const timelineDay = timelineByDate.get(row.date);
+    timelineDay.tickets += replies;
+    timelineDay.replies += replies;
   }
 
   return {
     period: { from: from.toISOString(), to: to.toISOString() },
     summary: {
       total_tickets: totalTickets,
+      total_replies: totalTickets,
       active_agents: agents.filter((agent) => agent.total_tickets > 0).length,
-      prev_period: { total_tickets: 0, active_agents: 0 },
+      prev_period: { total_tickets: 0, total_replies: 0, active_agents: 0 },
     },
     agents,
     timeline: Array.from(timelineByDate.values()).sort((left, right) => left.date.localeCompare(right.date)),
@@ -548,7 +573,8 @@ function rowsToResponse(rows, from, to, agentDirectory, cache = {}) {
       per_agent_daily_metrics: true,
       account_daily_timeline: true,
       cached_past_days: true,
-      source: "ticket_last_message_email_agent_public_reply_events",
+      public_agent_reply_counts: true,
+      source: "ticket_last_message_scan_agent_public_reply_events",
     },
   };
 }
@@ -614,10 +640,14 @@ export async function onRequest(context) {
     const to = parseDateParam(url.searchParams.get("to"), "to");
     if (to <= from) return errorResponse("to must be after from", 400);
 
+    const eventFrom = parseOptionalDateParam(url.searchParams.get("event_from"), "event_from", from);
+    const eventTo = parseOptionalDateParam(url.searchParams.get("event_to"), "event_to", to);
+    if (eventTo <= eventFrom) return errorResponse("event_to must be after event_from", 400);
+
     const timezoneOffsetMinutes = Number(url.searchParams.get("tz_offset") || 0);
     if (!Number.isFinite(timezoneOffsetMinutes)) return errorResponse("Invalid timezone offset", 400);
 
-    const localDate = dateKey(from, timezoneOffsetMinutes);
+    const localDate = dateKey(eventFrom, timezoneOffsetMinutes);
     const shouldImport = url.searchParams.get("import") === "1";
     const shouldResetDate = url.searchParams.get("reset_date") === "1";
     const shouldFinalizeDate = url.searchParams.get("finalize_date") === "1";
@@ -676,7 +706,7 @@ export async function onRequest(context) {
       cacheMeta.source = "helpdesk_import_finalized";
     } else if (shouldImport) {
       if (shouldResetDate) await resetCachedDay(context.env, localDate);
-      const importedDetails = await computeDay(context.env, from, to, timezoneOffsetMinutes, agentDirectory);
+      const importedDetails = await computeDay(context.env, from, to, timezoneOffsetMinutes, agentDirectory, { eventFrom, eventTo });
       const summaryRows = await writeCachedDay(context.env, localDate, importedDetails, { markFetched: isFullDayCacheWrite });
       rows = filterRows(summaryRows, filters, agentDirectory);
       cacheMeta.hit = false;
