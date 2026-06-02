@@ -340,6 +340,7 @@ const state = {
     appliedFilters: null,
     data: null,
     webhookStats: null,
+    webhookStatsLoading: false,
     rawWebhooks: {
       loading: false,
       error: null,
@@ -4392,6 +4393,8 @@ function renderHelpdeskAnalyticsLoading(container) {
 
 // Task 8: Create fetchAnalytics Function for HelpDesk
 async function refreshHelpdeskAnalyticsWebhookStats({ render = false } = {}) {
+  if (state.helpdesk_analytics.webhookStatsLoading) return;
+  state.helpdesk_analytics.webhookStatsLoading = true;
   try {
     state.helpdesk_analytics.webhookStats = await api("/api/helpdesk/analytics-webhooks");
     if (render && state.section === "helpdesk-analytics") {
@@ -4399,7 +4402,28 @@ async function refreshHelpdeskAnalyticsWebhookStats({ render = false } = {}) {
     }
   } catch (error) {
     console.warn("Failed to load HelpDesk analytics webhook stats.", error);
+  } finally {
+    state.helpdesk_analytics.webhookStatsLoading = false;
   }
+}
+
+function renderHelpdeskAnalyticsWebhookMetrics(container) {
+  const stats = state.helpdesk_analytics.webhookStats;
+  const metricsRow = document.createElement("div");
+  metricsRow.className = "metrics-row d-flex gap-4 mb-4 flex-wrap";
+  metricsRow.innerHTML = `
+    <div class="analytics-card">
+      <div class="card-value">${stats ? Number(stats.received24h || 0).toLocaleString() : "..."}</div>
+      <hr class="card-divider" />
+      <div class="card-title">Webhooks Received · Last 24 Hours</div>
+    </div>
+    <div class="analytics-card">
+      <div class="card-value">${stats ? Number(stats.assignedPoints24h || 0).toLocaleString() : "..."}</div>
+      <hr class="card-divider" />
+      <div class="card-title">Messages Assigned as Points · Last 24 Hours</div>
+    </div>
+  `;
+  container.appendChild(metricsRow);
 }
 
 async function fetchHelpdeskAnalyticsRawWebhooks({ render = true } = {}) {
@@ -4615,6 +4639,7 @@ function renderHelpdeskAnalytics() {
   filterBarContainer.innerHTML = "";
   filterBarContainer.classList.remove("d-none");
   renderHelpdeskAnalyticsViewTabs(filterBarContainer);
+  renderHelpdeskAnalyticsWebhookMetrics(container);
 
   if (state.helpdesk_analytics.view === "raw") {
     renderHelpdeskAnalyticsRawWebhooks(container, filterBarContainer);
@@ -6290,6 +6315,13 @@ function renderApp() {
     state.helpdesk_analytics.filters.to = range.to;
     fetchHelpdeskAnalytics();
   }
+  if (
+    state.section === "helpdesk-analytics" &&
+    !state.helpdesk_analytics.webhookStats &&
+    !state.helpdesk_analytics.webhookStatsLoading
+  ) {
+    refreshHelpdeskAnalyticsWebhookStats({ render: true });
+  }
 
   if (state.section === "helpdesk-tickets") {
     startHelpdeskTicketsRealtime();
@@ -6322,12 +6354,13 @@ function renderApp() {
 async function refreshData() {
   setMessage(statusMessage, "Refreshing...");
 
-  const [livechatResult, helpdeskResult, adminUsersResult, logsResult, workflowsResult] = await Promise.allSettled([
+  const [livechatResult, helpdeskResult, adminUsersResult, logsResult, workflowsResult, helpdeskAnalyticsWebhookStatsResult] = await Promise.allSettled([
     api("/api/livechat/dashboard"),
     api("/api/helpdesk/dashboard"),
     api("/api/admin-users"),
     api("/api/logs"),
     api("/api/helpdesk/workflows"),
+    api("/api/helpdesk/analytics-webhooks"),
   ]);
 
   if (livechatResult.status === "fulfilled") {
@@ -6344,6 +6377,9 @@ async function refreshData() {
     state.helpdeskWorkflows.workflows = workflowsResult.value.workflows || [];
     state.helpdeskWorkflows.webhookStats = workflowsResult.value.webhookStats || state.helpdeskWorkflows.webhookStats;
   }
+  if (helpdeskAnalyticsWebhookStatsResult.status === "fulfilled") {
+    state.helpdesk_analytics.webhookStats = helpdeskAnalyticsWebhookStatsResult.value;
+  }
   state.logs = logsResult.status === "fulfilled" ? logsResult.value.logs || [] : [];
   state.helpdeskSyncLogs = logsResult.status === "fulfilled" ? logsResult.value.helpdeskSyncLogs || [] : [];
   state.logsWarning = logsResult.status === "fulfilled" ? logsResult.value.warning || "" : "Logs unavailable.";
@@ -6356,6 +6392,9 @@ async function refreshData() {
     adminUsersResult.status !== "fulfilled" ? `Admin users: ${adminUsersResult.reason.message}` : "",
     state.logsWarning,
     workflowsResult.status !== "fulfilled" ? `Workflows: ${workflowsResult.reason.message}` : "",
+    helpdeskAnalyticsWebhookStatsResult.status !== "fulfilled"
+      ? `HelpDesk analytics webhooks: ${helpdeskAnalyticsWebhookStatsResult.reason.message}`
+      : "",
   ].filter(Boolean);
 
   setMessage(

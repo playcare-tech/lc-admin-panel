@@ -101,6 +101,13 @@ CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_reply_details_v4_date ON helpd
 CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_reply_details_v4_agent ON helpdesk_analytics_reply_details_v4(agent_id);
 CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_reply_details_v4_date_agent ON helpdesk_analytics_reply_details_v4(date, agent_id);
 
+CREATE TABLE IF NOT EXISTS helpdesk_analytics_webhook_stats (
+  stat_hour TEXT PRIMARY KEY,
+  received_count INTEGER NOT NULL DEFAULT 0,
+  assigned_points_count INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT NOT NULL,
