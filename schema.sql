@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS analytics_agent_daily (
   PRIMARY KEY (date, agent_key)
 );
 
-CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily_v4 (
+CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily_v7 (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   date TEXT NOT NULL,
   agent_id TEXT NOT NULL,
@@ -104,10 +104,15 @@ CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily_v4 (
   UNIQUE(date, agent_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_v4_date ON helpdesk_analytics_daily_v4(date);
-CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_v4_agent ON helpdesk_analytics_daily_v4(agent_id);
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_v7_date ON helpdesk_analytics_daily_v7(date);
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_v7_agent ON helpdesk_analytics_daily_v7(agent_id);
 
-CREATE TABLE IF NOT EXISTS helpdesk_analytics_reply_details_v1 (
+CREATE TABLE IF NOT EXISTS helpdesk_analytics_message_events_v4 (
+  event_key TEXT PRIMARY KEY,
+  recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS helpdesk_analytics_reply_details_v4 (
   event_key TEXT PRIMARY KEY,
   date TEXT NOT NULL,
   agent_id TEXT NOT NULL,
@@ -119,9 +124,9 @@ CREATE TABLE IF NOT EXISTS helpdesk_analytics_reply_details_v1 (
   cached_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_reply_details_v1_date ON helpdesk_analytics_reply_details_v1(date);
-CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_reply_details_v1_agent ON helpdesk_analytics_reply_details_v1(agent_id);
-CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_reply_details_v1_date_agent ON helpdesk_analytics_reply_details_v1(date, agent_id);
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_reply_details_v4_date ON helpdesk_analytics_reply_details_v4(date);
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_reply_details_v4_agent ON helpdesk_analytics_reply_details_v4(agent_id);
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_reply_details_v4_date_agent ON helpdesk_analytics_reply_details_v4(date, agent_id);
 
 CREATE TABLE IF NOT EXISTS helpdesk_analytics_sync_meta (
   key TEXT PRIMARY KEY,

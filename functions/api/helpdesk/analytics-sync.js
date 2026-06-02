@@ -5,7 +5,7 @@ import { writeLogSafely } from "../../_lib/logs.js";
 import { syncHelpDeskAnalyticsWindow } from "./analytics.js";
 
 const SYNC_META_TABLE_BASE = "helpdesk_analytics_sync_meta";
-const SYNC_STRATEGY = "last_message_hourly_v1";
+const SYNC_STRATEGY = "all_status_ticket_updated_filtered_hourly_v2";
 const SYNC_LOG_ACTION = "helpdesk_sync_tickets";
 const DEFAULT_WINDOW_MINUTES = 60;
 const DEFAULT_DELAY_MINUTES = 60;

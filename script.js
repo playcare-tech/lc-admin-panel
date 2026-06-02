@@ -1,4 +1,5 @@
 const APP_URL = "https://lc-admin.pages.dev/";
+const HELPDESK_ANALYTICS_TZ_OFFSET_MINUTES = -120;
 const DEFAULT_HELPDESK_ANALYTICS_AGENT_EMAILS = [
   "aleksandr.lavrushkin@boomerang-partners.com",
 ];
@@ -611,6 +612,10 @@ function combineLocalDateAndTime(dateValue, timeValue, fallbackTime = "00:00") {
 
 function offsetForDate(date) {
   const offsetMinutes = -date.getTimezoneOffset();
+  return offsetForOffsetMinutes(offsetMinutes);
+}
+
+function offsetForOffsetMinutes(offsetMinutes) {
   const sign = offsetMinutes >= 0 ? "+" : "-";
   const absolute = Math.abs(offsetMinutes);
   return `${sign}${padDatePart(Math.floor(absolute / 60))}:${padDatePart(absolute % 60)}`;
@@ -618,6 +623,14 @@ function offsetForDate(date) {
 
 function dateWithOffset(date, offset = offsetForDate(date)) {
   return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}T${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}:${padDatePart(date.getSeconds())}${offset}`;
+}
+
+function helpdeskAnalyticsOffset() {
+  return offsetForOffsetMinutes(-HELPDESK_ANALYTICS_TZ_OFFSET_MINUTES);
+}
+
+function dateWithHelpdeskAnalyticsOffset(date) {
+  return dateWithOffset(date, helpdeskAnalyticsOffset());
 }
 
 function dateInputToReportDate(value, endOfDay = false, offset = "") {
@@ -2643,6 +2656,271 @@ function helpdeskAnalyticsExportFilename(extension) {
   return `helpdesk-analytics-${helpdeskAnalyticsPeriodLabel().replaceAll(" ", "-")}.${extension}`;
 }
 
+function xmlEscape(value) {
+  return `${value ?? ""}`
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function xlsxColumnName(index) {
+  let value = index + 1;
+  let name = "";
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    name = String.fromCharCode(65 + remainder) + name;
+    value = Math.floor((value - 1) / 26);
+  }
+  return name;
+}
+
+function xlsxCellXml(value, rowIndex, columnIndex) {
+  const ref = `${xlsxColumnName(columnIndex)}${rowIndex + 1}`;
+  if (typeof value === "number" && Number.isFinite(value)) return `<c r="${ref}"><v>${value}</v></c>`;
+  const text = `${value ?? ""}`;
+  const preserve = text.trim() !== text ? ' xml:space="preserve"' : "";
+  return `<c r="${ref}" t="inlineStr"><is><t${preserve}>${xmlEscape(text)}</t></is></c>`;
+}
+
+function xlsxWorksheetXml(rows) {
+  const rowXml = rows
+    .map((row, rowIndex) => `<row r="${rowIndex + 1}">${row.map((value, columnIndex) => xlsxCellXml(value, rowIndex, columnIndex)).join("")}</row>`)
+    .join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>${rowXml}</sheetData>
+</worksheet>`;
+}
+
+function safeXlsxSheetName(value, fallback) {
+  const name = `${value || fallback || "Sheet"}`
+    .replace(/[\\/?*:[\]]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^'+|'+$/g, "");
+  return (name || fallback || "Sheet").slice(0, 31);
+}
+
+function uniqueXlsxSheetName(value, usedNames, fallback) {
+  const base = safeXlsxSheetName(value, fallback);
+  let name = base;
+  let index = 2;
+  while (usedNames.has(name.toLowerCase())) {
+    const suffix = ` ${index}`;
+    name = `${base.slice(0, 31 - suffix.length)}${suffix}`;
+    index += 1;
+  }
+  usedNames.add(name.toLowerCase());
+  return name;
+}
+
+function helpdeskAnalyticsWorkbookSheets() {
+  const analytics = state.helpdesk_analytics.data;
+  const { days, rows, summary } = helpdeskAnalyticsExportRows();
+  const totalReplies = Number(analytics?.summary?.total_tickets || 0);
+  const usedNames = new Set();
+  const sheets = [
+    {
+      name: uniqueXlsxSheetName("Summary", usedNames),
+      rows: [
+        ["HelpDesk Analytics", helpdeskAnalyticsPeriodLabel()],
+        [],
+        ["Rank", "Agent", "Email / ID", "Period replies", ...days],
+        ["", "Account summary", "", totalReplies, ...summary],
+        ...rows.map((row) => [row.rank, row.agent, row.email, row.total, ...row.days]),
+      ],
+    },
+  ];
+
+  [...(analytics?.agents || [])]
+    .sort((left, right) => Number(right.total_tickets || 0) - Number(left.total_tickets || 0))
+    .forEach((agent) => {
+      const details = helpdeskAgentReplyDetails(agent);
+      const detailRows = details.length
+        ? details.map((detail) => [
+            detail.date || "",
+            detail.short_id || detail.ticket_id || "",
+            formatHelpdeskDateTime(detail.event_date),
+            Number(detail.points || 1),
+          ])
+        : [["No reply details for this agent in the selected range.", "", "", ""]];
+      sheets.push({
+        name: uniqueXlsxSheetName(helpdeskAgentLabel(agent), usedNames, "Agent"),
+        rows: [
+          ["Agent", helpdeskAgentLabel(agent)],
+          ["Email / ID", helpdeskAgentSubLabel(agent)],
+          ["Period replies", Number(agent.total_tickets || 0)],
+          [],
+          ["Counted date", "Ticket short ID", "Reply time", "Points"],
+          ...detailRows,
+        ],
+      });
+    });
+
+  return sheets;
+}
+
+function crc32Bytes(bytes) {
+  if (!crc32Bytes.table) {
+    crc32Bytes.table = Array.from({ length: 256 }, (_, index) => {
+      let value = index;
+      for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+      return value >>> 0;
+    });
+  }
+  let crc = 0xffffffff;
+  for (const byte of bytes) crc = crc32Bytes.table[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function dosDateTime(date = new Date()) {
+  const year = Math.max(1980, date.getFullYear());
+  return {
+    time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2),
+    date: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
+  };
+}
+
+function bytesConcat(parts) {
+  const totalLength = parts.reduce((sum, part) => sum + part.length, 0);
+  const output = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.length;
+  }
+  return output;
+}
+
+function uint16(value) {
+  return new Uint8Array([value & 0xff, (value >>> 8) & 0xff]);
+}
+
+function uint32(value) {
+  return new Uint8Array([value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff]);
+}
+
+function zipStore(files) {
+  const encoder = new TextEncoder();
+  const { time, date } = dosDateTime();
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+
+  for (const file of files) {
+    const nameBytes = encoder.encode(file.name);
+    const contentBytes = typeof file.content === "string" ? encoder.encode(file.content) : file.content;
+    const crc = crc32Bytes(contentBytes);
+    const localHeader = bytesConcat([
+      uint32(0x04034b50),
+      uint16(20),
+      uint16(0),
+      uint16(0),
+      uint16(time),
+      uint16(date),
+      uint32(crc),
+      uint32(contentBytes.length),
+      uint32(contentBytes.length),
+      uint16(nameBytes.length),
+      uint16(0),
+      nameBytes,
+    ]);
+    localParts.push(localHeader, contentBytes);
+
+    centralParts.push(
+      bytesConcat([
+        uint32(0x02014b50),
+        uint16(20),
+        uint16(20),
+        uint16(0),
+        uint16(0),
+        uint16(time),
+        uint16(date),
+        uint32(crc),
+        uint32(contentBytes.length),
+        uint32(contentBytes.length),
+        uint16(nameBytes.length),
+        uint16(0),
+        uint16(0),
+        uint16(0),
+        uint16(0),
+        uint32(0),
+        uint32(offset),
+        nameBytes,
+      ]),
+    );
+    offset += localHeader.length + contentBytes.length;
+  }
+
+  const centralDirectory = bytesConcat(centralParts);
+  const endRecord = bytesConcat([
+    uint32(0x06054b50),
+    uint16(0),
+    uint16(0),
+    uint16(files.length),
+    uint16(files.length),
+    uint32(centralDirectory.length),
+    uint32(offset),
+    uint16(0),
+  ]);
+
+  return bytesConcat([...localParts, centralDirectory, endRecord]);
+}
+
+function xlsxWorkbookBlob(sheets) {
+  const worksheetOverrides = sheets
+    .map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`)
+    .join("");
+  const sheetRefs = sheets
+    .map((sheet, index) => `<sheet name="${xmlEscape(sheet.name)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`)
+    .join("");
+  const relationships = sheets
+    .map(
+      (_, index) =>
+        `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`,
+    )
+    .join("");
+  const files = [
+    {
+      name: "[Content_Types].xml",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  ${worksheetOverrides}
+</Types>`,
+    },
+    {
+      name: "_rels/.rels",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+    },
+    {
+      name: "xl/workbook.xml",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>${sheetRefs}</sheets>
+</workbook>`,
+    },
+    {
+      name: "xl/_rels/workbook.xml.rels",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${relationships}</Relationships>`,
+    },
+    ...sheets.map((sheet, index) => ({
+      name: `xl/worksheets/sheet${index + 1}.xml`,
+      content: xlsxWorksheetXml(sheet.rows),
+    })),
+  ];
+
+  return new Blob([zipStore(files)], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+}
+
 function downloadTextFile(filename, content, type) {
   downloadBlobFile(filename, new Blob([content], { type }));
 }
@@ -2663,27 +2941,8 @@ function exportHelpdeskAnalyticsExcel() {
     return;
   }
 
-  const html = `<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="UTF-8" />
-    <style>
-      table { border-collapse: collapse; font-family: Arial, sans-serif; }
-      caption { font-size: 18px; font-weight: 700; padding: 12px; text-align: left; }
-      th, td { border: 1px solid #d7deea; padding: 8px 10px; white-space: nowrap; }
-      th { background: #eef3ff; font-weight: 700; }
-      tbody tr:first-child td { background: #f5f0ff; font-weight: 700; }
-    </style>
-  </head>
-  <body>${htmlTableForHelpdeskAnalyticsExport()}</body>
-</html>`;
-
-  downloadTextFile(
-    helpdeskAnalyticsExportFilename("xls"),
-    `\ufeff${html}`,
-    "application/vnd.ms-excel;charset=utf-8",
-  );
-  setMessage(statusMessage, "HelpDesk analytics Excel export downloaded.");
+  downloadBlobFile(helpdeskAnalyticsExportFilename("xlsx"), xlsxWorkbookBlob(helpdeskAnalyticsWorkbookSheets()));
+  setMessage(statusMessage, "HelpDesk analytics XLSX export downloaded.");
 }
 
 function exportHelpdeskAnalyticsPdf() {
@@ -2733,7 +2992,8 @@ function formatHelpdeskDateTime(value) {
   if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString();
+  const shifted = new Date(date.getTime() - HELPDESK_ANALYTICS_TZ_OFFSET_MINUTES * 60000);
+  return `${padDatePart(shifted.getUTCDate())}/${padDatePart(shifted.getUTCMonth() + 1)}/${shifted.getUTCFullYear()}, ${padDatePart(shifted.getUTCHours())}:${padDatePart(shifted.getUTCMinutes())}:${padDatePart(shifted.getUTCSeconds())}`;
 }
 
 function helpdeskTicketRequesterLabel(ticket) {
@@ -3887,17 +4147,17 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
   }
 
   const params = new URLSearchParams();
-  params.append("from", dateWithOffset(range.from));
-  params.append("to", dateWithOffset(range.to));
-  if (range.eventFrom) params.append("event_from", dateWithOffset(range.eventFrom));
-  if (range.eventTo) params.append("event_to", dateWithOffset(range.eventTo));
+  params.append("from", dateWithHelpdeskAnalyticsOffset(range.from));
+  params.append("to", dateWithHelpdeskAnalyticsOffset(range.to));
+  if (range.eventFrom) params.append("event_from", dateWithHelpdeskAnalyticsOffset(range.eventFrom));
+  if (range.eventTo) params.append("event_to", dateWithHelpdeskAnalyticsOffset(range.eventTo));
   if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
   if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
   if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
   if (range.cacheFullDay) params.append("cache_full_day", "1");
   if (importMode) params.append("import", "1");
   if (importMode && (range.resetDate || (depth === 0 && range.resetDate !== false))) params.append("reset_date", "1");
-  params.append("tz_offset", String(new Date().getTimezoneOffset()));
+  params.append("tz_offset", String(HELPDESK_ANALYTICS_TZ_OFFSET_MINUTES));
 
   const dayLabel = (range.eventFrom || range.from).toLocaleDateString("en-US", { month: "short", day: "numeric" });
   if (importMode) {
@@ -3981,25 +4241,25 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
 
 async function fetchHelpdeskAnalyticsCachedRange(filters) {
   const params = new URLSearchParams();
-  params.append("from", dateWithOffset(filters.from));
-  params.append("to", dateWithOffset(filters.to));
+  params.append("from", dateWithHelpdeskAnalyticsOffset(filters.from));
+  params.append("to", dateWithHelpdeskAnalyticsOffset(filters.to));
   if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
   if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
   if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
-  params.append("tz_offset", String(new Date().getTimezoneOffset()));
+  params.append("tz_offset", String(HELPDESK_ANALYTICS_TZ_OFFSET_MINUTES));
   return api(`/api/helpdesk/analytics?${params.toString()}`);
 }
 
 async function finalizeHelpdeskAnalyticsRange(range, filters) {
   const params = new URLSearchParams();
-  params.append("from", dateWithOffset(range.from));
-  params.append("to", dateWithOffset(range.to));
+  params.append("from", dateWithHelpdeskAnalyticsOffset(range.from));
+  params.append("to", dateWithHelpdeskAnalyticsOffset(range.to));
   if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
   if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
   if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
   params.append("cache_full_day", "1");
   params.append("finalize_date", "1");
-  params.append("tz_offset", String(new Date().getTimezoneOffset()));
+  params.append("tz_offset", String(HELPDESK_ANALYTICS_TZ_OFFSET_MINUTES));
   return api(`/api/helpdesk/analytics?${params.toString()}`);
 }
 
@@ -4039,7 +4299,7 @@ async function importHelpdeskAnalyticsFullDay(range, filters) {
 
   for (const [index, chunk] of chunks.entries()) {
     if (state.helpdesk_analytics.loadProgress) state.helpdesk_analytics.loadProgress.current = index;
-    state.helpdesk_analytics.loadStatus = `Scanning ${rangeLabel} replies by last message (${index + 1}/${chunks.length})...`;
+    state.helpdesk_analytics.loadStatus = `Scanning ${rangeLabel} replies from ticket updates in all states (${index + 1}/${chunks.length})...`;
     renderHelpdeskAnalytics();
     await fetchHelpdeskAnalyticsRange(chunk, filters, 0, true);
     if (state.helpdesk_analytics.loadProgress) state.helpdesk_analytics.loadProgress.current = index + 1;

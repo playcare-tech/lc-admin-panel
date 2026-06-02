@@ -18,21 +18,29 @@ const DEFAULT_OBSOLETE_ANALYTICS_TABLES = [
   "helpdesk_analytics_daily_fetches_v4",
   "helpdesk_analytics_agent_fetches_v3",
   "helpdesk_analytics_agent_fetches_v4",
+  "helpdesk_analytics_message_events",
+  "helpdesk_analytics_reply_details_v1",
+  "helpdesk_analytics_daily_v5",
+  "helpdesk_analytics_message_events_v2",
+  "helpdesk_analytics_reply_details_v2",
+  "helpdesk_analytics_daily_v6",
+  "helpdesk_analytics_message_events_v3",
+  "helpdesk_analytics_reply_details_v3",
   "helpdesk_webhook_events",
   "helpdesk_workflow_run_stats",
   "helpdesk_workflow_runs",
 ];
 
 function analyticsTables(context) {
+  const obsoleteTables = DEFAULT_OBSOLETE_ANALYTICS_TABLES.map((table) => accountTableName(context.env, table));
   const currentTables = [
     accountTableName(context.env, "analytics_agent_daily"),
-    accountTableName(context.env, "helpdesk_analytics_daily_v4"),
-    accountTableName(context.env, "helpdesk_analytics_message_events"),
+    accountTableName(context.env, "helpdesk_analytics_daily_v7"),
+    accountTableName(context.env, "helpdesk_analytics_message_events_v4"),
+    accountTableName(context.env, "helpdesk_analytics_reply_details_v4"),
     accountTableName(context.env, "helpdesk_analytics_sync_meta"),
   ];
-  return context.env.LC_ACCOUNT_ID === "default"
-    ? [...new Set([...DEFAULT_OBSOLETE_ANALYTICS_TABLES, ...currentTables])]
-    : currentTables;
+  return [...new Set([...obsoleteTables, ...currentTables])];
 }
 
 export async function onRequest(context) {

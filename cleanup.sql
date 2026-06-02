@@ -23,6 +23,18 @@ DROP TABLE IF EXISTS helpdesk_analytics_handled_tickets_v4;
 DROP TABLE IF EXISTS helpdesk_analytics_daily_fetches_v4;
 DROP TABLE IF EXISTS helpdesk_analytics_agent_fetches_v4;
 
+DROP TABLE IF EXISTS helpdesk_analytics_daily_v5;
+DROP TABLE IF EXISTS helpdesk_analytics_message_events;
+DROP TABLE IF EXISTS helpdesk_analytics_message_events_v2;
+DROP TABLE IF EXISTS helpdesk_analytics_reply_details_v1;
+DROP TABLE IF EXISTS helpdesk_analytics_reply_details_v2;
+DROP TABLE IF EXISTS helpdesk_analytics_daily_v6;
+DROP TABLE IF EXISTS helpdesk_analytics_message_events_v3;
+DROP TABLE IF EXISTS helpdesk_analytics_reply_details_v3;
+DROP TABLE IF EXISTS helpdesk_analytics_daily_v7;
+DROP TABLE IF EXISTS helpdesk_analytics_message_events_v4;
+DROP TABLE IF EXISTS helpdesk_analytics_reply_details_v4;
+
 DROP TABLE IF EXISTS helpdesk_webhook_events;
 DROP TABLE IF EXISTS helpdesk_workflow_run_stats;
 DROP TABLE IF EXISTS helpdesk_workflow_runs;
@@ -54,7 +66,7 @@ CREATE TABLE IF NOT EXISTS helpdesk_webhook_daily_stats (
   updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily_v4 (
+CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily_v7 (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   date TEXT NOT NULL,
   agent_id TEXT NOT NULL,
@@ -65,8 +77,29 @@ CREATE TABLE IF NOT EXISTS helpdesk_analytics_daily_v4 (
   UNIQUE(date, agent_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_v4_date ON helpdesk_analytics_daily_v4(date);
-CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_v4_agent ON helpdesk_analytics_daily_v4(agent_id);
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_v7_date ON helpdesk_analytics_daily_v7(date);
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_daily_v7_agent ON helpdesk_analytics_daily_v7(agent_id);
+
+CREATE TABLE IF NOT EXISTS helpdesk_analytics_message_events_v4 (
+  event_key TEXT PRIMARY KEY,
+  recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS helpdesk_analytics_reply_details_v4 (
+  event_key TEXT PRIMARY KEY,
+  date TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  agent_name TEXT,
+  agent_email TEXT,
+  ticket_id TEXT,
+  short_id TEXT,
+  event_date TEXT,
+  cached_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_reply_details_v4_date ON helpdesk_analytics_reply_details_v4(date);
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_reply_details_v4_agent ON helpdesk_analytics_reply_details_v4(agent_id);
+CREATE INDEX IF NOT EXISTS idx_helpdesk_analytics_reply_details_v4_date_agent ON helpdesk_analytics_reply_details_v4(date, agent_id);
 
 CREATE TABLE IF NOT EXISTS logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
