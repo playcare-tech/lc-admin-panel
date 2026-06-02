@@ -4056,7 +4056,7 @@ function skippedHelpdeskImportResponse(range, error) {
     agents: [],
     timeline: [],
     cache: {
-      date: localDateValue(range.eventFrom || range.from),
+      date: localDateValue(range.reportFrom || range.eventFrom || range.from),
       skipped: true,
       saved: false,
       missing: false,
@@ -4151,6 +4151,8 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
   params.append("to", dateWithHelpdeskAnalyticsOffset(range.to));
   if (range.eventFrom) params.append("event_from", dateWithHelpdeskAnalyticsOffset(range.eventFrom));
   if (range.eventTo) params.append("event_to", dateWithHelpdeskAnalyticsOffset(range.eventTo));
+  if (range.reportFrom) params.append("report_from", dateWithHelpdeskAnalyticsOffset(range.reportFrom));
+  if (range.reportTo) params.append("report_to", dateWithHelpdeskAnalyticsOffset(range.reportTo));
   if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
   if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
   if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
@@ -4159,7 +4161,7 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
   if (importMode && (range.resetDate || (depth === 0 && range.resetDate !== false))) params.append("reset_date", "1");
   params.append("tz_offset", String(HELPDESK_ANALYTICS_TZ_OFFSET_MINUTES));
 
-  const dayLabel = (range.eventFrom || range.from).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const dayLabel = (range.reportFrom || range.eventFrom || range.from).toLocaleDateString("en-US", { month: "short", day: "numeric" });
   if (importMode) {
     state.helpdesk_analytics.loadStatus = `Importing ${dayLabel} from HelpDesk...`;
     renderHelpdeskAnalytics();
@@ -4199,6 +4201,8 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
           to: middle,
           eventFrom: range.eventFrom,
           eventTo: range.eventTo,
+          reportFrom: range.reportFrom,
+          reportTo: range.reportTo,
           cacheFullDay: false,
           resetDate: range.resetDate,
         },
@@ -4213,6 +4217,8 @@ async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode
           to: range.to,
           eventFrom: range.eventFrom,
           eventTo: range.eventTo,
+          reportFrom: range.reportFrom,
+          reportTo: range.reportTo,
           cacheFullDay: false,
           resetDate: false,
         },
@@ -4263,16 +4269,20 @@ async function finalizeHelpdeskAnalyticsRange(range, filters) {
   return api(`/api/helpdesk/analytics?${params.toString()}`);
 }
 
-function helpdeskImportScanChunks(range, scanTo = range.to) {
+function helpdeskImportScanChunks(range, scanTo = new Date()) {
   const chunks = [];
   const scanEnd = new Date(Math.max(range.from.getTime(), scanTo.getTime()));
+  const eventTo = new Date(Math.min(Date.now(), scanEnd.getTime()));
 
+  // Ticket updates discover replies; each discovered ticket contributes its full event history.
   for (let start = range.from.getTime(); start < scanEnd.getTime(); start += HELPDESK_IMPORT_SCAN_CHUNK_MS) {
     chunks.push({
       from: new Date(start),
       to: new Date(Math.min(start + HELPDESK_IMPORT_SCAN_CHUNK_MS, scanEnd.getTime())),
-      eventFrom: range.from,
-      eventTo: range.to,
+      eventFrom: new Date(0),
+      eventTo,
+      reportFrom: range.from,
+      reportTo: range.to,
       cacheFullDay: false,
       resetDate: chunks.length === 0,
     });
@@ -4282,8 +4292,10 @@ function helpdeskImportScanChunks(range, scanTo = range.to) {
     chunks.push({
       from: range.from,
       to: new Date(range.from.getTime() + 1),
-      eventFrom: range.from,
-      eventTo: range.to,
+      eventFrom: new Date(0),
+      eventTo,
+      reportFrom: range.from,
+      reportTo: range.to,
       cacheFullDay: false,
       resetDate: true,
     });
@@ -4294,7 +4306,7 @@ function helpdeskImportScanChunks(range, scanTo = range.to) {
 
 async function importHelpdeskAnalyticsFullDay(range, filters) {
   const skippedBefore = state.helpdesk_analytics.loadProgress?.skippedChunks || 0;
-  const chunks = helpdeskImportScanChunks(range);
+  const chunks = helpdeskImportScanChunks(range, range.scanTo);
   const rangeLabel = `${range.from.toLocaleDateString("en-US", { month: "short", day: "numeric" })} - ${range.to.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
 
   for (const [index, chunk] of chunks.entries()) {
@@ -4320,9 +4332,10 @@ async function fetchHelpdeskAnalyticsDayResponses(filters, importMode = false) {
     const range = {
       from: filters.from,
       to: filters.to,
+      scanTo: new Date(),
       cacheFullDay: true,
     };
-    const chunks = helpdeskImportScanChunks(range);
+    const chunks = helpdeskImportScanChunks(range, range.scanTo);
     state.helpdesk_analytics.loadProgress = {
       current: 0,
       total: chunks.length,

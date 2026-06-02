@@ -807,12 +807,16 @@ export async function onRequest(context) {
     const eventFrom = parseOptionalDateParam(url.searchParams.get("event_from"), "event_from", from);
     const eventTo = parseOptionalDateParam(url.searchParams.get("event_to"), "event_to", to);
     if (eventTo <= eventFrom) return errorResponse("event_to must be after event_from", 400);
+    // Imports can ingest broad ticket histories while refreshing a narrower report range.
+    const reportFrom = parseOptionalDateParam(url.searchParams.get("report_from"), "report_from", eventFrom);
+    const reportTo = parseOptionalDateParam(url.searchParams.get("report_to"), "report_to", eventTo);
+    if (reportTo <= reportFrom) return errorResponse("report_to must be after report_from", 400);
 
     const timezoneOffsetMinutes = Number(url.searchParams.get("tz_offset") || 0);
     if (!Number.isFinite(timezoneOffsetMinutes)) return errorResponse("Invalid timezone offset", 400);
 
-    const localDate = dateKey(eventFrom, timezoneOffsetMinutes);
-    const rangeDates = dateKeysForRange(eventFrom, eventTo, timezoneOffsetMinutes);
+    const localDate = dateKey(reportFrom, timezoneOffsetMinutes);
+    const rangeDates = dateKeysForRange(reportFrom, reportTo, timezoneOffsetMinutes);
     const rangeToDate = rangeDates[rangeDates.length - 1] || localDate;
     const shouldImport = url.searchParams.get("import") === "1";
     const shouldResetDate = url.searchParams.get("reset_date") === "1";
