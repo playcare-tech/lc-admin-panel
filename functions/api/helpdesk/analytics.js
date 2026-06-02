@@ -1,5 +1,6 @@
 import { requireAuth } from "../../_lib/auth.js";
 import { accountIndexName, accountTableName, withAccountContext } from "../../_lib/accounts.js";
+import { helpDeskAnalyticsAgentEmail } from "../../_lib/helpdesk-analytics-agents.js";
 import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 import { getHelpDeskDashboard, helpdeskRequestWithMeta } from "../../_lib/helpdesk.js";
 
@@ -129,7 +130,7 @@ function authorProfile(event, agentDirectory) {
   return {
     id: agentId,
     name: author.name || author.fullName || event.agentName || event.authorName || profile.name || agentId,
-    email: author.email || event.agentEmail || event.authorEmail || profile.email || "",
+    email: author.email || event.agentEmail || event.authorEmail || profile.email || helpDeskAnalyticsAgentEmail(agentId),
   };
 }
 
@@ -646,6 +647,56 @@ async function computeNewAnalyticsEvents(env, from, to, timezoneOffsetMinutes, a
     }
   }
   return reserved;
+}
+
+export async function recordHelpDeskAnalyticsMessageWebhook(env, payload, receivedAt = new Date()) {
+  if (`${payload?.eventType || ""}` !== "tickets.events.message") {
+    return { recorded: false, ignored: true, reason: "unsupported_event_type" };
+  }
+
+  const ticket = payload?.payload?.ticket || {};
+  const event = payload?.payload?.event || {};
+  if (!isPublicAgentMessageEvent(event)) {
+    return { recorded: false, ignored: true, reason: "not_public_agent_message" };
+  }
+
+  const eventDate = normalizeEventDate(event);
+  if (!eventDate) return { recorded: false, ignored: true, reason: "invalid_event_date" };
+  if (eventDate > receivedAt) return { recorded: false, ignored: true, reason: "future_event_date" };
+
+  const agent = authorProfile(event, new Map());
+  if (!agent.id) return { recorded: false, ignored: true, reason: "missing_agent_id" };
+
+  const timezoneOffsetMinutes = Number(env.HELPDESK_ANALYTICS_TZ_OFFSET || 0);
+  const localDay = dateKey(eventDate, Number.isFinite(timezoneOffsetMinutes) ? timezoneOffsetMinutes : 0);
+  const eventKey = await analyticsEventUniqueKey({ event, ticket, agent, messageDate: eventDate });
+  const detail = {
+    date: localDay,
+    agent_id: agent.id,
+    agent_name: agent.name || agent.id,
+    agent_email: agent.email || "",
+    ticket_id: normalizeTicketId(ticket),
+    short_id: normalizeTicketShortId(ticket),
+    event_date: eventDate.toISOString(),
+    event_key: eventKey,
+  };
+
+  await ensureHelpDeskAnalyticsCache(env);
+  const reserved = await reserveAnalyticsMessageEvent(env, eventKey);
+  await writeCachedDetailsByDate(env, localDay, [detail]);
+  await finalizeCachedDay(env, localDay);
+
+  return {
+    recorded: true,
+    duplicate: !reserved,
+    date: localDay,
+    eventKey,
+    ticketId: detail.ticket_id,
+    ticketShortId: detail.short_id,
+    agentId: agent.id,
+    agentName: agent.name,
+    agentEmail: agent.email,
+  };
 }
 
 function rowsToResponse(rows, from, to, agentDirectory, cache = {}, detailRows = []) {
