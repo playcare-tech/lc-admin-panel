@@ -4039,7 +4039,7 @@ function sleep(ms) {
 
 const HELPDESK_IMPORT_MAX_ATTEMPTS = 2;
 const HELPDESK_IMPORT_SPLIT_THRESHOLD_MS = 60 * 60 * 1000;
-const HELPDESK_IMPORT_SCAN_CHUNK_MS = 4 * 60 * 60 * 1000;
+const HELPDESK_IMPORT_SCAN_CHUNK_MS = 24 * 60 * 60 * 1000;
 
 function isSkippableHelpdeskImportError(message) {
   return /too many requests|rate limit|429|too many tickets|503|service unavailable|failed to load helpdesk analytics|request failed with 5|cpu|exceeded/i.test(
@@ -4299,7 +4299,7 @@ async function importHelpdeskAnalyticsFullDay(range, filters) {
 
   for (const [index, chunk] of chunks.entries()) {
     if (state.helpdesk_analytics.loadProgress) state.helpdesk_analytics.loadProgress.current = index;
-    state.helpdesk_analytics.loadStatus = `Scanning ${rangeLabel} replies from ticket updates in all states (${index + 1}/${chunks.length})...`;
+    state.helpdesk_analytics.loadStatus = `Scanning ${rangeLabel} replies from daily ticket updates in all states (${index + 1}/${chunks.length})...`;
     renderHelpdeskAnalytics();
     await fetchHelpdeskAnalyticsRange(chunk, filters, 0, true);
     if (state.helpdesk_analytics.loadProgress) state.helpdesk_analytics.loadProgress.current = index + 1;
