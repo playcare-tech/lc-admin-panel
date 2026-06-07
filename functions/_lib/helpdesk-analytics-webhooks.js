@@ -49,18 +49,20 @@ export async function recordHelpDeskAnalyticsWebhookReceived(env, receivedAt = n
     .run();
 }
 
-export async function recordHelpDeskAnalyticsWebhookAssignedPoint(env, receivedAt = new Date()) {
+export async function recordHelpDeskAnalyticsWebhookAssignedPoint(env, receivedAt = new Date(), count = 1) {
   await ensureHelpDeskAnalyticsWebhookStats(env);
+  const points = Math.max(0, Math.floor(Number(count || 0)));
+  if (!points) return;
   const statHour = hourKey(receivedAt);
   await env.DB.prepare(
     `INSERT INTO ${statsTable(env)}
       (stat_hour, received_count, assigned_points_count, updated_at)
-     VALUES (?, 0, 1, CURRENT_TIMESTAMP)
+     VALUES (?, 0, ?, CURRENT_TIMESTAMP)
      ON CONFLICT(stat_hour) DO UPDATE SET
-      assigned_points_count = assigned_points_count + 1,
+      assigned_points_count = assigned_points_count + excluded.assigned_points_count,
       updated_at = CURRENT_TIMESTAMP`,
   )
-    .bind(statHour)
+    .bind(statHour, points)
     .run();
 }
 

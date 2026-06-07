@@ -7,9 +7,15 @@ import { getHelpDeskDashboard, helpdeskRequestWithMeta } from "../../_lib/helpde
 const PAGE_SIZE = 100;
 const MAX_PAGES_PER_RANGE = 20;
 const STATUSES = ["open", "pending", "onhold", "solved", "closed"];
+const METRIC_PUBLIC_REPLIES = "public_replies";
+const METRIC_COMMENTS = "comments";
+const COMMENT_TIME_ZONE = "Europe/Nicosia";
 const DAILY_TABLE_BASE = "helpdesk_analytics_daily_v7";
 const MESSAGE_EVENTS_TABLE_BASE = "helpdesk_analytics_message_events_v4";
 const REPLY_DETAILS_TABLE_BASE = "helpdesk_analytics_reply_details_v4";
+const COMMENT_DAILY_TABLE_BASE = "helpdesk_analytics_comment_daily_v1";
+const COMMENT_EVENTS_TABLE_BASE = "helpdesk_analytics_comment_events_v1";
+const COMMENT_DETAILS_TABLE_BASE = "helpdesk_analytics_comment_details_v1";
 const OBSOLETE_ANALYTICS_TABLES = [
   "helpdesk_analytics_daily",
   "helpdesk_analytics_daily_fetches",
@@ -53,8 +59,27 @@ function splitParam(value) {
     .filter(Boolean);
 }
 
+function normalizeMetric(value) {
+  return value === METRIC_COMMENTS ? METRIC_COMMENTS : METRIC_PUBLIC_REPLIES;
+}
+
 function dateKey(date, timezoneOffsetMinutes = 0) {
   return new Date(date.getTime() - timezoneOffsetMinutes * 60000).toISOString().slice(0, 10);
+}
+
+function dateKeyInTimeZone(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+}
+
+function metricDateKey(metric, date, timezoneOffsetMinutes = 0) {
+  return metric === METRIC_COMMENTS ? dateKeyInTimeZone(date, COMMENT_TIME_ZONE) : dateKey(date, timezoneOffsetMinutes);
 }
 
 function normalizeTicketList(payload) {
@@ -147,7 +172,21 @@ function stripHtml(value) {
 function eventMessageText(event) {
   const message = event.message || event.content || {};
   if (typeof message === "string") return stripHtml(message);
-  return stripHtml(message.text || message.plainText || event.text || message.html || event.richTextHtml || event.html || "");
+  return stripHtml(
+    message.text ||
+      message.plainText ||
+      message.plain_text ||
+      event.text ||
+      event.plainText ||
+      event.plain_text ||
+      message.html ||
+      message.richTextHtml ||
+      message.rich_text_html ||
+      event.richTextHtml ||
+      event.rich_text_html ||
+      event.html ||
+      "",
+  );
 }
 
 function isConversationTranscriptEvent(event) {
@@ -181,29 +220,55 @@ function isPrivateMessageEvent(event) {
   );
 }
 
+function isPrivateAgentCommentEvent(event) {
+  return (
+    isMessageEvent(event) &&
+    isPrivateMessageEvent(event) &&
+    eventAuthorType(event) === "agent" &&
+    !isConversationTranscriptEvent(event)
+  );
+}
+
 function analyticsAgentMessageEvents(ticket) {
   return (Array.isArray(ticket.events) ? ticket.events : []).filter((event) => isPublicAgentMessageEvent(event));
 }
 
-function dailyTable(env) {
-  return accountTableName(env, DAILY_TABLE_BASE);
+function metricTables(metric) {
+  return metric === METRIC_COMMENTS
+    ? {
+        daily: COMMENT_DAILY_TABLE_BASE,
+        events: COMMENT_EVENTS_TABLE_BASE,
+        details: COMMENT_DETAILS_TABLE_BASE,
+      }
+    : {
+        daily: DAILY_TABLE_BASE,
+        events: MESSAGE_EVENTS_TABLE_BASE,
+        details: REPLY_DETAILS_TABLE_BASE,
+      };
 }
 
-function messageEventsTable(env) {
-  return accountTableName(env, MESSAGE_EVENTS_TABLE_BASE);
+function dailyTable(env, metric = METRIC_PUBLIC_REPLIES) {
+  return accountTableName(env, metricTables(metric).daily);
 }
 
-function replyDetailsTable(env) {
-  return accountTableName(env, REPLY_DETAILS_TABLE_BASE);
+function messageEventsTable(env, metric = METRIC_PUBLIC_REPLIES) {
+  return accountTableName(env, metricTables(metric).events);
 }
 
-async function ensureHelpDeskAnalyticsCache(env) {
+function replyDetailsTable(env, metric = METRIC_PUBLIC_REPLIES) {
+  return accountTableName(env, metricTables(metric).details);
+}
+
+async function ensureHelpDeskAnalyticsCache(env, metric = METRIC_PUBLIC_REPLIES) {
   if (!env?.DB) throw new Error("Missing DB binding.");
-  const table = dailyTable(env);
+  const table = dailyTable(env, metric);
+  const tables = metricTables(metric);
 
-  await env.DB.batch(
-    OBSOLETE_ANALYTICS_TABLES.map((obsoleteTable) => env.DB.prepare(`DROP TABLE IF EXISTS ${accountTableName(env, obsoleteTable)}`)),
-  );
+  if (metric === METRIC_PUBLIC_REPLIES) {
+    await env.DB.batch(
+      OBSOLETE_ANALYTICS_TABLES.map((obsoleteTable) => env.DB.prepare(`DROP TABLE IF EXISTS ${accountTableName(env, obsoleteTable)}`)),
+    );
+  }
 
   await env.DB
     .prepare(
@@ -219,16 +284,16 @@ async function ensureHelpDeskAnalyticsCache(env) {
       )`,
     )
     .run();
-  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${DAILY_TABLE_BASE}_date`)} ON ${table}(date)`).run();
-  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${DAILY_TABLE_BASE}_agent`)} ON ${table}(agent_id)`).run();
-  await ensureHelpDeskAnalyticsReplyDetails(env);
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${tables.daily}_date`)} ON ${table}(date)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${tables.daily}_agent`)} ON ${table}(agent_id)`).run();
+  await ensureHelpDeskAnalyticsReplyDetails(env, metric);
 }
 
-async function ensureHelpDeskAnalyticsMessageEvents(env) {
+async function ensureHelpDeskAnalyticsMessageEvents(env, metric = METRIC_PUBLIC_REPLIES) {
   if (!env?.DB) throw new Error("Missing DB binding.");
   await env.DB
     .prepare(
-      `CREATE TABLE IF NOT EXISTS ${messageEventsTable(env)} (
+      `CREATE TABLE IF NOT EXISTS ${messageEventsTable(env, metric)} (
         event_key TEXT PRIMARY KEY,
         recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`,
@@ -236,9 +301,10 @@ async function ensureHelpDeskAnalyticsMessageEvents(env) {
     .run();
 }
 
-async function ensureHelpDeskAnalyticsReplyDetails(env) {
+async function ensureHelpDeskAnalyticsReplyDetails(env, metric = METRIC_PUBLIC_REPLIES) {
   if (!env?.DB) throw new Error("Missing DB binding.");
-  const table = replyDetailsTable(env);
+  const table = replyDetailsTable(env, metric);
+  const tables = metricTables(metric);
   await env.DB
     .prepare(
       `CREATE TABLE IF NOT EXISTS ${table} (
@@ -254,9 +320,9 @@ async function ensureHelpDeskAnalyticsReplyDetails(env) {
       )`,
     )
     .run();
-  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${REPLY_DETAILS_TABLE_BASE}_date`)} ON ${table}(date)`).run();
-  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${REPLY_DETAILS_TABLE_BASE}_agent`)} ON ${table}(agent_id)`).run();
-  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${REPLY_DETAILS_TABLE_BASE}_date_agent`)} ON ${table}(date, agent_id)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${tables.details}_date`)} ON ${table}(date)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${tables.details}_agent`)} ON ${table}(agent_id)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${accountIndexName(env, `idx_${tables.details}_date_agent`)} ON ${table}(date, agent_id)`).run();
 }
 
 async function sha256Text(value) {
@@ -291,10 +357,24 @@ async function analyticsEventUniqueKey({ event, ticket, agent, messageDate }) {
   )}`;
 }
 
-async function reserveAnalyticsMessageEvent(env, eventKey) {
-  await ensureHelpDeskAnalyticsMessageEvents(env);
+async function analyticsCommentEventUniqueKey({ event, ticket, agent, messageDate }) {
+  const ticketId = normalizeTicketId(ticket);
+  const shortId = normalizeTicketShortId(ticket);
+  return `comment:${await sha256Text(
+    JSON.stringify({
+      ticketId,
+      shortId,
+      agentId: agent.id,
+      date: messageDate.toISOString(),
+      eventId: event?.ID ?? event?.id ?? event?.eventID ?? event?.eventId ?? "",
+    }),
+  )}`;
+}
+
+async function reserveAnalyticsMessageEvent(env, eventKey, metric = METRIC_PUBLIC_REPLIES) {
+  await ensureHelpDeskAnalyticsMessageEvents(env, metric);
   const result = await env.DB.prepare(
-    `INSERT INTO ${messageEventsTable(env)} (event_key, recorded_at)
+    `INSERT INTO ${messageEventsTable(env, metric)} (event_key, recorded_at)
      VALUES (?, CURRENT_TIMESTAMP)
      ON CONFLICT(event_key) DO NOTHING`,
   )
@@ -303,8 +383,8 @@ async function reserveAnalyticsMessageEvent(env, eventKey) {
   return Number(result?.meta?.changes || 0) > 0;
 }
 
-async function readCachedRange(env, fromDate, toDate) {
-  const table = dailyTable(env);
+async function readCachedRange(env, fromDate, toDate, metric = METRIC_PUBLIC_REPLIES) {
+  const table = dailyTable(env, metric);
   const { results } = await env.DB.prepare(
     `SELECT date, agent_id, agent_name, agent_email, handled_tickets
      FROM ${table}
@@ -316,8 +396,8 @@ async function readCachedRange(env, fromDate, toDate) {
   return results || [];
 }
 
-async function readCachedDetailsRange(env, fromDate, toDate) {
-  const table = replyDetailsTable(env);
+async function readCachedDetailsRange(env, fromDate, toDate, metric = METRIC_PUBLIC_REPLIES) {
+  const table = replyDetailsTable(env, metric);
   const { results } = await env.DB.prepare(
     `SELECT date, agent_id, agent_name, agent_email, ticket_id, short_id, event_date, event_key
      FROM ${table}
@@ -336,8 +416,8 @@ async function runBatches(db, statements, size = 80) {
   }
 }
 
-async function finalizeCachedDay(env, date) {
-  await env.DB.prepare(`UPDATE ${dailyTable(env)} SET cached_at = CURRENT_TIMESTAMP WHERE date = ?`).bind(date).run();
+async function finalizeCachedDay(env, date, metric = METRIC_PUBLIC_REPLIES) {
+  await env.DB.prepare(`UPDATE ${dailyTable(env, metric)} SET cached_at = CURRENT_TIMESTAMP WHERE date = ?`).bind(date).run();
 }
 
 function datesFromDetails(detailRows, fallbackDate) {
@@ -353,8 +433,8 @@ function hasAnySearchParam(searchParams, names) {
   return names.some((name) => searchParams.has(name));
 }
 
-async function insertReplyDetails(env, detailRows) {
-  const table = replyDetailsTable(env);
+async function insertReplyDetails(env, detailRows, metric = METRIC_PUBLIC_REPLIES) {
+  const table = replyDetailsTable(env, metric);
   await runBatches(
     env.DB,
     (detailRows || [])
@@ -387,10 +467,10 @@ async function insertReplyDetails(env, detailRows) {
   );
 }
 
-async function recomputeCachedDatesFromDetails(env, dates) {
+async function recomputeCachedDatesFromDetails(env, dates, metric = METRIC_PUBLIC_REPLIES) {
   const uniqueDates = [...new Set(dates)].filter(Boolean);
-  const daily = dailyTable(env);
-  const details = replyDetailsTable(env);
+  const daily = dailyTable(env, metric);
+  const details = replyDetailsTable(env, metric);
 
   for (const date of uniqueDates) {
     await env.DB.prepare(`DELETE FROM ${daily} WHERE date = ?`).bind(date).run();
@@ -414,14 +494,14 @@ async function recomputeCachedDatesFromDetails(env, dates) {
   }
 }
 
-async function writeCachedDetailsByDate(env, fallbackDate, detailRows) {
+async function writeCachedDetailsByDate(env, fallbackDate, detailRows, metric = METRIC_PUBLIC_REPLIES) {
   const dates = new Set(datesFromDetails(detailRows, fallbackDate));
-  await insertReplyDetails(env, detailRows);
-  await recomputeCachedDatesFromDetails(env, dates);
+  await insertReplyDetails(env, detailRows, metric);
+  await recomputeCachedDatesFromDetails(env, dates, metric);
 
   if (!dates.size) return [];
   const sortedDates = [...dates].sort();
-  return readCachedRange(env, sortedDates[0], sortedDates[sortedDates.length - 1]);
+  return readCachedRange(env, sortedDates[0], sortedDates[sortedDates.length - 1], metric);
 }
 
 function filterRows(rows, filters, agentDirectory = new Map()) {
@@ -538,7 +618,100 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory, 
 }
 
 export async function recordHelpDeskAnalyticsMessageWebhook(env, payload, receivedAt = new Date()) {
-  if (`${payload?.eventType || ""}` !== "tickets.events.message") {
+  const eventType = `${payload?.eventType || ""}`;
+
+  if (eventType === "tickets.update") {
+    const ticket = payload?.payload || {};
+    const events = Array.isArray(ticket.events) ? ticket.events : [];
+    const commentDetails = [];
+    const replyDetails = [];
+    let commentReservedCount = 0;
+    let replyReservedCount = 0;
+    const timezoneOffsetMinutes = Number(env.HELPDESK_ANALYTICS_TZ_OFFSET || 0);
+    const replyOffset = Number.isFinite(timezoneOffsetMinutes) ? timezoneOffsetMinutes : 0;
+
+    for (const event of events) {
+      const metric = isPrivateAgentCommentEvent(event)
+        ? METRIC_COMMENTS
+        : isPublicAgentMessageEvent(event)
+          ? METRIC_PUBLIC_REPLIES
+          : "";
+      if (!metric) continue;
+
+      const eventDate = normalizeEventDate(event);
+      if (!eventDate) continue;
+      if (eventDate > receivedAt) continue;
+
+      const agent = authorProfile(event, new Map());
+      if (!agent.id) continue;
+
+      const localDay = metricDateKey(metric, eventDate, replyOffset);
+      const eventKey = metric === METRIC_COMMENTS
+        ? await analyticsCommentEventUniqueKey({ event, ticket, agent, messageDate: eventDate })
+        : await analyticsEventUniqueKey({ event, ticket, agent, messageDate: eventDate });
+      if (await reserveAnalyticsMessageEvent(env, eventKey, metric)) {
+        if (metric === METRIC_COMMENTS) {
+          commentReservedCount += 1;
+        } else {
+          replyReservedCount += 1;
+        }
+      }
+
+      const detail = {
+        date: localDay,
+        agent_id: agent.id,
+        agent_name: agent.name || agent.id,
+        agent_email: agent.email || "",
+        ticket_id: normalizeTicketId(ticket),
+        short_id: normalizeTicketShortId(ticket),
+        event_date: eventDate.toISOString(),
+        event_key: eventKey,
+      };
+      if (metric === METRIC_COMMENTS) {
+        commentDetails.push(detail);
+      } else {
+        replyDetails.push(detail);
+      }
+    }
+
+    if (!commentDetails.length && !replyDetails.length) {
+      return { recorded: false, ignored: true, reason: "no_agent_analytics_events", assignedPoints: 0 };
+    }
+
+    const commentDates = datesFromDetails(commentDetails, "");
+    const replyDates = datesFromDetails(replyDetails, "");
+    if (commentDetails.length) {
+      await ensureHelpDeskAnalyticsCache(env, METRIC_COMMENTS);
+      await writeCachedDetailsByDate(env, "", commentDetails, METRIC_COMMENTS);
+      for (const date of commentDates) {
+        await finalizeCachedDay(env, date, METRIC_COMMENTS);
+      }
+    }
+    if (replyDetails.length) {
+      await ensureHelpDeskAnalyticsCache(env, METRIC_PUBLIC_REPLIES);
+      await writeCachedDetailsByDate(env, "", replyDetails, METRIC_PUBLIC_REPLIES);
+      for (const date of replyDates) {
+        await finalizeCachedDay(env, date, METRIC_PUBLIC_REPLIES);
+      }
+    }
+
+    return {
+      recorded: true,
+      duplicate: commentReservedCount + replyReservedCount === 0,
+      assignedPoints: commentReservedCount + replyReservedCount,
+      metric: "tickets_update",
+      comments: commentDetails.length,
+      newComments: commentReservedCount,
+      publicReplies: replyDetails.length,
+      newPublicReplies: replyReservedCount,
+      commentDates: [...commentDates],
+      replyDates: [...replyDates],
+      ticketId: normalizeTicketId(ticket),
+      ticketShortId: normalizeTicketShortId(ticket),
+    };
+  }
+
+  if (eventType !== "tickets.events.message") {
     return { recorded: false, ignored: true, reason: "unsupported_event_type" };
   }
 
@@ -569,14 +742,16 @@ export async function recordHelpDeskAnalyticsMessageWebhook(env, payload, receiv
     event_key: eventKey,
   };
 
-  await ensureHelpDeskAnalyticsCache(env);
-  const reserved = await reserveAnalyticsMessageEvent(env, eventKey);
-  await writeCachedDetailsByDate(env, localDay, [detail]);
-  await finalizeCachedDay(env, localDay);
+  await ensureHelpDeskAnalyticsCache(env, METRIC_PUBLIC_REPLIES);
+  const reserved = await reserveAnalyticsMessageEvent(env, eventKey, METRIC_PUBLIC_REPLIES);
+  await writeCachedDetailsByDate(env, localDay, [detail], METRIC_PUBLIC_REPLIES);
+  await finalizeCachedDay(env, localDay, METRIC_PUBLIC_REPLIES);
 
   return {
     recorded: true,
     duplicate: !reserved,
+    assignedPoints: reserved ? 1 : 0,
+    metric: METRIC_PUBLIC_REPLIES,
     date: localDay,
     eventKey,
     ticketId: detail.ticket_id,
@@ -587,7 +762,7 @@ export async function recordHelpDeskAnalyticsMessageWebhook(env, payload, receiv
   };
 }
 
-function rowsToResponse(rows, from, to, agentDirectory, cache = {}, detailRows = []) {
+function rowsToResponse(rows, from, to, agentDirectory, cache = {}, detailRows = [], metric = METRIC_PUBLIC_REPLIES) {
   const agentsById = new Map();
   for (const row of rows) {
     const profile = agentDirectory.get(String(row.agent_id)) || {};
@@ -659,6 +834,7 @@ function rowsToResponse(rows, from, to, agentDirectory, cache = {}, detailRows =
   }
 
   return {
+    metric,
     period: { from: from.toISOString(), to: to.toISOString() },
     summary: {
       total_tickets: totalTickets,
@@ -674,9 +850,10 @@ function rowsToResponse(rows, from, to, agentDirectory, cache = {}, detailRows =
       per_agent_daily_metrics: true,
       account_daily_timeline: true,
       cached_past_days: true,
-      public_agent_reply_counts: true,
+      public_agent_reply_counts: metric === METRIC_PUBLIC_REPLIES,
+      private_agent_comment_counts: metric === METRIC_COMMENTS,
       agent_reply_details: true,
-      source: "all_status_ticket_updated_scan_filtered_agent_public_reply_events",
+      source: metric === METRIC_COMMENTS ? "tickets_update_private_agent_comment_events" : "all_status_ticket_updated_scan_filtered_agent_public_reply_events",
     },
   };
 }
@@ -689,9 +866,10 @@ export async function onRequest(context) {
   context = withAccountContext(context);
 
   try {
-    await ensureHelpDeskAnalyticsCache(context.env);
-
     const url = new URL(context.request.url);
+    const metric = normalizeMetric(url.searchParams.get("metric"));
+    await ensureHelpDeskAnalyticsCache(context.env, metric);
+
     if (
       hasAnySearchParam(url.searchParams, [
         "import",
@@ -721,10 +899,10 @@ export async function onRequest(context) {
     };
 
     const agentDirectory = filters.groupIds.length > 0 ? buildAgentDirectory(await getHelpDeskDashboard(context.env)) : new Map();
-    const rangeFromDate = dateKey(from, timezoneOffsetMinutes);
-    const rangeToDate = dateKey(new Date(to.getTime() - 1), timezoneOffsetMinutes);
-    const cachedRangeRows = await readCachedRange(context.env, rangeFromDate, rangeToDate);
-    const cachedDetailRows = await readCachedDetailsRange(context.env, rangeFromDate, rangeToDate);
+    const rangeFromDate = metricDateKey(metric, from, timezoneOffsetMinutes);
+    const rangeToDate = metricDateKey(metric, new Date(to.getTime() - 1), timezoneOffsetMinutes);
+    const cachedRangeRows = await readCachedRange(context.env, rangeFromDate, rangeToDate, metric);
+    const cachedDetailRows = await readCachedDetailsRange(context.env, rangeFromDate, rangeToDate, metric);
     const rows = filterRows(cachedRangeRows, filters, agentDirectory);
     const detailRows = filterDetailRows(cachedDetailRows, filters, agentDirectory);
     const expectedDates = dateKeysBetween(rangeFromDate, rangeToDate);
@@ -747,8 +925,10 @@ export async function onRequest(context) {
           missing: missingDays > 0,
           missing_days: missingDays,
           saved: false,
+          metric,
         },
         detailRows,
+        metric,
       ),
     );
   } catch (error) {

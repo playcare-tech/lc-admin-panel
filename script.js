@@ -1,7 +1,38 @@
 const APP_URL = "https://lc-admin.pages.dev/";
-const HELPDESK_ANALYTICS_TZ_OFFSET_MINUTES = -120;
+const HELPDESK_ANALYTICS_TIME_ZONE = "Europe/Nicosia";
+const HELPDESK_ANALYTICS_DEFAULT_METRIC = "public_replies";
+const HELPDESK_ANALYTICS_METRICS = {
+  public_replies: {
+    id: "public_replies",
+    tabLabel: "Public replies report",
+    totalLabel: "Public Replies",
+    periodLabel: "Period replies",
+    itemSingular: "reply",
+    itemPlural: "replies",
+    detailTitle: "reply points",
+    detailEmpty: "No reply details for this agent in the selected range.",
+    timeLabel: "Reply time",
+    exportSlug: "public-replies",
+  },
+  comments: {
+    id: "comments",
+    tabLabel: "Comments count report",
+    totalLabel: "Comments",
+    periodLabel: "Period comments",
+    itemSingular: "comment",
+    itemPlural: "comments",
+    detailTitle: "comment points",
+    detailEmpty: "No comment details for this agent in the selected range.",
+    timeLabel: "Comment time",
+    exportSlug: "comments-count",
+  },
+};
 const DEFAULT_HELPDESK_ANALYTICS_AGENT_EMAILS = [
   "aleksandr.lavrushkin@boomerang-partners.com",
+  "aleksandr.b@playcare.tech",
+  "valerii.b@playcare.tech",
+  "ryhor.a@playcare.tech",
+  "tamazi.m@playcare.tech",
 ];
 const EXCLUDED_DEFAULT_HELPDESK_ANALYTICS_AGENT_EMAILS = [
   "daryia.spirydovich@boomerang-partners.com",
@@ -108,6 +139,10 @@ const DEFAULT_HELPDESK_ANALYTICS_AGENT_NAMES = [
   "Gurgen Abelyan",
   "Sofia Kalinovskaya",
   "Viktoria Zaitsava",
+  "Oswald",
+  "Stan",
+  "Freya",
+  "Rachel",
 ];
 
 const HELPDESK_TICKET_STATUSES = [
@@ -320,6 +355,7 @@ const state = {
   },
   helpdesk_analytics: {
     view: "report",
+    metric: HELPDESK_ANALYTICS_DEFAULT_METRIC,
     loading: false,
     error: null,
     filters: {
@@ -616,16 +652,44 @@ function offsetForOffsetMinutes(offsetMinutes) {
   return `${sign}${padDatePart(Math.floor(absolute / 60))}:${padDatePart(absolute % 60)}`;
 }
 
+function offsetMinutesForTimeZone(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const hour = values.hour === "24" ? 0 : Number(values.hour);
+  const zonedAsUtc = Date.UTC(
+    Number(values.year),
+    Number(values.month) - 1,
+    Number(values.day),
+    hour,
+    Number(values.minute),
+    Number(values.second),
+  );
+  return Math.round((zonedAsUtc - date.getTime()) / 60000);
+}
+
 function dateWithOffset(date, offset = offsetForDate(date)) {
   return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}T${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}:${padDatePart(date.getSeconds())}${offset}`;
 }
 
-function helpdeskAnalyticsOffset() {
-  return offsetForOffsetMinutes(-HELPDESK_ANALYTICS_TZ_OFFSET_MINUTES);
+function helpdeskAnalyticsTimeZoneOffsetMinutes(date = new Date()) {
+  return offsetMinutesForTimeZone(date, HELPDESK_ANALYTICS_TIME_ZONE);
+}
+
+function helpdeskAnalyticsOffset(date = new Date()) {
+  return offsetForOffsetMinutes(helpdeskAnalyticsTimeZoneOffsetMinutes(date));
 }
 
 function dateWithHelpdeskAnalyticsOffset(date) {
-  return dateWithOffset(date, helpdeskAnalyticsOffset());
+  return dateWithOffset(date, helpdeskAnalyticsOffset(date));
 }
 
 function dateInputToReportDate(value, endOfDay = false, offset = "") {
@@ -2496,6 +2560,10 @@ function helpdeskAnalyticsAgentDayMap(agent) {
   return new Map((agent.days || []).map((day) => [day.date, day]));
 }
 
+function helpdeskAnalyticsMetricConfig(metric = state.helpdesk_analytics.metric) {
+  return HELPDESK_ANALYTICS_METRICS[metric] || HELPDESK_ANALYTICS_METRICS[HELPDESK_ANALYTICS_DEFAULT_METRIC];
+}
+
 function helpdeskAgentReplyDetails(agent) {
   return [...(agent.reply_details || [])].sort((left, right) => {
     const dateOrder = `${left.date || ""}`.localeCompare(`${right.date || ""}`);
@@ -2504,6 +2572,7 @@ function helpdeskAgentReplyDetails(agent) {
 }
 
 function renderHelpdeskAgentReplyDetail(agent, colSpan) {
+  const metric = helpdeskAnalyticsMetricConfig();
   const details = helpdeskAgentReplyDetails(agent);
   const rows = details.length
     ? details
@@ -2518,20 +2587,20 @@ function renderHelpdeskAgentReplyDetail(agent, colSpan) {
           `,
         )
         .join("")
-    : `<tr><td colspan="4"><div class="empty-state">No reply details for this agent in the selected range.</div></td></tr>`;
+    : `<tr><td colspan="4"><div class="empty-state">${escapeHtml(metric.detailEmpty)}</div></td></tr>`;
 
   return `
     <tr class="analytics-agent-detail-row">
       <td colspan="${colSpan}">
         <div class="analytics-ticket-detail">
-          <div class="analytics-ticket-detail-title">${escapeHtml(helpdeskAgentLabel(agent))} reply points</div>
+          <div class="analytics-ticket-detail-title">${escapeHtml(helpdeskAgentLabel(agent))} ${escapeHtml(metric.detailTitle)}</div>
           <div class="analytics-ticket-table-wrap">
             <table class="analytics-ticket-table">
               <thead>
                 <tr>
                   <th>Counted date</th>
                   <th>Ticket short ID</th>
-                  <th>Reply time</th>
+                  <th>${escapeHtml(metric.timeLabel)}</th>
                   <th>Points</th>
                 </tr>
               </thead>
@@ -2592,10 +2661,11 @@ function escapeSpreadsheetCell(value) {
 }
 
 function htmlTableForHelpdeskAnalyticsExport() {
+  const metric = helpdeskAnalyticsMetricConfig();
   const { days, rows, summary } = helpdeskAnalyticsExportRows();
   const totalTickets = state.helpdesk_analytics.data?.summary?.total_tickets || 0;
   const periodLabel = helpdeskAnalyticsPeriodLabel();
-  const headerCells = ["Rank", "Agent", "Email / ID", "Period replies", ...days]
+  const headerCells = ["Rank", "Agent", "Email / ID", metric.periodLabel, ...days]
     .map((value) => `<th>${escapeHtml(value)}</th>`)
     .join("");
   const summaryCells = [
@@ -2618,7 +2688,7 @@ function htmlTableForHelpdeskAnalyticsExport() {
 
   return `
     <table>
-      <caption>HelpDesk Analytics - ${escapeHtml(periodLabel)}</caption>
+      <caption>HelpDesk Analytics - ${escapeHtml(metric.tabLabel)} - ${escapeHtml(periodLabel)}</caption>
       <thead><tr>${headerCells}</tr></thead>
       <tbody>
         <tr>${summaryCells}</tr>
@@ -2629,7 +2699,8 @@ function htmlTableForHelpdeskAnalyticsExport() {
 }
 
 function helpdeskAnalyticsExportFilename(extension) {
-  return `helpdesk-analytics-${helpdeskAnalyticsPeriodLabel().replaceAll(" ", "-")}.${extension}`;
+  const metric = helpdeskAnalyticsMetricConfig();
+  return `helpdesk-analytics-${metric.exportSlug}-${helpdeskAnalyticsPeriodLabel().replaceAll(" ", "-")}.${extension}`;
 }
 
 function xmlEscape(value) {
@@ -2693,6 +2764,7 @@ function uniqueXlsxSheetName(value, usedNames, fallback) {
 }
 
 function helpdeskAnalyticsWorkbookSheets() {
+  const metric = helpdeskAnalyticsMetricConfig();
   const analytics = state.helpdesk_analytics.data;
   const { days, rows, summary } = helpdeskAnalyticsExportRows();
   const totalReplies = Number(analytics?.summary?.total_tickets || 0);
@@ -2702,8 +2774,9 @@ function helpdeskAnalyticsWorkbookSheets() {
       name: uniqueXlsxSheetName("Summary", usedNames),
       rows: [
         ["HelpDesk Analytics", helpdeskAnalyticsPeriodLabel()],
+        ["Report", metric.tabLabel],
         [],
-        ["Rank", "Agent", "Email / ID", "Period replies", ...days],
+        ["Rank", "Agent", "Email / ID", metric.periodLabel, ...days],
         ["", "Account summary", "", totalReplies, ...summary],
         ...rows.map((row) => [row.rank, row.agent, row.email, row.total, ...row.days]),
       ],
@@ -2721,15 +2794,15 @@ function helpdeskAnalyticsWorkbookSheets() {
             formatHelpdeskDateTime(detail.event_date),
             Number(detail.points || 1),
           ])
-        : [["No reply details for this agent in the selected range.", "", "", ""]];
+        : [[metric.detailEmpty, "", "", ""]];
       sheets.push({
         name: uniqueXlsxSheetName(helpdeskAgentLabel(agent), usedNames, "Agent"),
         rows: [
           ["Agent", helpdeskAgentLabel(agent)],
           ["Email / ID", helpdeskAgentSubLabel(agent)],
-          ["Period replies", Number(agent.total_tickets || 0)],
+          [metric.periodLabel, Number(agent.total_tickets || 0)],
           [],
-          ["Counted date", "Ticket short ID", "Reply time", "Points"],
+          ["Counted date", "Ticket short ID", metric.timeLabel, "Points"],
           ...detailRows,
         ],
       });
@@ -2927,6 +3000,7 @@ function exportHelpdeskAnalyticsPdf() {
     return;
   }
 
+  const metric = helpdeskAnalyticsMetricConfig();
   const printWindow = window.open("", "_blank");
   if (!printWindow) {
     setMessage(statusMessage, "Allow pop-ups to export the HelpDesk analytics PDF.", "error");
@@ -2936,7 +3010,7 @@ function exportHelpdeskAnalyticsPdf() {
   printWindow.document.write(`<!DOCTYPE html>
 <html>
   <head>
-    <title>HelpDesk Analytics ${escapeHtml(helpdeskAnalyticsPeriodLabel())}</title>
+    <title>HelpDesk Analytics ${escapeHtml(metric.tabLabel)} ${escapeHtml(helpdeskAnalyticsPeriodLabel())}</title>
     <style>
       @page { size: landscape; margin: 12mm; }
       body { color: #172033; font-family: Arial, sans-serif; margin: 0; }
@@ -2951,6 +3025,7 @@ function exportHelpdeskAnalyticsPdf() {
   </head>
   <body>
     <h1>HelpDesk Analytics</h1>
+    <div class="meta">${escapeHtml(metric.tabLabel)}</div>
     <div class="meta">${escapeHtml(helpdeskAnalyticsPeriodLabel())}</div>
     ${htmlTableForHelpdeskAnalyticsExport()}
     <script>
@@ -2968,8 +3043,16 @@ function formatHelpdeskDateTime(value) {
   if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
-  const shifted = new Date(date.getTime() - HELPDESK_ANALYTICS_TZ_OFFSET_MINUTES * 60000);
-  return `${padDatePart(shifted.getUTCDate())}/${padDatePart(shifted.getUTCMonth() + 1)}/${shifted.getUTCFullYear()}, ${padDatePart(shifted.getUTCHours())}:${padDatePart(shifted.getUTCMinutes())}:${padDatePart(shifted.getUTCSeconds())}`;
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: HELPDESK_ANALYTICS_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 function helpdeskTicketRequesterLabel(ticket) {
@@ -3993,12 +4076,13 @@ function resetHelpdeskAnalyticsFilters() {
 
 async function fetchHelpdeskAnalyticsCachedRange(filters) {
   const params = new URLSearchParams();
+  params.append("metric", helpdeskAnalyticsMetricConfig().id);
   params.append("from", dateWithHelpdeskAnalyticsOffset(filters.from));
   params.append("to", dateWithHelpdeskAnalyticsOffset(filters.to));
   if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
   if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
   if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
-  params.append("tz_offset", String(HELPDESK_ANALYTICS_TZ_OFFSET_MINUTES));
+  params.append("tz_offset", String(-helpdeskAnalyticsTimeZoneOffsetMinutes(filters.from)));
   return api(`/api/helpdesk/analytics?${params.toString()}`);
 }
 
@@ -4031,7 +4115,7 @@ function renderHelpdeskAnalyticsWebhookMetrics(container) {
     <div class="analytics-card">
       <div class="card-value">${stats ? Number(stats.assignedPoints24h || 0).toLocaleString() : "..."}</div>
       <hr class="card-divider" />
-      <div class="card-title">Messages Assigned as Points · Last 24 Hours</div>
+      <div class="card-title">Analytics Points Assigned · Last 24 Hours</div>
     </div>
   `;
   container.appendChild(metricsRow);
@@ -4089,21 +4173,27 @@ async function fetchHelpdeskAnalytics() {
 }
 
 function renderHelpdeskAnalyticsViewTabs(filterBarContainer) {
-  const currentView = state.helpdesk_analytics.view || "report";
+  const currentMetric = helpdeskAnalyticsMetricConfig().id;
   const tabs = document.createElement("div");
   tabs.className = "analytics-view-tabs";
   tabs.innerHTML = `
-    <button class="filter-chip ${currentView === "report" ? "active" : ""}" type="button" data-helpdesk-analytics-view="report">Report</button>
+    ${Object.values(HELPDESK_ANALYTICS_METRICS)
+      .map(
+        (metric) =>
+          `<button class="filter-chip ${currentMetric === metric.id ? "active" : ""}" type="button" data-helpdesk-analytics-metric="${escapeHtml(metric.id)}">${escapeHtml(metric.tabLabel)}</button>`,
+      )
+      .join("")}
   `;
   filterBarContainer.appendChild(tabs);
-  tabs.querySelectorAll("[data-helpdesk-analytics-view]").forEach((button) => {
+  tabs.querySelectorAll("[data-helpdesk-analytics-metric]").forEach((button) => {
     button.addEventListener("click", () => {
-      const nextView = button.dataset.helpdeskAnalyticsView || "report";
-      state.helpdesk_analytics.view = nextView;
-      renderHelpdeskAnalytics();
-      if (nextView === "raw" && state.helpdesk_analytics.rawWebhooks.events === null) {
-        fetchHelpdeskAnalyticsRawWebhooks();
-      }
+      const nextMetric = HELPDESK_ANALYTICS_METRICS[button.dataset.helpdeskAnalyticsMetric]?.id || HELPDESK_ANALYTICS_DEFAULT_METRIC;
+      if (nextMetric === state.helpdesk_analytics.metric) return;
+      state.helpdesk_analytics.metric = nextMetric;
+      state.helpdesk_analytics.data = null;
+      state.helpdesk_analytics.error = null;
+      state.helpdesk_analytics.expandedAgents.clear();
+      fetchHelpdeskAnalytics();
     });
   });
 }
@@ -4544,6 +4634,7 @@ function renderFiltersConditional() {
 function renderMetricsAndPanels() {
   if (!state.helpdesk_analytics.data) return;
 
+  const metric = helpdeskAnalyticsMetricConfig();
   const { summary } = state.helpdesk_analytics.data;
   const container = document.getElementById("appContent");
 
@@ -4574,7 +4665,7 @@ function renderMetricsAndPanels() {
   }
 
   metricsRow.appendChild(createMetricCard(
-    "Public Replies",
+    metric.totalLabel,
     currentSummary.total_tickets
   ));
   metricsRow.appendChild(createMetricCard(
@@ -4593,7 +4684,7 @@ function renderMetricsAndPanels() {
   const top5TicketsPanel = document.createElement("div");
   top5TicketsPanel.className = "top5-panel";
   const top5TicketsTitle = document.createElement("h6");
-  top5TicketsTitle.textContent = "Top 5 by Public Replies";
+  top5TicketsTitle.textContent = `Top 5 by ${metric.totalLabel}`;
   top5TicketsPanel.appendChild(top5TicketsTitle);
 
   const top5TicketsList = document.createElement("ul");
@@ -4603,7 +4694,7 @@ function renderMetricsAndPanels() {
     .slice(0, 5)
     .forEach((agent) => {
       const li = document.createElement("li");
-      li.textContent = `${helpdeskAgentLabel(agent)} - ${agent.total_tickets} replies`;
+      li.textContent = `${helpdeskAgentLabel(agent)} - ${agent.total_tickets} ${agent.total_tickets === 1 ? metric.itemSingular : metric.itemPlural}`;
       top5TicketsList.appendChild(li);
     });
   top5TicketsPanel.appendChild(top5TicketsList);
@@ -4615,6 +4706,7 @@ function renderMetricsAndPanels() {
 function renderLeaderboard() {
   if (!state.helpdesk_analytics.data) return;
 
+  const metric = helpdeskAnalyticsMetricConfig();
   const { data: analytics } = state.helpdesk_analytics;
   const filters = activeHelpdeskAnalyticsFilters();
   const container = document.getElementById("appContent");
@@ -4679,7 +4771,7 @@ function renderLeaderboard() {
   const th3 = document.createElement("th");
   th3.className = "col-tickets sticky-left";
   th3.rowSpan = 2;
-  th3.textContent = "Public Replies";
+  th3.textContent = metric.totalLabel;
 
   headerRow.appendChild(th1);
   headerRow.appendChild(th2);
@@ -4698,7 +4790,7 @@ function renderLeaderboard() {
   columnHeaders.forEach(() => {
     const th = document.createElement("th");
     th.className = "col-period-sub";
-    th.textContent = "Replies";
+    th.textContent = metric.itemPlural[0].toUpperCase() + metric.itemPlural.slice(1);
     subHeaderRow.appendChild(th);
   });
   thead.appendChild(subHeaderRow);
@@ -4755,13 +4847,13 @@ function renderLeaderboard() {
             class="btn btn-sm btn-outline-secondary analytics-agent-toggle"
             type="button"
             data-helpdesk-agent-toggle="${escapeHtml(agentKey)}"
-            title="${isExpanded ? "Hide reply tickets" : "Show reply tickets"}"
-            aria-label="${isExpanded ? "Hide reply tickets" : "Show reply tickets"}"
+            title="${isExpanded ? `Hide ${metric.itemSingular} tickets` : `Show ${metric.itemSingular} tickets`}"
+            aria-label="${isExpanded ? `Hide ${metric.itemSingular} tickets` : `Show ${metric.itemSingular} tickets`}"
           >${isExpanded ? "-" : "+"}</button>
         <div class="analytics-agent-copy">
           <div class="analytics-agent-main">${escapeHtml(helpdeskAgentLabel(agent))}</div>
           ${helpdeskAgentSubLabel(agent) ? `<div class="analytics-agent-sub">${escapeHtml(helpdeskAgentSubLabel(agent))}</div>` : ""}
-            <div class="analytics-agent-sub">${detailCount} ticket point${detailCount === 1 ? "" : "s"}</div>
+            <div class="analytics-agent-sub">${detailCount} ${metric.itemSingular} point${detailCount === 1 ? "" : "s"}</div>
         </div>
       </div>
     `;

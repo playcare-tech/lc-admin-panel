@@ -17,8 +17,9 @@ export async function onRequest(context) {
     await recordHelpDeskAnalyticsWebhookReceived(context.env);
     const payload = JSON.parse(bodyText);
     const analytics = await recordHelpDeskAnalyticsMessageWebhook(context.env, payload);
-    if (analytics.recorded && !analytics.duplicate) {
-      await recordHelpDeskAnalyticsWebhookAssignedPoint(context.env);
+    const assignedPoints = Number(analytics.assignedPoints || 0);
+    if (assignedPoints > 0) {
+      await recordHelpDeskAnalyticsWebhookAssignedPoint(context.env, new Date(), assignedPoints);
     }
     return json({ ok: true, ...stored, analytics });
   } catch (error) {

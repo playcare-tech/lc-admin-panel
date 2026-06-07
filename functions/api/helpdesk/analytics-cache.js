@@ -38,6 +38,9 @@ function analyticsTables(context) {
     accountTableName(context.env, "helpdesk_analytics_daily_v7"),
     accountTableName(context.env, "helpdesk_analytics_message_events_v4"),
     accountTableName(context.env, "helpdesk_analytics_reply_details_v4"),
+    accountTableName(context.env, "helpdesk_analytics_comment_daily_v1"),
+    accountTableName(context.env, "helpdesk_analytics_comment_events_v1"),
+    accountTableName(context.env, "helpdesk_analytics_comment_details_v1"),
     accountTableName(context.env, "helpdesk_analytics_sync_meta"),
   ];
   return [...new Set([...obsoleteTables, ...currentTables])];
