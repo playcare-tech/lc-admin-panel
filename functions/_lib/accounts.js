@@ -39,16 +39,10 @@ export function accountScopedEnv(context) {
     accountId === SECOND_ACCOUNT_ID && context.env.HELPDESK_WEBHOOK_SECRET_2
       ? context.env.HELPDESK_WEBHOOK_SECRET_2
       : context.env.HELPDESK_WEBHOOK_SECRET;
-  const syncToken =
-    accountId === SECOND_ACCOUNT_ID && context.env.HELPDESK_SYNC_TOKEN_2
-      ? context.env.HELPDESK_SYNC_TOKEN_2
-      : context.env.HELPDESK_SYNC_TOKEN;
-
   return new Proxy(context.env, {
     get(target, prop) {
       if (prop === "TEXT_BASIC_AUTH_B64") return authValue;
       if (prop === "HELPDESK_WEBHOOK_SECRET") return webhookSecret;
-      if (prop === "HELPDESK_SYNC_TOKEN") return syncToken;
       if (prop === "LC_ACCOUNT_ID") return accountId;
       if (prop === "LC_AUTH_SECRET_NAME") return secretName;
       return target[prop];

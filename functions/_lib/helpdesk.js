@@ -158,8 +158,49 @@ function eventMessageParts(event) {
   }
 
   return {
-    text: message.text || message.plainText || event?.text || "",
-    html: message.html || event?.richTextHtml || event?.html || "",
+    text: message.text || message.plainText || message.plain_text || event?.text || event?.plainText || event?.plain_text || "",
+    html: message.html || message.richTextHtml || message.rich_text_html || event?.richTextHtml || event?.rich_text_html || event?.html || "",
+  };
+}
+
+function stringValues(values) {
+  return values
+    .filter((value) => typeof value === "string" || typeof value === "number")
+    .map((value) => `${value || ""}`.trim())
+    .filter(Boolean);
+}
+
+function contentMessageParts(value) {
+  if (!value) return { text: "", html: "" };
+  if (typeof value === "string") return { text: value, html: "" };
+  if (typeof value !== "object") return { text: "", html: "" };
+
+  return {
+    text: stringValues([value.text, value.plainText, value.plain_text, value.body, value.description]).join("\n\n"),
+    html: stringValues([value.html, value.richTextHtml, value.rich_text_html]).join("\n\n"),
+  };
+}
+
+function ticketContentParts(ticket) {
+  const message = contentMessageParts(ticket?.message);
+  const content = contentMessageParts(ticket?.content);
+  return {
+    text: stringValues([
+      ticket?.text,
+      ticket?.plainText,
+      ticket?.plain_text,
+      ticket?.body,
+      ticket?.description,
+      message.text,
+      content.text,
+    ]).join("\n\n"),
+    html: stringValues([
+      ticket?.html,
+      ticket?.richTextHtml,
+      ticket?.rich_text_html,
+      message.html,
+      content.html,
+    ]).join("\n\n"),
   };
 }
 
@@ -246,6 +287,7 @@ export function normalizeHelpDeskTicketSummary(ticket, agentDirectory = new Map(
   const shortId = normalizeHelpDeskTicketShortId(ticket);
   const requester = normalizeRequester(ticket);
   const assignment = normalizeAssignment(ticket, agentDirectory);
+  const content = ticketContentParts(ticket);
 
   return {
     id,
@@ -265,6 +307,8 @@ export function normalizeHelpDeskTicketSummary(ticket, agentDirectory = new Map(
     status: ticket?.status || "",
     priority: ticket?.priority ?? 0,
     subject: ticket?.subject || "",
+    contentText: content.text,
+    contentHtml: content.html,
     teamIDs: Array.isArray(ticket?.teamIDs) ? ticket.teamIDs.map(String) : [],
     tagIDs: Array.isArray(ticket?.tagIDs) ? ticket.tagIDs.map(String) : [],
     silo: ticket?.silo || "tickets",

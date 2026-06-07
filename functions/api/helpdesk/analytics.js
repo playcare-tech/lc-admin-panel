@@ -46,10 +46,6 @@ function parseDateParam(value, name) {
   return date;
 }
 
-function parseOptionalDateParam(value, name, fallback) {
-  return value ? parseDateParam(value, name) : fallback;
-}
-
 function splitParam(value) {
   return (value || "")
     .split(",")
@@ -307,19 +303,6 @@ async function reserveAnalyticsMessageEvent(env, eventKey) {
   return Number(result?.meta?.changes || 0) > 0;
 }
 
-async function readCachedDay(env, date) {
-  const table = dailyTable(env);
-  const { results } = await env.DB.prepare(
-    `SELECT date, agent_id, agent_name, agent_email, handled_tickets
-     FROM ${table}
-     WHERE date = ?
-     ORDER BY handled_tickets DESC`,
-  )
-    .bind(date)
-    .all();
-  return results?.length ? results : null;
-}
-
 async function readCachedRange(env, fromDate, toDate) {
   const table = dailyTable(env);
   const { results } = await env.DB.prepare(
@@ -346,20 +329,6 @@ async function readCachedDetailsRange(env, fromDate, toDate) {
   return results || [];
 }
 
-async function hasCachedDay(env, date) {
-  return Boolean(await env.DB.prepare(`SELECT date FROM ${dailyTable(env)} WHERE date = ? LIMIT 1`).bind(date).first());
-}
-
-async function resetCachedDay(env, date) {
-  await resetCachedDates(env, [date]);
-}
-
-async function resetCachedDates(env, dates) {
-  const uniqueDates = [...new Set(dates)].filter(Boolean);
-  await runBatches(env.DB, uniqueDates.map((date) => env.DB.prepare(`DELETE FROM ${dailyTable(env)} WHERE date = ?`).bind(date)));
-  await runBatches(env.DB, uniqueDates.map((date) => env.DB.prepare(`DELETE FROM ${replyDetailsTable(env)} WHERE date = ?`).bind(date)));
-}
-
 async function runBatches(db, statements, size = 80) {
   if (!statements.length) return;
   for (let index = 0; index < statements.length; index += size) {
@@ -367,78 +336,8 @@ async function runBatches(db, statements, size = 80) {
   }
 }
 
-function summarizeDailyRows(date, detailRows) {
-  const byAgent = new Map();
-
-  for (const row of detailRows || []) {
-    const agentId = String(row.agent_id || "");
-    if (!agentId) continue;
-    const current = byAgent.get(agentId) || {
-      date,
-      agent_id: agentId,
-      agent_name: row.agent_name || agentId,
-      agent_email: row.agent_email || "",
-      handled_tickets: 0,
-    };
-    current.handled_tickets += 1;
-    if (!current.agent_name && row.agent_name) current.agent_name = row.agent_name;
-    if (!current.agent_email && row.agent_email) current.agent_email = row.agent_email;
-    byAgent.set(agentId, current);
-  }
-
-  return Array.from(byAgent.values());
-}
-
-async function writeCachedDay(env, date, detailRows, { markFetched = true } = {}) {
-  const table = dailyTable(env);
-  const dailyRows = summarizeDailyRows(date, detailRows);
-
-  if (markFetched) {
-    await resetCachedDay(env, date);
-  }
-
-  await runBatches(
-    env.DB,
-    dailyRows.map((row) =>
-      env.DB.prepare(
-        `INSERT INTO ${table}
-          (date, agent_id, agent_name, agent_email, handled_tickets, cached_at)
-         VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-         ON CONFLICT(date, agent_id) DO UPDATE SET
-          agent_name = COALESCE(NULLIF(excluded.agent_name, ''), ${table}.agent_name),
-          agent_email = COALESCE(NULLIF(excluded.agent_email, ''), ${table}.agent_email),
-          handled_tickets = ${table}.handled_tickets + excluded.handled_tickets,
-          cached_at = CURRENT_TIMESTAMP`,
-      ).bind(
-        row.date,
-        row.agent_id,
-        row.agent_name,
-        row.agent_email,
-        row.handled_tickets,
-      ),
-    ),
-  );
-
-  const { results } = await env.DB.prepare(
-    `SELECT date, agent_id, agent_name, agent_email, handled_tickets
-     FROM ${table}
-     WHERE date = ?
-     ORDER BY handled_tickets DESC`,
-  )
-    .bind(date)
-    .all();
-  return results || [];
-}
-
 async function finalizeCachedDay(env, date) {
   await env.DB.prepare(`UPDATE ${dailyTable(env)} SET cached_at = CURRENT_TIMESTAMP WHERE date = ?`).bind(date).run();
-}
-
-async function finalizeCachedDates(env, dates) {
-  await runBatches(
-    env.DB,
-    [...new Set(dates)].map((date) => env.DB.prepare(`UPDATE ${dailyTable(env)} SET cached_at = CURRENT_TIMESTAMP WHERE date = ?`).bind(date)),
-  );
 }
 
 function datesFromDetails(detailRows, fallbackDate) {
@@ -448,6 +347,10 @@ function datesFromDetails(detailRows, fallbackDate) {
     if (date) dates.add(date);
   }
   return dates;
+}
+
+function hasAnySearchParam(searchParams, names) {
+  return names.some((name) => searchParams.has(name));
 }
 
 async function insertReplyDetails(env, detailRows) {
@@ -511,10 +414,8 @@ async function recomputeCachedDatesFromDetails(env, dates) {
   }
 }
 
-async function writeCachedDetailsByDate(env, fallbackDate, detailRows, { resetDates = [] } = {}) {
-  const dates = new Set([...resetDates, ...datesFromDetails(detailRows, fallbackDate)]);
-  if (resetDates.length) await resetCachedDates(env, resetDates);
-
+async function writeCachedDetailsByDate(env, fallbackDate, detailRows) {
+  const dates = new Set(datesFromDetails(detailRows, fallbackDate));
   await insertReplyDetails(env, detailRows);
   await recomputeCachedDatesFromDetails(env, dates);
 
@@ -634,19 +535,6 @@ async function computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory, 
     const agentOrder = left.agent_name.localeCompare(right.agent_name);
     return agentOrder || left.short_id.localeCompare(right.short_id) || left.event_date.localeCompare(right.event_date);
   });
-}
-
-async function computeNewAnalyticsEvents(env, from, to, timezoneOffsetMinutes, agentDirectory) {
-  // A ticket may move to another state after the reply window. Ingest every
-  // unseen message from tickets updated in this sync window, then de-duplicate.
-  const details = await computeDay(env, from, to, timezoneOffsetMinutes, agentDirectory, { eventFrom: new Date(0), eventTo: to });
-  const reserved = [];
-  for (const detail of details) {
-    if (!detail.event_key || (await reserveAnalyticsMessageEvent(env, detail.event_key))) {
-      reserved.push(detail);
-    }
-  }
-  return reserved;
 }
 
 export async function recordHelpDeskAnalyticsMessageWebhook(env, payload, receivedAt = new Date()) {
@@ -793,53 +681,6 @@ function rowsToResponse(rows, from, to, agentDirectory, cache = {}, detailRows =
   };
 }
 
-function splitRangeByLocalDay(from, to, timezoneOffsetMinutes) {
-  const ranges = [];
-  let cursor = new Date(from);
-
-  while (cursor < to) {
-    const localDate = dateKey(cursor, timezoneOffsetMinutes);
-    const nextLocalMidnight = new Date(`${localDate}T00:00:00.000Z`);
-    nextLocalMidnight.setUTCDate(nextLocalMidnight.getUTCDate() + 1);
-    const nextBoundary = new Date(nextLocalMidnight.getTime() + timezoneOffsetMinutes * 60000);
-    const rangeTo = new Date(Math.min(nextBoundary.getTime(), to.getTime()));
-    ranges.push({ from: cursor, to: rangeTo, date: localDate });
-    cursor = rangeTo;
-  }
-
-  return ranges;
-}
-
-export async function syncHelpDeskAnalyticsWindow(env, { from, to, timezoneOffsetMinutes = 0 } = {}) {
-  if (!env?.DB) throw new Error("Missing DB binding.");
-  if (!isValidDate(from) || !isValidDate(to) || to <= from) throw new Error("Invalid sync window.");
-
-  await ensureHelpDeskAnalyticsCache(env);
-  const dashboard = await getHelpDeskDashboard(env);
-  const agentDirectory = buildAgentDirectory(dashboard);
-  const affectedDates = new Set();
-  let detailRows = 0;
-
-  for (const range of splitRangeByLocalDay(from, to, timezoneOffsetMinutes)) {
-    const importedDetails = await computeNewAnalyticsEvents(env, range.from, range.to, timezoneOffsetMinutes, agentDirectory);
-    await writeCachedDetailsByDate(env, range.date, importedDetails);
-    affectedDates.add(range.date);
-    for (const date of datesFromDetails(importedDetails, range.date)) affectedDates.add(date);
-    detailRows += importedDetails.length;
-  }
-
-  for (const date of affectedDates) {
-    await finalizeCachedDay(env, date);
-  }
-
-  return {
-    from: from.toISOString(),
-    to: to.toISOString(),
-    dates: Array.from(affectedDates),
-    detail_rows: detailRows,
-  };
-}
-
 export async function onRequest(context) {
   if (context.request.method !== "GET") return methodNotAllowed(["GET"]);
 
@@ -851,116 +692,65 @@ export async function onRequest(context) {
     await ensureHelpDeskAnalyticsCache(context.env);
 
     const url = new URL(context.request.url);
+    if (
+      hasAnySearchParam(url.searchParams, [
+        "import",
+        "reset_date",
+        "finalize_date",
+        "cache_full_day",
+        "event_from",
+        "event_to",
+        "report_from",
+        "report_to",
+      ])
+    ) {
+      return errorResponse("HelpDesk import is no longer available.", 410);
+    }
+
     const from = parseDateParam(url.searchParams.get("from"), "from");
     const to = parseDateParam(url.searchParams.get("to"), "to");
     if (to <= from) return errorResponse("to must be after from", 400);
 
-    const eventFrom = parseOptionalDateParam(url.searchParams.get("event_from"), "event_from", from);
-    const eventTo = parseOptionalDateParam(url.searchParams.get("event_to"), "event_to", to);
-    if (eventTo <= eventFrom) return errorResponse("event_to must be after event_from", 400);
-    // Imports can ingest broad ticket histories while refreshing a narrower report range.
-    const reportFrom = parseOptionalDateParam(url.searchParams.get("report_from"), "report_from", eventFrom);
-    const reportTo = parseOptionalDateParam(url.searchParams.get("report_to"), "report_to", eventTo);
-    if (reportTo <= reportFrom) return errorResponse("report_to must be after report_from", 400);
-
     const timezoneOffsetMinutes = Number(url.searchParams.get("tz_offset") || 0);
     if (!Number.isFinite(timezoneOffsetMinutes)) return errorResponse("Invalid timezone offset", 400);
 
-    const localDate = dateKey(reportFrom, timezoneOffsetMinutes);
-    const rangeDates = dateKeysForRange(reportFrom, reportTo, timezoneOffsetMinutes);
-    const rangeToDate = rangeDates[rangeDates.length - 1] || localDate;
-    const shouldImport = url.searchParams.get("import") === "1";
-    const shouldResetDate = url.searchParams.get("reset_date") === "1";
-    const shouldFinalizeDate = url.searchParams.get("finalize_date") === "1";
-    const isFullDayCacheWrite = url.searchParams.get("cache_full_day") === "1";
     const filters = {
       agentIds: splitParam(url.searchParams.get("agents")),
       excludeAgentIds: splitParam(url.searchParams.get("exclude_agents")),
       groupIds: splitParam(url.searchParams.get("groups")),
     };
 
-    const needsAgentDirectory = shouldImport || shouldFinalizeDate || filters.groupIds.length > 0;
-    const agentDirectory = needsAgentDirectory ? buildAgentDirectory(await getHelpDeskDashboard(context.env)) : new Map();
+    const agentDirectory = filters.groupIds.length > 0 ? buildAgentDirectory(await getHelpDeskDashboard(context.env)) : new Map();
+    const rangeFromDate = dateKey(from, timezoneOffsetMinutes);
+    const rangeToDate = dateKey(new Date(to.getTime() - 1), timezoneOffsetMinutes);
+    const cachedRangeRows = await readCachedRange(context.env, rangeFromDate, rangeToDate);
+    const cachedDetailRows = await readCachedDetailsRange(context.env, rangeFromDate, rangeToDate);
+    const rows = filterRows(cachedRangeRows, filters, agentDirectory);
+    const detailRows = filterDetailRows(cachedDetailRows, filters, agentDirectory);
+    const expectedDates = dateKeysBetween(rangeFromDate, rangeToDate);
+    const datesWithRows = new Set(cachedRangeRows.map((row) => row.date));
+    const missingDays = expectedDates.filter((date) => !datesWithRows.has(date)).length;
 
-    if (!shouldImport && !shouldFinalizeDate) {
-      const rangeFromDate = dateKey(from, timezoneOffsetMinutes);
-      const rangeToDate = dateKey(new Date(to.getTime() - 1), timezoneOffsetMinutes);
-      const cachedRangeRows = await readCachedRange(context.env, rangeFromDate, rangeToDate);
-      const cachedDetailRows = await readCachedDetailsRange(context.env, rangeFromDate, rangeToDate);
-      const rows = filterRows(cachedRangeRows, filters, agentDirectory);
-      const detailRows = filterDetailRows(cachedDetailRows, filters, agentDirectory);
-      const expectedDates = dateKeysBetween(rangeFromDate, rangeToDate);
-      const datesWithRows = new Set(cachedRangeRows.map((row) => row.date));
-      const missingDays = expectedDates.filter((date) => !datesWithRows.has(date)).length;
-      return json(
-        rowsToResponse(
-          rows,
-          from,
-          to,
-          agentDirectory,
-          {
-            date: rangeFromDate,
-            from_date: rangeFromDate,
-            to_date: rangeToDate,
-            checked: true,
-            hit: cachedRangeRows.length > 0,
-            source: "d1_range",
-            missing: missingDays > 0,
-            missing_days: missingDays,
-            saved: false,
-          },
-          detailRows,
-        ),
-      );
-    }
-
-    const cachedRows = shouldImport || shouldFinalizeDate ? null : await readCachedDay(context.env, localDate);
-    const cacheMeta = {
-      date: localDate,
-      checked: true,
-      hit: Boolean(cachedRows),
-      source: cachedRows ? "d1" : "d1_missing",
-      missing: !cachedRows,
-      saved: false,
-    };
-
-    let rows = cachedRows ? filterRows(cachedRows, filters, agentDirectory) : [];
-
-    if (shouldFinalizeDate) {
-      await finalizeCachedDates(context.env, rangeDates);
-      const finalizedRows = await readCachedRange(context.env, localDate, rangeToDate);
-      const finalizedDetailRows = await readCachedDetailsRange(context.env, localDate, rangeToDate);
-      rows = filterRows(finalizedRows || [], filters, agentDirectory);
-      const detailRows = filterDetailRows(finalizedDetailRows || [], filters, agentDirectory);
-      cacheMeta.hit = true;
-      cacheMeta.missing = false;
-      cacheMeta.saved = true;
-      cacheMeta.source = "helpdesk_import_finalized";
-      cacheMeta.from_date = localDate;
-      cacheMeta.to_date = rangeToDate;
-      return json(rowsToResponse(rows, from, to, agentDirectory, cacheMeta, detailRows));
-    } else if (shouldImport) {
-      const importedDetails = await computeDay(context.env, from, to, timezoneOffsetMinutes, agentDirectory, { eventFrom, eventTo });
-      const summaryRows = await writeCachedDetailsByDate(context.env, localDate, importedDetails, {
-        resetDates: shouldResetDate ? rangeDates : [],
-      });
-      const savedDetailRows = await readCachedDetailsRange(context.env, localDate, rangeToDate);
-      rows = filterRows(summaryRows, filters, agentDirectory);
-      const detailRows = filterDetailRows(savedDetailRows || [], filters, agentDirectory);
-      cacheMeta.hit = false;
-      cacheMeta.missing = !isFullDayCacheWrite;
-      cacheMeta.saved = true;
-      cacheMeta.source = isFullDayCacheWrite ? "helpdesk_import_saved" : "helpdesk_import_partial_saved";
-      cacheMeta.from_date = localDate;
-      cacheMeta.to_date = rangeToDate;
-      return json(rowsToResponse(rows, from, to, agentDirectory, cacheMeta, detailRows));
-    } else if (!cachedRows && (await hasCachedDay(context.env, localDate))) {
-      cacheMeta.hit = true;
-      cacheMeta.missing = false;
-      cacheMeta.source = "d1_empty";
-    }
-
-    return json(rowsToResponse(rows, from, to, agentDirectory, cacheMeta));
+    return json(
+      rowsToResponse(
+        rows,
+        from,
+        to,
+        agentDirectory,
+        {
+          date: rangeFromDate,
+          from_date: rangeFromDate,
+          to_date: rangeToDate,
+          checked: true,
+          hit: cachedRangeRows.length > 0,
+          source: "d1_range",
+          missing: missingDays > 0,
+          missing_days: missingDays,
+          saved: false,
+        },
+        detailRows,
+      ),
+    );
   } catch (error) {
     const message = error.message || "";
     if (/too many requests|rate limit/i.test(message)) {

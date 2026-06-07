@@ -816,6 +816,10 @@ function eventPublicMessageText(event) {
   return stripHtml(event.text || event.html || "");
 }
 
+function ticketContentText(ticket) {
+  return stripHtml([ticket.contentText, ticket.contentHtml].filter(Boolean).join("\n\n"));
+}
+
 function isRequesterMessageAuthor(event) {
   const authorType = `${event.author_type || ""}`.trim().toLowerCase();
   return ["client", "requester", "customer"].includes(authorType);
@@ -911,7 +915,11 @@ async function replyAndSetTicketStatus(env, ticket, senderAgent, messageText, st
 function marketingSpamMatch(ticket, events, threshold, configuredKeywords = []) {
   const publicMessageEvents = events.filter((event) => eventPublicMessageText(event));
   const requesterMessageEvents = publicMessageEvents.filter((event) => isRequesterMessageAuthor(event));
-  if (!requesterMessageEvents.length) {
+  const requesterMessage = requesterMessageEvents.map((event) => eventPublicMessageText(event)).join("\n\n");
+  const ticketContent = ticketContentText(ticket);
+  const searchableTicketText = [ticket.subject || "", ticketContent, requesterMessage].filter(Boolean).join("\n\n");
+
+  if (!requesterMessageEvents.length && !ticketContent) {
     const firstPublicMessage = publicMessageEvents[0];
     return {
       matched: false,
@@ -919,16 +927,15 @@ function marketingSpamMatch(ticket, events, threshold, configuredKeywords = []) 
     };
   }
 
-  const requesterMessage = requesterMessageEvents.map((event) => eventPublicMessageText(event)).join("\n\n");
   const seenPhrases = new Set();
-  const custom = uniqueMatchedPhrases(requesterMessage, configuredKeywords, seenPhrases);
+  const custom = uniqueMatchedPhrases(searchableTicketText, configuredKeywords, seenPhrases);
   if (custom.length) {
     return {
       matched: true,
       reason: "keyword_matched",
       score: custom.length * 2,
       matchedPhrases: custom,
-      messagePreview: requesterMessage.slice(0, 500),
+      messagePreview: searchableTicketText.slice(0, 500),
     };
   }
 
@@ -942,7 +949,7 @@ function marketingSpamMatch(ticket, events, threshold, configuredKeywords = []) 
     };
   }
 
-  const subjectAndMessage = `${ticket.subject || ""} ${requesterMessage}`;
+  const subjectAndMessage = searchableTicketText;
   const supportExclusions = textMatchingPhrases(subjectAndMessage, SUPPORT_EXCLUSION_PHRASES);
   if (supportExclusions.length) {
     return {
@@ -964,7 +971,7 @@ function marketingSpamMatch(ticket, events, threshold, configuredKeywords = []) 
     reason: thresholdMatched ? "matched" : "score_below_threshold",
     score,
     matchedPhrases,
-    messagePreview: requesterMessage.slice(0, 500),
+    messagePreview: searchableTicketText.slice(0, 500),
   };
 }
 
@@ -981,10 +988,8 @@ async function runMarketingSpamWorkflow(context, workflow) {
   );
   const configuredKeywords = marketingSpamConfiguredKeywords(config);
   const searchTerms = marketingSpamSearchTerms(config);
-  const maxSearchTerms = Math.max(
-    safePositiveInteger(config.maxSearchTerms, 8, 9),
-    configuredKeywords.length ? Math.min(configuredKeywords.length, 9) : 0,
-  );
+  const defaultMaxSearchTerms = Math.min(searchTerms.length, Math.max(8, configuredKeywords.length));
+  const maxSearchTerms = safePositiveInteger(config.maxSearchTerms, defaultMaxSearchTerms, 50);
   const tickets = await fetchMarketingSpamCandidates(context.env, {
     maxSearchTerms,
     pageSize: config.searchPageSize,

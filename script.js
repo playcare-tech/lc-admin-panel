@@ -215,8 +215,6 @@ const state = {
   helpdesk: { agents: [], teams: [] },
   adminUsers: [],
   logs: [],
-  helpdeskSyncLogs: [],
-  logsView: "audit",
   logsWarning: "",
   livechatSearch: "",
   helpdeskSearch: "",
@@ -324,8 +322,6 @@ const state = {
     view: "report",
     loading: false,
     error: null,
-    loadStatus: "",
-    loadProgress: null,
     filters: {
       preset: "this_month",
       from: null,
@@ -452,8 +448,6 @@ function resetAccountScopedState() {
   state.livechat = { agents: [], groups: [] };
   state.helpdesk = { agents: [], teams: [] };
   state.logs = [];
-  state.helpdeskSyncLogs = [];
-  state.logsView = "audit";
   state.logsWarning = "";
   state.livechatSearch = "";
   state.helpdeskSearch = "";
@@ -1887,10 +1881,6 @@ function renderLogMetadata(entry) {
   return rows.length ? `<div class="log-details">${rows.join("")}</div>` : "";
 }
 
-function isHelpdeskSyncLog(entry) {
-  return entry?.area === "helpdesk" && entry?.action === "helpdesk_sync_tickets";
-}
-
 function renderLogCards(entries, emptyText) {
   return entries.length
     ? entries
@@ -1914,31 +1904,16 @@ function renderLogCards(entries, emptyText) {
 }
 
 function renderLogs() {
-  const activeView = state.logsView === "helpdesk_sync" ? "helpdesk_sync" : "audit";
-  const auditLogs = state.logs.filter((entry) => !isHelpdeskSyncLog(entry));
-  const helpdeskSyncLogs = state.helpdeskSyncLogs.length
-    ? state.helpdeskSyncLogs
-    : state.logs.filter((entry) => isHelpdeskSyncLog(entry));
-  const visibleLogs = activeView === "helpdesk_sync" ? helpdeskSyncLogs : auditLogs;
-  const emptyText = activeView === "helpdesk_sync"
-    ? state.logsWarning || "No HelpDesk sync tickets logs available."
-    : state.logsWarning || "No audit logs available.";
+  const visibleLogs = state.logs;
+  const emptyText = state.logsWarning || "No audit logs available.";
 
   return `
     ${renderStats([
       { label: "Rows", value: visibleLogs.length, meta: "Loaded from D1" },
       { label: "Status", value: state.logsWarning ? "Warn" : "OK", meta: state.logsWarning || "Logs available" },
-      { label: "Area", value: activeView === "helpdesk_sync" ? "HelpDesk" : "Audit", meta: "Latest events" },
+      { label: "Area", value: "Audit", meta: "Latest events" },
       { label: "Mode", value: "Read", meta: "Newest first" },
     ])}
-    <div class="analytics-view-tabs log-view-tabs">
-      <button class="btn btn-sm ${activeView === "audit" ? "btn-primary" : "btn-outline-secondary"}" type="button" data-log-view="audit">
-        Audit
-      </button>
-      <button class="btn btn-sm ${activeView === "helpdesk_sync" ? "btn-primary" : "btn-outline-secondary"}" type="button" data-log-view="helpdesk_sync">
-        HelpDesk sync tickets
-      </button>
-    </div>
     <div class="table-shell">
       ${renderLogCards(visibleLogs, emptyText)}
     </div>
@@ -4016,236 +3991,6 @@ function resetHelpdeskAnalyticsFilters() {
   fetchHelpdeskAnalytics();
 }
 
-function helpdeskAnalyticsDayRanges(from, to) {
-  const ranges = [];
-  const cursor = new Date(from.getFullYear(), from.getMonth(), from.getDate());
-
-  while (cursor < to) {
-    const dayStart = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate(), 0, 0, 0);
-    const nextDayStart = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + 1, 0, 0, 0);
-    ranges.push({
-      from: new Date(Math.max(dayStart.getTime(), from.getTime())),
-      to: new Date(Math.min(nextDayStart.getTime(), to.getTime())),
-      cacheFullDay: from <= dayStart && to >= nextDayStart,
-    });
-    cursor.setDate(cursor.getDate() + 1);
-  }
-
-  return ranges;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-const HELPDESK_IMPORT_MAX_ATTEMPTS = 2;
-const HELPDESK_IMPORT_SPLIT_THRESHOLD_MS = 60 * 60 * 1000;
-const HELPDESK_IMPORT_SCAN_CHUNK_MS = 24 * 60 * 60 * 1000;
-
-function isSkippableHelpdeskImportError(message) {
-  return /too many requests|rate limit|429|too many tickets|503|service unavailable|failed to load helpdesk analytics|request failed with 5|cpu|exceeded/i.test(
-    message || "",
-  );
-}
-
-function skippedHelpdeskImportResponse(range, error) {
-  const progress = state.helpdesk_analytics.loadProgress;
-  if (progress) progress.skippedChunks = (progress.skippedChunks || 0) + 1;
-  return {
-    period: { from: range.from.toISOString(), to: range.to.toISOString() },
-    summary: { total_tickets: 0, total_replies: 0, active_agents: 0, prev_period: { total_tickets: 0, total_replies: 0, active_agents: 0 } },
-    agents: [],
-    timeline: [],
-    cache: {
-      date: localDateValue(range.reportFrom || range.eventFrom || range.from),
-      skipped: true,
-      saved: false,
-      missing: false,
-      source: "helpdesk_import_skipped",
-      error: error.message || "HelpDesk import failed.",
-    },
-    capabilities: {},
-  };
-}
-
-function mergeHelpdeskAnalyticsResponses(responses, filters) {
-  const responseByDate = new Map();
-  for (const response of responses) {
-    const responseKey = response.cache?.skipped
-      ? `skipped:${response.period?.from || responseByDate.size}`
-      : response.cache?.date || response.period?.from || String(responseByDate.size);
-    responseByDate.set(responseKey, response);
-  }
-
-  const agentsById = new Map();
-  const timelineByDate = new Map();
-  let missingDays = 0;
-  let importedDays = 0;
-  let cachedDays = 0;
-  let skippedSlices = 0;
-
-  for (const response of responseByDate.values()) {
-    if (response.cache?.skipped) {
-      skippedSlices += 1;
-      continue;
-    }
-    skippedSlices += Number(response.cache?.skipped_slices || 0);
-    if (response.cache?.missing) missingDays += 1;
-    if (response.cache?.saved || response.cache?.source === "helpdesk_import") importedDays += 1;
-    if (response.cache?.hit) cachedDays += 1;
-
-    for (const day of response.timeline || []) {
-      if (!timelineByDate.has(day.date)) timelineByDate.set(day.date, { date: day.date, tickets: 0, replies: 0 });
-      const replies = Number(day.replies ?? day.tickets ?? 0);
-      const timelineDay = timelineByDate.get(day.date);
-      timelineDay.tickets += replies;
-      timelineDay.replies += replies;
-    }
-
-    for (const agent of response.agents || []) {
-      const key = String(agent.agent_id || agent.id);
-      if (!agentsById.has(key)) {
-        agentsById.set(key, {
-          ...agent,
-          total_tickets: 0,
-          total_replies: 0,
-          days: [],
-          reply_details: [],
-        });
-      }
-      const current = agentsById.get(key);
-      current.name = current.name || agent.name;
-      current.email = current.email || agent.email;
-      const replies = Number(agent.total_replies ?? agent.total_tickets ?? 0);
-      current.total_tickets += replies;
-      current.total_replies += replies;
-      current.days.push(...(agent.days || []));
-      current.reply_details.push(...(agent.reply_details || []));
-    }
-  }
-
-  const agents = Array.from(agentsById.values()).sort((left, right) => right.total_tickets - left.total_tickets);
-  const totalTickets = agents.reduce((sum, agent) => sum + agent.total_tickets, 0);
-
-  return {
-    period: { from: filters.from.toISOString(), to: filters.to.toISOString() },
-    summary: {
-      total_tickets: totalTickets,
-      total_replies: totalTickets,
-      active_agents: agents.filter((agent) => agent.total_tickets > 0).length,
-      prev_period: { total_tickets: 0, total_replies: 0, active_agents: 0 },
-    },
-    agents,
-    timeline: Array.from(timelineByDate.values()).sort((left, right) => left.date.localeCompare(right.date)),
-    cache: { missing_days: missingDays, imported_days: importedDays, cached_days: cachedDays, skipped_slices: skippedSlices },
-    capabilities: responses[0]?.capabilities || {},
-  };
-}
-
-async function fetchHelpdeskAnalyticsRange(range, filters, depth = 0, importMode = false, attempt = 1) {
-  if (importMode && depth === 0 && range.cacheFullDay) {
-    return importHelpdeskAnalyticsFullDay(range, filters);
-  }
-
-  const params = new URLSearchParams();
-  params.append("from", dateWithHelpdeskAnalyticsOffset(range.from));
-  params.append("to", dateWithHelpdeskAnalyticsOffset(range.to));
-  if (range.eventFrom) params.append("event_from", dateWithHelpdeskAnalyticsOffset(range.eventFrom));
-  if (range.eventTo) params.append("event_to", dateWithHelpdeskAnalyticsOffset(range.eventTo));
-  if (range.reportFrom) params.append("report_from", dateWithHelpdeskAnalyticsOffset(range.reportFrom));
-  if (range.reportTo) params.append("report_to", dateWithHelpdeskAnalyticsOffset(range.reportTo));
-  if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
-  if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
-  if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
-  if (range.cacheFullDay) params.append("cache_full_day", "1");
-  if (importMode) params.append("import", "1");
-  if (importMode && (range.resetDate || (depth === 0 && range.resetDate !== false))) params.append("reset_date", "1");
-  params.append("tz_offset", String(HELPDESK_ANALYTICS_TZ_OFFSET_MINUTES));
-
-  const dayLabel = (range.reportFrom || range.eventFrom || range.from).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  if (importMode) {
-    state.helpdesk_analytics.loadStatus = `Importing ${dayLabel} from HelpDesk...`;
-    renderHelpdeskAnalytics();
-  }
-
-  try {
-    const response = await api(`/api/helpdesk/analytics?${params.toString()}`);
-    const progress = state.helpdesk_analytics.loadProgress;
-    if (progress && depth === 0) {
-      if (response.cache?.hit) {
-        progress.cacheHits += 1;
-      } else if (response.cache?.saved) {
-        progress.savedDays += 1;
-      } else {
-        progress.liveDays += 1;
-      }
-    }
-    return [response];
-  } catch (error) {
-    const duration = range.to.getTime() - range.from.getTime();
-    const isRateLimited = /too many requests|rate limit|429/i.test(error.message || "");
-    const message = error.message || "";
-    const canSkipImportRange = importMode && isSkippableHelpdeskImportError(message);
-
-    if (!canSkipImportRange) {
-      throw error;
-    }
-
-    if (duration > HELPDESK_IMPORT_SPLIT_THRESHOLD_MS && depth < 24) {
-      const middle = new Date(range.from.getTime() + Math.floor(duration / 2));
-      state.helpdesk_analytics.loadStatus = "HelpDesk request was too large. Waiting 10s, then loading smaller portions...";
-      renderHelpdeskAnalytics();
-      await sleep(10000);
-      const first = await fetchHelpdeskAnalyticsRange(
-        {
-          from: range.from,
-          to: middle,
-          eventFrom: range.eventFrom,
-          eventTo: range.eventTo,
-          reportFrom: range.reportFrom,
-          reportTo: range.reportTo,
-          cacheFullDay: false,
-          resetDate: range.resetDate,
-        },
-        filters,
-        depth + 1,
-        importMode,
-      );
-      await sleep(500);
-      const second = await fetchHelpdeskAnalyticsRange(
-        {
-          from: middle,
-          to: range.to,
-          eventFrom: range.eventFrom,
-          eventTo: range.eventTo,
-          reportFrom: range.reportFrom,
-          reportTo: range.reportTo,
-          cacheFullDay: false,
-          resetDate: false,
-        },
-        filters,
-        depth + 1,
-        importMode,
-      );
-      return [...first, ...second];
-    }
-
-    if (attempt >= HELPDESK_IMPORT_MAX_ATTEMPTS) {
-      state.helpdesk_analytics.loadStatus = `Skipped ${localDateValue(range.eventFrom || range.from)} scan ${localTimeValue(range.from)}-${localTimeValue(range.to)} after ${HELPDESK_IMPORT_MAX_ATTEMPTS} failed attempts. Continuing...`;
-      renderHelpdeskAnalytics();
-      return [skippedHelpdeskImportResponse(range, error)];
-    }
-
-    const waitMs = 10000;
-    state.helpdesk_analytics.loadStatus = isRateLimited
-      ? `HelpDesk is rate limiting imports. Waiting ${Math.round(waitMs / 1000)}s before retry ${attempt + 1}/${HELPDESK_IMPORT_MAX_ATTEMPTS}...`
-      : `HelpDesk import failed. Waiting ${Math.round(waitMs / 1000)}s before retry ${attempt + 1}/${HELPDESK_IMPORT_MAX_ATTEMPTS}...`;
-    renderHelpdeskAnalytics();
-    await sleep(waitMs);
-    return fetchHelpdeskAnalyticsRange(range, filters, depth, importMode, attempt + 1);
-  }
-}
-
 async function fetchHelpdeskAnalyticsCachedRange(filters) {
   const params = new URLSearchParams();
   params.append("from", dateWithHelpdeskAnalyticsOffset(filters.from));
@@ -4255,140 +4000,6 @@ async function fetchHelpdeskAnalyticsCachedRange(filters) {
   if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
   params.append("tz_offset", String(HELPDESK_ANALYTICS_TZ_OFFSET_MINUTES));
   return api(`/api/helpdesk/analytics?${params.toString()}`);
-}
-
-async function finalizeHelpdeskAnalyticsRange(range, filters) {
-  const params = new URLSearchParams();
-  params.append("from", dateWithHelpdeskAnalyticsOffset(range.from));
-  params.append("to", dateWithHelpdeskAnalyticsOffset(range.to));
-  if (filters.agents.length > 0) params.append("agents", filters.agents.join(","));
-  if (filters.excludeAgents.length > 0) params.append("exclude_agents", filters.excludeAgents.join(","));
-  if (filters.groups.length > 0) params.append("groups", filters.groups.join(","));
-  params.append("cache_full_day", "1");
-  params.append("finalize_date", "1");
-  params.append("tz_offset", String(HELPDESK_ANALYTICS_TZ_OFFSET_MINUTES));
-  return api(`/api/helpdesk/analytics?${params.toString()}`);
-}
-
-function helpdeskImportScanChunks(range, scanTo = new Date()) {
-  const chunks = [];
-  const scanEnd = new Date(Math.max(range.from.getTime(), scanTo.getTime()));
-  const eventTo = new Date(Math.min(Date.now(), scanEnd.getTime()));
-
-  // Ticket updates discover replies; each discovered ticket contributes its full event history.
-  for (let start = range.from.getTime(); start < scanEnd.getTime(); start += HELPDESK_IMPORT_SCAN_CHUNK_MS) {
-    chunks.push({
-      from: new Date(start),
-      to: new Date(Math.min(start + HELPDESK_IMPORT_SCAN_CHUNK_MS, scanEnd.getTime())),
-      eventFrom: new Date(0),
-      eventTo,
-      reportFrom: range.from,
-      reportTo: range.to,
-      cacheFullDay: false,
-      resetDate: chunks.length === 0,
-    });
-  }
-
-  if (!chunks.length) {
-    chunks.push({
-      from: range.from,
-      to: new Date(range.from.getTime() + 1),
-      eventFrom: new Date(0),
-      eventTo,
-      reportFrom: range.from,
-      reportTo: range.to,
-      cacheFullDay: false,
-      resetDate: true,
-    });
-  }
-
-  return chunks;
-}
-
-async function importHelpdeskAnalyticsFullDay(range, filters) {
-  const skippedBefore = state.helpdesk_analytics.loadProgress?.skippedChunks || 0;
-  const chunks = helpdeskImportScanChunks(range, range.scanTo);
-  const rangeLabel = `${range.from.toLocaleDateString("en-US", { month: "short", day: "numeric" })} - ${range.to.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
-
-  for (const [index, chunk] of chunks.entries()) {
-    if (state.helpdesk_analytics.loadProgress) state.helpdesk_analytics.loadProgress.current = index;
-    state.helpdesk_analytics.loadStatus = `Scanning ${rangeLabel} replies from daily ticket updates in all states (${index + 1}/${chunks.length})...`;
-    renderHelpdeskAnalytics();
-    await fetchHelpdeskAnalyticsRange(chunk, filters, 0, true);
-    if (state.helpdesk_analytics.loadProgress) state.helpdesk_analytics.loadProgress.current = index + 1;
-    renderHelpdeskAnalytics();
-    if (index < chunks.length - 1) await sleep(250);
-  }
-
-  state.helpdesk_analytics.loadStatus = `Saving ${rangeLabel} analytics...`;
-  renderHelpdeskAnalytics();
-  const finalized = await finalizeHelpdeskAnalyticsRange(range, filters);
-  const skippedChunks = (state.helpdesk_analytics.loadProgress?.skippedChunks || 0) - skippedBefore;
-  if (skippedChunks) finalized.cache = { ...(finalized.cache || {}), skipped_slices: skippedChunks };
-  return [finalized];
-}
-
-async function fetchHelpdeskAnalyticsDayResponses(filters, importMode = false) {
-  if (importMode) {
-    const range = {
-      from: filters.from,
-      to: filters.to,
-      scanTo: new Date(),
-      cacheFullDay: true,
-    };
-    const chunks = helpdeskImportScanChunks(range, range.scanTo);
-    state.helpdesk_analytics.loadProgress = {
-      current: 0,
-      total: chunks.length,
-      unit: "requests",
-      cacheHits: 0,
-      savedDays: 0,
-      liveDays: 0,
-      skippedChunks: 0,
-    };
-    return importHelpdeskAnalyticsFullDay(range, filters);
-  }
-
-  const ranges = helpdeskAnalyticsDayRanges(filters.from, filters.to);
-  const responses = [];
-
-  for (const [index, range] of ranges.entries()) {
-    const result = await fetchHelpdeskAnalyticsRange(range, filters, 0, importMode);
-    responses.push(...result);
-  }
-
-  return responses;
-}
-
-function renderHelpdeskAnalyticsLoading(container) {
-  const { loadProgress, loadStatus } = state.helpdesk_analytics;
-  const total = loadProgress?.total || 0;
-  const current = loadProgress?.current || 0;
-  const unit = loadProgress?.unit || "days";
-  const percent = total ? Math.min(100, Math.round((current / total) * 100)) : 8;
-  const cacheHits = loadProgress?.cacheHits || 0;
-  const savedDays = loadProgress?.savedDays || 0;
-  const liveDays = loadProgress?.liveDays || 0;
-  const skippedChunks = loadProgress?.skippedChunks || 0;
-
-  const loadingDiv = document.createElement("div");
-  loadingDiv.className = "alert alert-info helpdesk-analytics-loading";
-  loadingDiv.innerHTML = `
-    <div class="helpdesk-analytics-loading-head">
-      <strong>${escapeHtml(loadStatus || "Loading HelpDesk data...")}</strong>
-      ${total ? `<span>${current}/${total} ${escapeHtml(unit)}</span>` : ""}
-    </div>
-    <div class="progress helpdesk-analytics-progress" role="progressbar" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100">
-      <div class="progress-bar" style="width: ${percent}%"></div>
-    </div>
-    <div class="helpdesk-analytics-loading-meta">
-      <span>D1 hits: ${cacheHits}</span>
-      <span>Fetched and saved: ${savedDays}</span>
-      <span>Live only: ${liveDays}</span>
-      ${skippedChunks ? `<span>Skipped: ${skippedChunks}</span>` : ""}
-    </div>
-  `;
-  container.appendChild(loadingDiv);
 }
 
 // Task 8: Create fetchAnalytics Function for HelpDesk
@@ -4454,8 +4065,6 @@ async function fetchHelpdeskAnalytics() {
     state.helpdesk_analytics.error = "Select a valid HelpDesk analytics range.";
     state.helpdesk_analytics.data = null;
     state.helpdesk_analytics.loading = false;
-    state.helpdesk_analytics.loadStatus = "";
-    state.helpdesk_analytics.loadProgress = null;
     renderHelpdeskAnalytics();
     return;
   }
@@ -4463,8 +4072,6 @@ async function fetchHelpdeskAnalytics() {
   state.helpdesk_analytics.loading = true;
   state.helpdesk_analytics.error = null;
   state.helpdesk_analytics.data = null;
-  state.helpdesk_analytics.loadStatus = "";
-  state.helpdesk_analytics.loadProgress = null;
   renderHelpdeskAnalytics();
 
   try {
@@ -4474,50 +4081,9 @@ async function fetchHelpdeskAnalytics() {
   } catch (error) {
     console.error("Fetch analytics error:", error);
     state.helpdesk_analytics.error = error.message;
-    state.helpdesk_analytics.loadStatus = "";
-    state.helpdesk_analytics.loadProgress = null;
     renderHelpdeskAnalytics();
   } finally {
     state.helpdesk_analytics.loading = false;
-    state.helpdesk_analytics.loadStatus = "";
-    state.helpdesk_analytics.loadProgress = null;
-    renderHelpdeskAnalytics();
-  }
-}
-
-async function importHelpdeskAnalytics() {
-  const filters = cloneHelpdeskAnalyticsFilters();
-  if (!filters.from || !filters.to || filters.to <= filters.from) {
-    state.helpdesk_analytics.error = "Select a valid HelpDesk analytics range.";
-    state.helpdesk_analytics.data = null;
-    state.helpdesk_analytics.loading = false;
-    state.helpdesk_analytics.loadStatus = "";
-    state.helpdesk_analytics.loadProgress = null;
-    renderHelpdeskAnalytics();
-    return;
-  }
-  state.helpdesk_analytics.appliedFilters = filters;
-  state.helpdesk_analytics.loading = true;
-  state.helpdesk_analytics.error = null;
-  state.helpdesk_analytics.data = null;
-  state.helpdesk_analytics.loadStatus = "Starting HelpDesk import...";
-  state.helpdesk_analytics.loadProgress = null;
-  renderHelpdeskAnalytics();
-
-  try {
-    const responses = await fetchHelpdeskAnalyticsDayResponses(filters, true);
-    state.helpdesk_analytics.data = mergeHelpdeskAnalyticsResponses(responses, filters);
-    renderHelpdeskAnalytics();
-  } catch (error) {
-    console.error("Import analytics error:", error);
-    state.helpdesk_analytics.error = error.message;
-    state.helpdesk_analytics.loadStatus = "";
-    state.helpdesk_analytics.loadProgress = null;
-    renderHelpdeskAnalytics();
-  } finally {
-    state.helpdesk_analytics.loading = false;
-    state.helpdesk_analytics.loadStatus = "";
-    state.helpdesk_analytics.loadProgress = null;
     renderHelpdeskAnalytics();
   }
 }
@@ -4761,7 +4327,6 @@ function renderHelpdeskAnalytics() {
   actionBar.className = "helpdesk-analytics-actions";
   actionBar.innerHTML = `
     <button id="helpdeskAnalyticsApplyBtn" class="btn btn-primary" type="button">Filter</button>
-    <button id="helpdeskAnalyticsImportBtn" class="btn btn-outline-primary" type="button">Import from HelpDesk</button>
     <button id="helpdeskAnalyticsPdfBtn" class="btn btn-outline-secondary" type="button" ${data ? "" : "disabled"}>Export PDF</button>
     <button id="helpdeskAnalyticsExcelBtn" class="btn btn-outline-secondary" type="button" ${data ? "" : "disabled"}>Export Excel</button>
     <button id="helpdeskAnalyticsResetBtn" class="btn btn-outline-secondary" type="button">Reset filters</button>
@@ -4805,9 +4370,6 @@ function renderHelpdeskAnalytics() {
   document.getElementById("helpdeskAnalyticsApplyBtn")?.addEventListener("click", () => {
     fetchHelpdeskAnalytics();
   });
-  document.getElementById("helpdeskAnalyticsImportBtn")?.addEventListener("click", () => {
-    importHelpdeskAnalytics();
-  });
   document.getElementById("helpdeskAnalyticsPdfBtn")?.addEventListener("click", () => {
     exportHelpdeskAnalyticsPdf();
   });
@@ -4820,25 +4382,13 @@ function renderHelpdeskAnalytics() {
 
   renderFiltersConditional();
 
-  if (loading) {
-    if (state.helpdesk_analytics.loadProgress) {
-      renderHelpdeskAnalyticsLoading(container);
-    }
-  }
-
   // Render data sections if available
   if (data) {
     if (!loading && data.cache?.missing_days) {
       const missingDiv = document.createElement("div");
       missingDiv.className = "alert alert-warning";
-      missingDiv.textContent = `${data.cache.missing_days} selected day(s) are not imported into D1 yet. Click "Import from HelpDesk" to load and save them.`;
+      missingDiv.textContent = `${data.cache.missing_days} selected day(s) are missing from D1 cache.`;
       container.appendChild(missingDiv);
-    }
-    if (!loading && data.cache?.skipped_slices) {
-      const skippedDiv = document.createElement("div");
-      skippedDiv.className = "alert alert-warning";
-      skippedDiv.textContent = `${data.cache.skipped_slices} HelpDesk import request(s) failed twice and were skipped. The import continued with the next request.`;
-      container.appendChild(skippedDiv);
     }
     renderMetricsAndPanels();
     renderLeaderboard();
@@ -4851,7 +4401,7 @@ function renderHelpdeskAnalytics() {
   } else if (!loading) {
     const hint = document.createElement("div");
     hint.className = "empty-state";
-    hint.textContent = 'No data loaded. Click "Filter" to read from cache or "Import from HelpDesk" to fetch fresh data.';
+    hint.textContent = 'No data loaded. Click "Filter" to read from D1 cache.';
     container.appendChild(hint);
   }
 }
@@ -6381,7 +5931,6 @@ async function refreshData() {
     state.helpdesk_analytics.webhookStats = helpdeskAnalyticsWebhookStatsResult.value;
   }
   state.logs = logsResult.status === "fulfilled" ? logsResult.value.logs || [] : [];
-  state.helpdeskSyncLogs = logsResult.status === "fulfilled" ? logsResult.value.helpdeskSyncLogs || [] : [];
   state.logsWarning = logsResult.status === "fulfilled" ? logsResult.value.warning || "" : "Logs unavailable.";
 
   renderApp();
@@ -6602,13 +6151,6 @@ function bindAppEvents() {
   bindSearch("livechatCreateSearchInput", "livechatCreateSearch");
   bindSearch("helpdeskCreateSearchInput", "helpdeskCreateSearch");
   bindSearch("modalSearchInput", "modalSearch");
-
-  document.querySelectorAll("[data-log-view]").forEach((button) => {
-    button.onclick = () => {
-      state.logsView = button.dataset.logView === "helpdesk_sync" ? "helpdesk_sync" : "audit";
-      renderApp();
-    };
-  });
 
   document.getElementById("analyticsPreset")?.addEventListener("change", (event) => {
     state.analytics.filters.preset = event.target.value;
@@ -7132,8 +6674,6 @@ function bindAppEvents() {
       await api("/api/helpdesk/analytics-cache", { method: "DELETE" });
       state.helpdesk_analytics.data = null;
       state.helpdesk_analytics.error = null;
-      state.helpdesk_analytics.loadStatus = "";
-      state.helpdesk_analytics.loadProgress = null;
     }, "HelpDesk analytics cache cleared.");
   });
 
