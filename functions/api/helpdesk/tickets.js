@@ -26,8 +26,8 @@ const MAX_PAGE_SIZE = 40;
 const AUTO_MERGE_PAGE_SIZE = 100;
 const WORKFLOW_OPEN_TICKETS_MAX_PAGES = 10;
 const AUTO_MERGE_MAX_PAGES = 5;
-const AUTO_MERGE_DETAIL_LOOKUP_LIMIT = 12;
-const AUTO_MERGE_MAX_MERGES_PER_RUN = 2;
+const AUTO_MERGE_DETAIL_LOOKUP_LIMIT = 40;
+const AUTO_MERGE_MAX_MERGES_PER_RUN = 5;
 const AUTO_RESOLVE_PAGE_SIZE = 100;
 const TICKET_EXPORT_PAGE_SIZE = 100;
 const TICKET_EXPORT_LIMITS = new Set([2000]);
@@ -199,8 +199,8 @@ function autoMergeLimits(workflow) {
   const config = workflow?.config || {};
   return {
     maxPages: safePositiveInteger(config.maxPages, AUTO_MERGE_MAX_PAGES, 10),
-    maxDetailLookups: safePositiveInteger(config.maxDetailLookups, AUTO_MERGE_DETAIL_LOOKUP_LIMIT, 25),
-    maxMergesPerRun: safePositiveInteger(config.maxMergesPerRun, AUTO_MERGE_MAX_MERGES_PER_RUN, 5),
+    maxDetailLookups: safePositiveInteger(config.maxDetailLookups, AUTO_MERGE_DETAIL_LOOKUP_LIMIT, 80),
+    maxMergesPerRun: safePositiveInteger(config.maxMergesPerRun, AUTO_MERGE_MAX_MERGES_PER_RUN, 10),
   };
 }
 
@@ -834,12 +834,14 @@ function duplicateEmailContent(ticketDetail, agentDirectory = new Map()) {
   const firstRequesterMessage = events.find((event) => {
     return isRequesterMessageAuthor(event) && eventPublicMessageText(event);
   });
-  const messageText = normalizedMessageText(eventPublicMessageText(firstRequesterMessage || {}));
+  const ticket = normalizeHelpDeskTicketSummary(ticketDetail, agentDirectory);
+  const fallbackText = ticketContentText(ticket) || ticket.subject || "";
+  const messageText = normalizedMessageText(eventPublicMessageText(firstRequesterMessage || {}) || fallbackText);
   if (!messageText) return null;
 
   return {
     key: messageText,
-    preview: eventPublicMessageText(firstRequesterMessage).slice(0, 1000),
+    preview: (eventPublicMessageText(firstRequesterMessage || {}) || fallbackText).slice(0, 1000),
   };
 }
 
@@ -1541,12 +1543,210 @@ async function autoMergeSixHourRequesterTickets(context, auth, workflow) {
   };
 }
 
+function uniqueTicketsById(tickets) {
+  const byId = new Map();
+  for (const ticket of tickets || []) {
+    if (ticket?.id && !byId.has(ticket.id)) byId.set(ticket.id, ticket);
+  }
+  return Array.from(byId.values());
+}
+
+async function autoMergeSixHourRequesterTicketForWebhook(context, auth, workflow, ticketDetail) {
+  const limits = autoMergeSixHourLimits(workflow);
+  const currentTicket = normalizeHelpDeskTicketSummary(ticketDetail);
+  const requesterEmail = requesterKey(currentTicket);
+  const merged = [];
+  const mergeErrors = [];
+  let mergeLimitReached = false;
+
+  if (currentTicket.status !== "open" || currentTicket.parentTicket || !requesterEmail || !ticketCreatedTime(currentTicket)) {
+    return {
+      merged,
+      mergeErrors,
+      scannedTickets: currentTicket.id ? 1 : 0,
+      candidateGroups: 0,
+      processedGroups: 0,
+      mergeLimitReached,
+      groupLimitReached: false,
+      limits,
+    };
+  }
+
+  const requesterTickets = await fetchRequesterTicketsForAutoResolve(context.env, requesterEmail, {
+    statuses: ["open"],
+    maxPagesPerStatus: limits.maxPages,
+  });
+  const windowMs = limits.windowHours * 60 * 60 * 1000;
+  const currentCreatedMs = ticketCreatedTime(currentTicket);
+  const windowStartMs = currentCreatedMs - windowMs;
+  const candidates = uniqueTicketsById([currentTicket, ...requesterTickets])
+    .filter((ticket) => {
+      const createdMs = ticketCreatedTime(ticket);
+      return (
+        ticket.status === "open" &&
+        !ticket.parentTicket &&
+        requesterKey(ticket) === requesterEmail &&
+        createdMs >= windowStartMs &&
+        createdMs <= currentCreatedMs
+      );
+    })
+    .sort((left, right) => ticketCreatedTime(left) - ticketCreatedTime(right));
+
+  if (candidates.length < 2) {
+    return {
+      merged,
+      mergeErrors,
+      scannedTickets: requesterTickets.length + 1,
+      candidateGroups: 0,
+      processedGroups: 0,
+      mergeLimitReached,
+      groupLimitReached: false,
+      limits,
+    };
+  }
+
+  const agentDirectory = new Map();
+  const parentCandidate = candidates[0];
+  let parentDetail;
+  let parentTicket;
+
+  try {
+    parentDetail = await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(parentCandidate.id)}`);
+    parentTicket = normalizeHelpDeskTicketSummary(parentDetail, agentDirectory);
+  } catch (error) {
+    mergeErrors.push({
+      requesterEmail,
+      parentTicketId: parentCandidate.id,
+      message: error.message || "Failed to load webhook 6h auto-merge parent ticket.",
+    });
+  }
+
+  if (parentTicket && parentTicket.status === "open" && !parentTicket.parentTicket && requesterKey(parentTicket) === requesterEmail) {
+    for (const childCandidate of candidates.slice(1)) {
+      if (merged.length >= limits.maxMergesPerRun) {
+        mergeLimitReached = true;
+        break;
+      }
+
+      try {
+        const childDetail = childCandidate.id === currentTicket.id
+          ? ticketDetail
+          : await helpdeskRequest(context.env, `/tickets/${encodeURIComponent(childCandidate.id)}`);
+        const childTicket = normalizeHelpDeskTicketSummary(childDetail, agentDirectory);
+        if (childTicket.status !== "open" || childTicket.parentTicket || requesterKey(childTicket) !== requesterEmail) {
+          continue;
+        }
+
+        const childContent = mergedTicketContent(childDetail, agentDirectory);
+        await mergeChildTicketPreservingTeam(context.env, parentDetail, parentTicket, childTicket, childContent, "automatic_6h_rule");
+
+        merged.push({
+          mode: "automatic_6h_rule",
+          trigger: "webhook:create-ticket",
+          requesterEmail,
+          windowHours: limits.windowHours,
+          windowStart: new Date(windowStartMs).toISOString(),
+          windowEnd: new Date(currentCreatedMs).toISOString(),
+          parentTicketId: parentTicket.id,
+          parentShortId: parentTicket.short_id || parentTicket.shortID,
+          parentSubject: parentTicket.subject || "",
+          parentLink: ticketLink(parentTicket),
+          parentTagId: AUTO_MERGED_PARENT_TAG_ID,
+          childTicketId: childTicket.id,
+          childShortId: childTicket.short_id || childTicket.shortID,
+          childSubject: childTicket.subject || "",
+          childLink: ticketLink(childTicket),
+          mergedContentPreview: childContent.slice(0, 1000),
+        });
+      } catch (error) {
+        mergeErrors.push({
+          requesterEmail,
+          parentTicketId: parentTicket.id,
+          childTicketId: childCandidate.id,
+          message: error.message || "Failed to auto-merge webhook 6h HelpDesk ticket.",
+        });
+      }
+    }
+  }
+
+  if (merged.length) {
+    await writeLogSafely(context.env, {
+      actor: auth.session.user,
+      area: "helpdesk",
+      action: AUTO_MERGE_ACTION,
+      target: merged[0].parentTicketId,
+      status: "success",
+      details: `Webhook auto-merged ${merged.length} HelpDesk ticket(s) by 6h requester rule.`,
+      metadata: {
+        mode: "automatic_6h_rule",
+        trigger: "webhook:create-ticket",
+        requesterEmail,
+        createdDate: `${merged[0].windowStart || ""} to ${merged[0].windowEnd || ""}`,
+        mergedTickets: merged,
+        scannedTickets: requesterTickets.length + 1,
+        candidateGroups: 1,
+        processedGroups: 1,
+        mergeLimitReached,
+        groupLimitReached: false,
+        limits,
+      },
+    });
+  }
+
+  if (mergeErrors.length) {
+    await writeLogSafely(context.env, {
+      actor: auth.session.user,
+      area: "helpdesk",
+      action: AUTO_MERGE_ACTION,
+      target: mergeErrors[0].parentTicketId,
+      status: "error",
+      details: `Failed webhook 6h auto-merge for ${mergeErrors.length} HelpDesk ticket(s).`,
+      metadata: {
+        mode: "automatic_6h_rule",
+        trigger: "webhook:create-ticket",
+        mergeErrors,
+      },
+    });
+  }
+
+  return {
+    merged,
+    mergeErrors,
+    scannedTickets: requesterTickets.length + 1,
+    candidateGroups: 1,
+    processedGroups: 1,
+    mergeLimitReached,
+    groupLimitReached: false,
+    limits,
+  };
+}
+
 async function runAutoMergeSixHourWorkflow(context, auth, workflow) {
   const result = await autoMergeSixHourRequesterTickets(context, auth, workflow);
   const limitText = result.mergeLimitReached || result.groupLimitReached ? " More candidates will be checked on the next run." : "";
   return {
     details: `Auto-merged ${result.merged.length} ticket(s) by 6h requester rule after scanning ${result.scannedTickets} open ticket(s).${limitText}`,
     metadata: {
+      type: workflow.type,
+      mergedTickets: result.merged,
+      mergeErrors: result.mergeErrors,
+      scannedTickets: result.scannedTickets,
+      candidateGroups: result.candidateGroups,
+      processedGroups: result.processedGroups,
+      mergeLimitReached: result.mergeLimitReached,
+      groupLimitReached: result.groupLimitReached,
+      limits: result.limits,
+    },
+  };
+}
+
+async function runAutoMergeSixHourWorkflowForTicket(context, auth, workflow, ticketDetail) {
+  const result = await autoMergeSixHourRequesterTicketForWebhook(context, auth, workflow, ticketDetail);
+  const limitText = result.mergeLimitReached ? " More candidates will be checked on the next run." : "";
+  return {
+    details: `Webhook auto-merged ${result.merged.length} ticket(s) by 6h requester rule after scanning ${result.scannedTickets} requester ticket(s).${limitText}`,
+    metadata: {
+      trigger: "webhook:create-ticket",
       type: workflow.type,
       mergedTickets: result.merged,
       mergeErrors: result.mergeErrors,
@@ -1570,6 +1770,8 @@ async function runWorkflowSafely(context, auth, workflow, timezoneOffsetMinutes,
       result = await runMarketingSpamWorkflowForTicket(context, workflow, options.ticketDetail);
     } else if (options.trigger === "webhook:create-ticket" && workflow.type === AUTO_REPLY_EMPTY_REQUESTER_WORKFLOW_TYPE) {
       result = await runEmptyRequesterReplyWorkflowForTicket(context, workflow, options.ticketDetail);
+    } else if (options.trigger === "webhook:create-ticket" && workflow.type === AUTO_MERGE_6H_WORKFLOW_TYPE) {
+      result = await runAutoMergeSixHourWorkflowForTicket(context, auth, workflow, options.ticketDetail);
     } else if (workflow.type === AUTO_MERGE_WORKFLOW_TYPE) {
       result = await runAutoMergeWorkflow(context, auth, workflow);
     } else if (workflow.type === AUTO_MERGE_6H_WORKFLOW_TYPE) {

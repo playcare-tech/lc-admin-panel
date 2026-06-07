@@ -272,7 +272,7 @@ export function normalizeHelpDeskConversationEvents(ticket, agentDirectory = new
         author_id: author.id,
         author_name: author.name || author.email || author.type,
         author_email: author.email,
-        is_private: Boolean(event.isPrivate || event.private),
+        is_private: Boolean(event.isPrivate || event.private || event.message?.isPrivate || event.message?.private || event.message?.is_private),
         status: eventStatusValue(event),
         text: message.text,
         html: message.html,

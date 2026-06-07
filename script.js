@@ -4474,12 +4474,6 @@ function renderHelpdeskAnalytics() {
 
   // Render data sections if available
   if (data) {
-    if (!loading && data.cache?.missing_days) {
-      const missingDiv = document.createElement("div");
-      missingDiv.className = "alert alert-warning";
-      missingDiv.textContent = `${data.cache.missing_days} selected day(s) are missing from D1 cache.`;
-      container.appendChild(missingDiv);
-    }
     renderMetricsAndPanels();
     renderLeaderboard();
   } else if (loading) {
@@ -4491,7 +4485,7 @@ function renderHelpdeskAnalytics() {
   } else if (!loading) {
     const hint = document.createElement("div");
     hint.className = "empty-state";
-    hint.textContent = 'No data loaded. Click "Filter" to read from D1 cache.';
+    hint.textContent = 'No data loaded. Click "Filter" to load the selected report.';
     container.appendChild(hint);
   }
 }
