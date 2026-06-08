@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler pages dev .",
+    "dev:slack-report": "wrangler dev --config wrangler.slack-report.toml",
     "deploy": "wrangler pages deploy .",
+    "deploy:slack-report": "wrangler deploy --config wrangler.slack-report.toml",
     "cf-typegen": "wrangler types"
   },
   "devDependencies": {

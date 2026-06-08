@@ -1,0 +1,15 @@
+name = "lc-admin-helpdesk-slack-report"
+main = "workers/helpdesk-slack-report.js"
+compatibility_date = "2026-04-22"
+
+[vars]
+HELPDESK_ANALYTICS_TIME_ZONE = "Europe/Nicosia"
+SLACK_HELPDESK_REPORT_CHANNEL = "C0B8SQY3LNR"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "live_chat_admin"
+database_id = "d70ce44b-5209-4e02-b565-e3429d7d6288"
+
+[triggers]
+crons = ["0 6,7 * * *"]
