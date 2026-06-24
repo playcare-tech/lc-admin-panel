@@ -28,11 +28,59 @@ const HELPDESK_ANALYTICS_METRICS = {
   },
 };
 const DEFAULT_HELPDESK_ANALYTICS_AGENT_EMAILS = [
+  "maryia.kavalchuk@boomerang-partners.com",
+  "alina.savchuk@boomerang-partners.com",
+  "matvey.ivanov@boomerang-partners.com",
+  "kateryna.brezhneva@boomerang-partners.com",
+  "daniil.yermakovich@boomerang-partners.com",
+  "naima.voloshina@boomerang-partners.com",
+  "oleg.fadeev@boomerang-partners.com",
+  "valeriya.ilhan@boomerang-partners.com",
+  "garnik.makvetsyan@boomerang-partners.com",
   "aleksandr.lavrushkin@boomerang-partners.com",
+  "daria.potapova@boomerang-partners.com",
+  "andrey.solovyev@boomerang-partners.com",
+  "victoria.namupala@boomerang-partners.com",
+  "mariia.priakhina@boomerang-partners.com",
+  "yehor.starchev@boomerang-partners.com",
+  "mikhail.desiatov@boomerang-partners.com",
+  "elgin.bakhishov@boomerang-partners.com",
+  "yury.rybakov@boomerang-partners.com",
+  "irada.muxtarova@boomerang-partners.com",
+  "arslan.abubikirov@boomerang-partners.com",
+  "zhomart.adanbekov@boomerang-partners.com",
+  "maksim.yerdenov@boomerang-partners.com",
+  "elizaveta.kozlovskaya@boomerang-partners.com",
+  "tamerlan.aghamaliyev@boomerang-partners.com",
+  "nikolay.baranchuk@boomerang-partners.com",
+  "arman.harutyunyan@boomerang-partners.com",
+  "ilya.pantsiukhou@boomerang-partners.com",
+  "hanna.mashchytskaya@boomerang-partners.com",
+  "khushnur.turgunbaev@boomerang-partners.com",
+  "ivan.sakovich@boomerang-partners.com",
+  "vladislav.kholkin@boomerang-partners.com",
+  "mikhail.kipel@boomerang-partners.com",
+  "ihar.filonik@boomerang-partners.com",
+  "anatoliy.tolstov@boomerang-partners.com",
+  "anastasiia.amelkina@boomerang-partners.com",
+  "alisa.maisiuk@boomerang-partners.com",
+  "anastasiia.kozlova@boomerang-partners.com",
+  "gurgen.a@playcare.tech",
+  "oleh.v@playcare.tech",
+  "nikita.t@playcare.tech",
+  "anastasiya.l@playcare.tech",
+  "sofia.k@playcare.tech",
+  "viktoria.z@playcare.tech",
   "aleksandr.b@playcare.tech",
-  "valerii.b@playcare.tech",
   "ryhor.a@playcare.tech",
   "tamazi.m@playcare.tech",
+  "kiryl.ch@playcare.tech",
+  "elijah.b@playcare.tech",
+  "mikhail.g@playcare.tech",
+  "aytun.m@playcare.tech",
+  "yuri.p@playcare.tech",
+  "marina.g@playcare.tech",
+  "ivo.k@playcare.tech",
 ];
 const EXCLUDED_DEFAULT_HELPDESK_ANALYTICS_AGENT_EMAILS = [
   "daryia.spirydovich@boomerang-partners.com",
@@ -176,6 +224,7 @@ const HELPDESK_TICKET_TEXT_SORTS = new Set(["requester", "assignedAgent"]);
 const HELPDESK_TICKET_DATE_SORTS = new Set(["createdAt", "updatedAt", "lastMessageAt"]);
 const LIVECHAT_GROUP_BUCKETS = ["VIP", "SS", "TL", "S2B"];
 const ACCOUNT_STORAGE_KEY = "lc-admin-selected-account";
+const HELPDESK_ANALYTICS_AGENT_DEFAULTS_STORAGE_KEY = "lc-admin-helpdesk-analytics-agent-defaults-v2";
 const ACCOUNT_OPTIONS = [
   { id: "default", label: "Playcare" },
   { id: "playtraffpartners", label: "playtraffpartners" },
@@ -508,7 +557,9 @@ function resetAccountScopedState() {
   };
   state.analytics.data = null;
   state.helpdesk_analytics.data = null;
+  state.helpdesk_analytics.appliedFilters = null;
   state.helpdesk_analytics.webhookStats = null;
+  state.helpdesk_analytics.defaultAgentsApplied = false;
   state.livechatSelectedAgentIds.clear();
   state.livechatSelectedGroupIds.clear();
   state.helpdeskSelectedAgentIds.clear();
@@ -2547,11 +2598,53 @@ function defaultHelpdeskAnalyticsAgentIds() {
     .map((agent) => String(agent.id));
 }
 
+function cleanHelpdeskAnalyticsAgentIds(ids) {
+  const availableIds = new Set((state.helpdesk.agents || []).map((agent) => String(agent.id)));
+  return [...new Set((Array.isArray(ids) ? ids : []).map((id) => String(id)).filter((id) => !availableIds.size || availableIds.has(id)))];
+}
+
+function storedHelpdeskAnalyticsAgentDefaults() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(HELPDESK_ANALYTICS_AGENT_DEFAULTS_STORAGE_KEY) || "{}");
+    const accountDefaults = stored?.[normalizeAccountId(state.accountId)];
+    if (!accountDefaults || typeof accountDefaults !== "object") return null;
+    return {
+      agents: cleanHelpdeskAnalyticsAgentIds(accountDefaults.agents),
+      excludeAgents: cleanHelpdeskAnalyticsAgentIds(accountDefaults.excludeAgents),
+    };
+  } catch (_error) {
+    return null;
+  }
+}
+
+function saveHelpdeskAnalyticsAgentDefaults() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(HELPDESK_ANALYTICS_AGENT_DEFAULTS_STORAGE_KEY) || "{}");
+    stored[normalizeAccountId(state.accountId)] = {
+      agents: cleanHelpdeskAnalyticsAgentIds(state.helpdesk_analytics.filters.agents),
+      excludeAgents: cleanHelpdeskAnalyticsAgentIds(state.helpdesk_analytics.filters.excludeAgents),
+    };
+    localStorage.setItem(HELPDESK_ANALYTICS_AGENT_DEFAULTS_STORAGE_KEY, JSON.stringify(stored));
+  } catch (_error) {
+    // Analytics filters should still work when browser storage is unavailable.
+  }
+}
+
+function defaultHelpdeskAnalyticsAgentFilters() {
+  const storedDefaults = storedHelpdeskAnalyticsAgentDefaults();
+  if (storedDefaults) return storedDefaults;
+  return {
+    agents: defaultHelpdeskAnalyticsAgentIds(),
+    excludeAgents: [],
+  };
+}
+
 function applyDefaultHelpdeskAnalyticsAgents(force = false) {
   if (!force && state.helpdesk_analytics.defaultAgentsApplied) return;
-  const ids = defaultHelpdeskAnalyticsAgentIds();
-  if (!ids.length) return;
-  state.helpdesk_analytics.filters.agents = ids;
+  const defaults = defaultHelpdeskAnalyticsAgentFilters();
+  if (!defaults.agents.length && !defaults.excludeAgents.length && !storedHelpdeskAnalyticsAgentDefaults()) return;
+  state.helpdesk_analytics.filters.agents = defaults.agents;
+  state.helpdesk_analytics.filters.excludeAgents = defaults.excludeAgents;
   state.helpdesk_analytics.appliedFilters = cloneHelpdeskAnalyticsFilters();
   state.helpdesk_analytics.defaultAgentsApplied = true;
 }
@@ -4057,19 +4150,19 @@ function activeHelpdeskAnalyticsFilters() {
 
 function resetHelpdeskAnalyticsFilters() {
   const range = getDateRange("this_month");
-  const defaultAgents = defaultHelpdeskAnalyticsAgentIds();
+  const defaultAgentFilters = defaultHelpdeskAnalyticsAgentFilters();
   state.helpdesk_analytics.filters = {
     preset: "this_month",
     from: range.from,
     to: range.to,
-    agents: defaultAgents,
-    excludeAgents: [],
+    agents: defaultAgentFilters.agents,
+    excludeAgents: defaultAgentFilters.excludeAgents,
     groups: [],
     agentSearch: "",
     excludeAgentSearch: "",
     groupSearch: "",
   };
-  state.helpdesk_analytics.defaultAgentsApplied = Boolean(defaultAgents.length);
+  state.helpdesk_analytics.defaultAgentsApplied = Boolean(defaultAgentFilters.agents.length || defaultAgentFilters.excludeAgents.length || storedHelpdeskAnalyticsAgentDefaults());
   state.helpdesk_analytics.appliedFilters = cloneHelpdeskAnalyticsFilters();
   fetchHelpdeskAnalytics();
 }
@@ -4596,6 +4689,7 @@ function renderFiltersConditional() {
       );
       const hiddenSelected = selectedAgents.filter((id) => !visibleAgents.some((agent) => String(agent.id) === String(id)));
       state.helpdesk_analytics.filters.agents = [...new Set([...hiddenSelected, ...visibleSelected])];
+      saveHelpdeskAnalyticsAgentDefaults();
       renderHelpdeskAnalytics();
     });
   });
@@ -4609,6 +4703,7 @@ function renderFiltersConditional() {
         !visibleExcludeAgents.some((agent) => String(agent.id) === String(id)),
       );
       state.helpdesk_analytics.filters.excludeAgents = [...new Set([...hiddenSelected, ...visibleSelected])];
+      saveHelpdeskAnalyticsAgentDefaults();
       renderHelpdeskAnalytics();
     });
   });
