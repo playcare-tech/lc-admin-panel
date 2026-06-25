@@ -3424,49 +3424,148 @@ function exportHelpdeskAnalyticsExcel() {
   setMessage(statusMessage, "HelpDesk analytics XLSX export downloaded.");
 }
 
+function pdfSafeText(value) {
+  return `${value ?? ""}`
+    .normalize("NFKD")
+    .replace(/[^\x20-\x7e]/g, "?")
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)");
+}
+
+function truncatePdfText(value, maxChars) {
+  const text = `${value ?? ""}`;
+  return text.length > maxChars ? `${text.slice(0, Math.max(0, maxChars - 1))}...` : text;
+}
+
+function pdfTextCommand(value, x, y, size = 8) {
+  return `BT /F1 ${size} Tf 1 0 0 1 ${Math.round(x)} ${Math.round(y)} Tm (${pdfSafeText(value)}) Tj ET\n`;
+}
+
+function helpdeskAnalyticsPdfContentPages() {
+  const metric = helpdeskAnalyticsMetricConfig();
+  const { days, rows, summary } = helpdeskAnalyticsExportRows();
+  const totalTickets = Number(state.helpdesk_analytics.data?.summary?.total_tickets || 0);
+  const periodLabel = helpdeskAnalyticsPeriodLabel();
+  const dayChunkSize = 7;
+  const dayChunks = days.length
+    ? Array.from({ length: Math.ceil(days.length / dayChunkSize) }, (_item, index) => days.slice(index * dayChunkSize, index * dayChunkSize + dayChunkSize))
+    : [[]];
+  const allRows = [
+    { rank: "", agent: "Account summary", email: "", total: totalTickets, days: summary },
+    ...rows,
+  ];
+  const rowsPerPage = 30;
+  const pages = [];
+
+  dayChunks.forEach((dayChunk, chunkIndex) => {
+    for (let start = 0; start < allRows.length; start += rowsPerPage) {
+      const pageRows = allRows.slice(start, start + rowsPerPage);
+      let content = "";
+      content += pdfTextCommand("HelpDesk Analytics", 36, 555, 16);
+      content += pdfTextCommand(`${metric.tabLabel} | ${periodLabel}`, 36, 537, 10);
+      if (dayChunks.length > 1) {
+        content += pdfTextCommand(`Date columns ${chunkIndex + 1} of ${dayChunks.length}`, 36, 522, 8);
+      }
+
+      const columns = [
+        { key: "rank", label: "Rank", x: 36, width: 32, chars: 5 },
+        { key: "agent", label: "Agent", x: 72, width: 116, chars: 20 },
+        { key: "email", label: "Email / ID", x: 194, width: 154, chars: 28 },
+        { key: "total", label: metric.periodLabel, x: 354, width: 54, chars: 8 },
+        ...dayChunk.map((date, index) => ({
+          key: `day-${index}`,
+          label: date.slice(5),
+          x: 414 + index * 58,
+          width: 52,
+          chars: 8,
+        })),
+      ];
+
+      const headerY = 500;
+      columns.forEach((column) => {
+        content += pdfTextCommand(column.label, column.x, headerY, 7);
+      });
+
+      pageRows.forEach((row, rowIndex) => {
+        const y = headerY - 18 - rowIndex * 14;
+        const dayValues = dayChunk.map((date) => {
+          const dayIndex = days.indexOf(date);
+          return dayIndex >= 0 ? Number(row.days?.[dayIndex] || 0) : "";
+        });
+        const values = [
+          row.rank,
+          row.agent,
+          row.email,
+          row.total,
+          ...dayValues,
+        ];
+        columns.forEach((column, columnIndex) => {
+          content += pdfTextCommand(truncatePdfText(values[columnIndex], column.chars), column.x, y, 7);
+        });
+      });
+
+      pages.push(content);
+    }
+  });
+
+  return pages;
+}
+
+function pdfBlobFromPages(pageContents) {
+  const encoder = new TextEncoder();
+  const pageObjects = [];
+  const objects = [
+    { id: 1, body: "<< /Type /Catalog /Pages 2 0 R >>" },
+    { id: 3, body: "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>" },
+  ];
+
+  pageContents.forEach((content, index) => {
+    const pageObjectId = 4 + index * 2;
+    const contentObjectId = pageObjectId + 1;
+    pageObjects.push(pageObjectId);
+    const contentLength = encoder.encode(content).length;
+    objects.push({
+      id: pageObjectId,
+      body: `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 842 595] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentObjectId} 0 R >>`,
+    });
+    objects.push({
+      id: contentObjectId,
+      body: `<< /Length ${contentLength} >>\nstream\n${content}endstream`,
+    });
+  });
+  objects.push({
+    id: 2,
+    body: `<< /Type /Pages /Kids [${pageObjects.map((id) => `${id} 0 R`).join(" ")}] /Count ${pageObjects.length} >>`,
+  });
+  objects.sort((left, right) => left.id - right.id);
+
+  let output = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const object of objects) {
+    offsets[object.id] = encoder.encode(output).length;
+    output += `${object.id} 0 obj\n${object.body}\nendobj\n`;
+  }
+  const xrefOffset = encoder.encode(output).length;
+  const maxObjectId = Math.max(...objects.map((object) => object.id));
+  output += `xref\n0 ${maxObjectId + 1}\n`;
+  output += "0000000000 65535 f \n";
+  for (let id = 1; id <= maxObjectId; id += 1) {
+    output += `${String(offsets[id] || 0).padStart(10, "0")} 00000 n \n`;
+  }
+  output += `trailer\n<< /Size ${maxObjectId + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+
+  return new Blob([encoder.encode(output)], { type: "application/pdf" });
+}
+
 function exportHelpdeskAnalyticsPdf() {
   if (!state.helpdesk_analytics.data) {
     setMessage(statusMessage, "Load HelpDesk analytics before exporting.", "error");
     return;
   }
 
-  const metric = helpdeskAnalyticsMetricConfig();
-  const printWindow = window.open("", "_blank");
-  if (!printWindow) {
-    setMessage(statusMessage, "Allow pop-ups to export the HelpDesk analytics PDF.", "error");
-    return;
-  }
-
-  printWindow.document.write(`<!DOCTYPE html>
-<html>
-  <head>
-    <title>HelpDesk Analytics ${escapeHtml(metric.tabLabel)} ${escapeHtml(helpdeskAnalyticsPeriodLabel())}</title>
-    <style>
-      @page { size: landscape; margin: 12mm; }
-      body { color: #172033; font-family: Arial, sans-serif; margin: 0; }
-      h1 { font-size: 20px; margin: 0 0 4px; }
-      .meta { color: #667085; font-size: 12px; margin-bottom: 14px; }
-      table { border-collapse: collapse; font-size: 10px; width: 100%; }
-      caption { display: none; }
-      th, td { border: 1px solid #d7deea; padding: 5px 6px; text-align: left; }
-      th { background: #eef3ff; font-weight: 700; }
-      tbody tr:first-child td { background: #f5f0ff; font-weight: 700; }
-    </style>
-  </head>
-  <body>
-    <h1>HelpDesk Analytics</h1>
-    <div class="meta">${escapeHtml(metric.tabLabel)}</div>
-    <div class="meta">${escapeHtml(helpdeskAnalyticsPeriodLabel())}</div>
-    ${htmlTableForHelpdeskAnalyticsExport()}
-    <script>
-      window.addEventListener("load", () => {
-        window.print();
-      });
-    <\/script>
-  </body>
-</html>`);
-  printWindow.document.close();
-  setMessage(statusMessage, "HelpDesk analytics PDF export opened.");
+  downloadBlobFile(helpdeskAnalyticsExportFilename("pdf"), pdfBlobFromPages(helpdeskAnalyticsPdfContentPages()));
+  setMessage(statusMessage, "HelpDesk analytics PDF export downloaded.");
 }
 
 function formatHelpdeskDateTime(value) {

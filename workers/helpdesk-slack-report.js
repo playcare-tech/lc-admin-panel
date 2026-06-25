@@ -3,13 +3,63 @@ import { accountTableName } from "../functions/_lib/accounts.js";
 const DEFAULT_TIME_ZONE = "Europe/Nicosia";
 const DEFAULT_CHANNEL = "C0B8SQY3LNR";
 const PUBLIC_REPLIES_DAILY_TABLE = "helpdesk_analytics_daily_v7";
+const PUBLIC_REPLIES_DETAILS_TABLE = "helpdesk_analytics_reply_details_v4";
 const COMMENTS_DAILY_TABLE = "helpdesk_analytics_comment_daily_v1";
+const COMMENTS_DETAILS_TABLE = "helpdesk_analytics_comment_details_v1";
 const DEFAULT_INCLUDED_AGENT_EMAILS = [
+  "maryia.kavalchuk@boomerang-partners.com",
+  "alina.savchuk@boomerang-partners.com",
+  "matvey.ivanov@boomerang-partners.com",
+  "kateryna.brezhneva@boomerang-partners.com",
+  "daniil.yermakovich@boomerang-partners.com",
+  "naima.voloshina@boomerang-partners.com",
+  "oleg.fadeev@boomerang-partners.com",
+  "valeriya.ilhan@boomerang-partners.com",
+  "garnik.makvetsyan@boomerang-partners.com",
   "aleksandr.lavrushkin@boomerang-partners.com",
+  "daria.potapova@boomerang-partners.com",
+  "andrey.solovyev@boomerang-partners.com",
+  "victoria.namupala@boomerang-partners.com",
+  "mariia.priakhina@boomerang-partners.com",
+  "yehor.starchev@boomerang-partners.com",
+  "mikhail.desiatov@boomerang-partners.com",
+  "elgin.bakhishov@boomerang-partners.com",
+  "yury.rybakov@boomerang-partners.com",
+  "irada.muxtarova@boomerang-partners.com",
+  "arslan.abubikirov@boomerang-partners.com",
+  "zhomart.adanbekov@boomerang-partners.com",
+  "maksim.yerdenov@boomerang-partners.com",
+  "elizaveta.kozlovskaya@boomerang-partners.com",
+  "tamerlan.aghamaliyev@boomerang-partners.com",
+  "nikolay.baranchuk@boomerang-partners.com",
+  "arman.harutyunyan@boomerang-partners.com",
+  "ilya.pantsiukhou@boomerang-partners.com",
+  "hanna.mashchytskaya@boomerang-partners.com",
+  "khushnur.turgunbaev@boomerang-partners.com",
+  "ivan.sakovich@boomerang-partners.com",
+  "vladislav.kholkin@boomerang-partners.com",
+  "mikhail.kipel@boomerang-partners.com",
+  "ihar.filonik@boomerang-partners.com",
+  "anatoliy.tolstov@boomerang-partners.com",
+  "anastasiia.amelkina@boomerang-partners.com",
+  "alisa.maisiuk@boomerang-partners.com",
+  "anastasiia.kozlova@boomerang-partners.com",
+  "gurgen.a@playcare.tech",
+  "oleh.v@playcare.tech",
+  "nikita.t@playcare.tech",
+  "anastasiya.l@playcare.tech",
+  "sofia.k@playcare.tech",
+  "viktoria.z@playcare.tech",
   "aleksandr.b@playcare.tech",
-  "valerii.b@playcare.tech",
   "ryhor.a@playcare.tech",
   "tamazi.m@playcare.tech",
+  "kiryl.ch@playcare.tech",
+  "elijah.b@playcare.tech",
+  "mikhail.g@playcare.tech",
+  "aytun.m@playcare.tech",
+  "yuri.p@playcare.tech",
+  "marina.g@playcare.tech",
+  "ivo.k@playcare.tech",
 ];
 const DEFAULT_EXCLUDED_AGENT_EMAILS = ["daryia.spirydovich@boomerang-partners.com"];
 const DEFAULT_INCLUDED_AGENT_NAMES = [
@@ -176,6 +226,28 @@ function previousWeekRangeForNow(now, timeZone) {
   return { from, to: addDateKeyDays(from, 6) };
 }
 
+function previousMonthRangeForNow(now, timeZone) {
+  const today = dateKeyInTimeZone(now, timeZone);
+  const [year, month] = today.split("-").map(Number);
+  const firstOfCurrentMonth = new Date(Date.UTC(year, month - 1, 1, 12));
+  const previousMonthEnd = addDateKeyDays(firstOfCurrentMonth.toISOString().slice(0, 10), -1);
+  return { from: previousMonthEnd.slice(0, 8) + "01", to: previousMonthEnd };
+}
+
+function localMonthDayInTimeZone(date, timeZone) {
+  return Number(dateKeyInTimeZone(date, timeZone).slice(8, 10));
+}
+
+function dateKeysBetween(fromDate, toDate) {
+  const dates = [];
+  let cursor = fromDate;
+  while (cursor <= toDate) {
+    dates.push(cursor);
+    cursor = addDateKeyDays(cursor, 1);
+  }
+  return dates;
+}
+
 function displayDate(dateKey) {
   const [year, month, day] = `${dateKey || ""}`.split("-");
   return year && month && day ? `${day}/${month}/${year}` : dateKey;
@@ -188,75 +260,6 @@ function validateDateKey(value) {
 function shouldSendForSchedule(now, timeZone) {
   const local = localHourInTimeZone(now, timeZone);
   return local.hour === 9 && local.minute === 0;
-}
-
-async function readDailyRows(env, tableBaseName, date) {
-  const table = accountTableName(env, tableBaseName);
-  await env.DB.prepare(
-    `CREATE TABLE IF NOT EXISTS ${table} (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      date TEXT NOT NULL,
-      agent_id TEXT NOT NULL,
-      agent_name TEXT,
-      agent_email TEXT,
-      handled_tickets INTEGER NOT NULL DEFAULT 0,
-      cached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(date, agent_id)
-    )`,
-  ).run();
-  const { results } = await env.DB.prepare(
-    `SELECT agent_id, agent_name, agent_email, handled_tickets
-     FROM ${table}
-     WHERE date = ? AND handled_tickets > 0
-     ORDER BY handled_tickets DESC, agent_name ASC, agent_email ASC`,
-  )
-    .bind(date)
-    .all();
-  return (results || [])
-    .map((row) => ({
-      agentId: String(row.agent_id || ""),
-      name: String(row.agent_name || row.agent_id || "Unknown agent"),
-      email: String(row.agent_email || ""),
-      count: Number(row.handled_tickets || 0),
-    }))
-    .filter((row) => isIncludedReportAgent(env, row));
-}
-
-async function readWeeklyRows(env, tableBaseName, fromDate, toDate) {
-  const table = accountTableName(env, tableBaseName);
-  await env.DB.prepare(
-    `CREATE TABLE IF NOT EXISTS ${table} (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      date TEXT NOT NULL,
-      agent_id TEXT NOT NULL,
-      agent_name TEXT,
-      agent_email TEXT,
-      handled_tickets INTEGER NOT NULL DEFAULT 0,
-      cached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(date, agent_id)
-    )`,
-  ).run();
-  const { results } = await env.DB.prepare(
-    `SELECT
-       agent_id,
-       COALESCE(MAX(NULLIF(agent_name, '')), agent_id) AS agent_name,
-       COALESCE(MAX(NULLIF(agent_email, '')), '') AS agent_email,
-       SUM(handled_tickets) AS handled_tickets
-     FROM ${table}
-     WHERE date >= ? AND date <= ? AND handled_tickets > 0
-     GROUP BY agent_id
-     ORDER BY handled_tickets DESC, agent_name ASC, agent_email ASC`,
-  )
-    .bind(fromDate, toDate)
-    .all();
-  return (results || [])
-    .map((row) => ({
-      agentId: String(row.agent_id || ""),
-      name: String(row.agent_name || row.agent_id || "Unknown agent"),
-      email: String(row.agent_email || ""),
-      count: Number(row.handled_tickets || 0),
-    }))
-    .filter((row) => isIncludedReportAgent(env, row));
 }
 
 function excludedEmailDomains(env) {
@@ -288,64 +291,177 @@ function isIncludedReportAgent(env, row) {
   return !isExcludedReportAgent(env, row) && isDefaultHelpDeskAnalyticsAgent(row);
 }
 
-function formatReport(title, date, rows, countLabel) {
-  const lines = [`${title} ${displayDate(date)}:`];
-  if (!rows.length) {
-    lines.push("No data recorded.");
-    return lines.join("\n");
+const METRIC_REPORT_CONFIGS = [
+  {
+    metric: "public_replies",
+    dailyTable: PUBLIC_REPLIES_DAILY_TABLE,
+    detailsTable: PUBLIC_REPLIES_DETAILS_TABLE,
+    sheetName: "Public replies",
+    title: "HelpDesk Public replies Report",
+    countHeader: "Sent replies",
+    timeLabel: "Reply time",
+  },
+  {
+    metric: "comments",
+    dailyTable: COMMENTS_DAILY_TABLE,
+    detailsTable: COMMENTS_DETAILS_TABLE,
+    sheetName: "Internal comments",
+    title: "HelpDesk internal comments Report",
+    countHeader: "Private messages",
+    timeLabel: "Comment time",
+  },
+];
+
+async function ensureDailyReportTable(env, tableBaseName) {
+  const table = accountTableName(env, tableBaseName);
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS ${table} (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      agent_name TEXT,
+      agent_email TEXT,
+      handled_tickets INTEGER NOT NULL DEFAULT 0,
+      cached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(date, agent_id)
+    )`,
+  ).run();
+  return table;
+}
+
+async function ensureDetailReportTable(env, tableBaseName) {
+  const table = accountTableName(env, tableBaseName);
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS ${table} (
+      event_key TEXT PRIMARY KEY,
+      date TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      agent_name TEXT,
+      agent_email TEXT,
+      ticket_id TEXT,
+      short_id TEXT,
+      event_date TEXT,
+      cached_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+  ).run();
+  return table;
+}
+
+async function readReportRange(env, config, fromDate, toDate) {
+  const dailyTable = await ensureDailyReportTable(env, config.dailyTable);
+  const detailsTable = await ensureDetailReportTable(env, config.detailsTable);
+  const daily = await env.DB.prepare(
+    `SELECT date, agent_id, agent_name, agent_email, handled_tickets
+     FROM ${dailyTable}
+     WHERE date >= ? AND date <= ? AND handled_tickets > 0
+     ORDER BY date ASC, handled_tickets DESC, agent_name ASC, agent_email ASC`,
+  )
+    .bind(fromDate, toDate)
+    .all();
+  const details = await env.DB.prepare(
+    `SELECT date, agent_id, agent_name, agent_email, ticket_id, short_id, event_date, event_key
+     FROM ${detailsTable}
+     WHERE date >= ? AND date <= ?
+     ORDER BY date ASC, event_date ASC, short_id ASC`,
+  )
+    .bind(fromDate, toDate)
+    .all();
+
+  return buildMetricReport(env, config, fromDate, toDate, daily.results || [], details.results || []);
+}
+
+function buildMetricReport(env, config, fromDate, toDate, dailyRows, detailRows) {
+  const days = dateKeysBetween(fromDate, toDate);
+  const agentsById = new Map();
+
+  const ensureAgent = (row) => {
+    const agentId = String(row.agent_id || row.agentId || "");
+    if (!agentId) return null;
+    const profile = {
+      agentId,
+      name: String(row.agent_name || row.name || agentId || "Unknown agent"),
+      email: String(row.agent_email || row.email || ""),
+    };
+    if (!isIncludedReportAgent(env, profile)) return null;
+    if (!agentsById.has(agentId)) {
+      agentsById.set(agentId, {
+        agentId,
+        name: profile.name,
+        email: profile.email,
+        total: 0,
+        days: new Map(days.map((date) => [date, 0])),
+        details: [],
+      });
+    }
+    const agent = agentsById.get(agentId);
+    agent.name = agent.name || profile.name;
+    agent.email = agent.email || profile.email;
+    return agent;
+  };
+
+  for (const row of dailyRows) {
+    const agent = ensureAgent(row);
+    if (!agent) continue;
+    const date = String(row.date || "");
+    const count = Number(row.handled_tickets || 0);
+    agent.days.set(date, Number(agent.days.get(date) || 0) + count);
+    agent.total += count;
   }
 
-  rows.forEach((row, index) => {
-    const email = row.email || "-";
-    lines.push(`${index + 1}. ${row.name} - ${email} - ${row.count} ${countLabel}`);
-  });
-  return lines.join("\n");
+  for (const detail of detailRows) {
+    const agent = ensureAgent(detail);
+    if (!agent) continue;
+    agent.details.push({
+      date: String(detail.date || ""),
+      ticketId: String(detail.ticket_id || ""),
+      shortId: String(detail.short_id || detail.ticket_id || ""),
+      eventDate: String(detail.event_date || ""),
+      eventKey: String(detail.event_key || ""),
+      points: 1,
+    });
+  }
+
+  for (const agent of agentsById.values()) {
+    if (!agent.total && agent.details.length) {
+      agent.days = new Map(days.map((date) => [date, 0]));
+      for (const detail of agent.details) {
+        if (agent.days.has(detail.date)) agent.days.set(detail.date, Number(agent.days.get(detail.date) || 0) + 1);
+      }
+      agent.total = [...agent.days.values()].reduce((sum, count) => sum + Number(count || 0), 0);
+    }
+    agent.details.sort((left, right) => {
+      const dateOrder = left.date.localeCompare(right.date);
+      return dateOrder || left.eventDate.localeCompare(right.eventDate) || left.shortId.localeCompare(right.shortId);
+    });
+  }
+
+  const rows = [...agentsById.values()]
+    .sort((left, right) => Number(right.total || 0) - Number(left.total || 0) || left.name.localeCompare(right.name) || left.email.localeCompare(right.email))
+    .map((agent, index) => ({
+      ...agent,
+      rank: index + 1,
+      dayCounts: days.map((date) => Number(agent.days.get(date) || 0)),
+    }));
+  const timeline = days.map((date, index) => ({
+    date,
+    count: rows.reduce((sum, row) => sum + Number(row.dayCounts[index] || 0), 0),
+  }));
+
+  return {
+    ...config,
+    fromDate,
+    toDate,
+    days,
+    rows,
+    timeline,
+    total: rows.reduce((sum, row) => sum + Number(row.total || 0), 0),
+    activeAgents: rows.filter((row) => Number(row.total || 0) > 0).length,
+  };
 }
 
-async function buildReports(env, date) {
+async function buildReportsForRange(env, fromDate, toDate) {
   if (!env?.DB) throw new Error("Missing DB binding.");
-
-  const publicReplyRows = await readDailyRows(env, PUBLIC_REPLIES_DAILY_TABLE, date);
-  const commentRows = await readDailyRows(env, COMMENTS_DAILY_TABLE, date);
-
-  return [
-    {
-      metric: "public_replies",
-      text: formatReport("HelpDesk Public replies Report", date, publicReplyRows, "sent replies"),
-      rows: publicReplyRows,
-    },
-    {
-      metric: "comments",
-      text: formatReport("HelpDesk internal comments Report", date, commentRows, "private messages"),
-      rows: commentRows,
-    },
-  ];
-}
-
-async function buildWeeklyReports(env, fromDate, toDate) {
-  if (!env?.DB) throw new Error("Missing DB binding.");
-
-  const publicReplyRows = await readWeeklyRows(env, PUBLIC_REPLIES_DAILY_TABLE, fromDate, toDate);
-  const commentRows = await readWeeklyRows(env, COMMENTS_DAILY_TABLE, fromDate, toDate);
-
-  return [
-    {
-      metric: "public_replies",
-      sheetName: "Public replies",
-      title: "HelpDesk Public replies Report",
-      countHeader: "Sent replies",
-      countLabel: "sent replies",
-      rows: publicReplyRows,
-    },
-    {
-      metric: "comments",
-      sheetName: "Internal comments",
-      title: "HelpDesk internal comments Report",
-      countHeader: "Private messages",
-      countLabel: "private messages",
-      rows: commentRows,
-    },
-  ];
+  return Promise.all(METRIC_REPORT_CONFIGS.map((config) => readReportRange(env, config, fromDate, toDate)));
 }
 
 function escapeXml(value) {
@@ -372,54 +488,44 @@ function xlsxCell(rowIndex, colIndex, value) {
   if (typeof value === "number" && Number.isFinite(value)) {
     return `<c r="${ref}"><v>${value}</v></c>`;
   }
-  return `<c r="${ref}" t="inlineStr"><is><t>${escapeXml(value)}</t></is></c>`;
+  const text = `${value ?? ""}`;
+  const preserve = text.trim() !== text ? ' xml:space="preserve"' : "";
+  return `<c r="${ref}" t="inlineStr"><is><t${preserve}>${escapeXml(text)}</t></is></c>`;
 }
 
 function xlsxRow(rowIndex, values) {
   return `<row r="${rowIndex}">${values.map((value, index) => xlsxCell(rowIndex, index + 1, value)).join("")}</row>`;
 }
 
-function buildWorksheetXml(report, fromDate, toDate) {
-  const rows = [
-    [report.title],
-    [`Period: ${displayDate(fromDate)} - ${displayDate(toDate)}`],
-    [],
-    ["#", "Agent name", "Email", report.countHeader],
-    ...report.rows.map((row, index) => [index + 1, row.name, row.email || "-", row.count]),
-  ];
-
-  const sheetRows = rows
+function buildWorksheetXml(sheet) {
+  const sheetRows = sheet.rows
     .map((row, index) => xlsxRow(index + 1, row))
     .join("");
+  const widths = sheet.widths || [];
+  const cols = widths.length
+    ? `<cols>${widths.map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`).join("")}</cols>`
+    : "";
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <cols>
-    <col min="1" max="1" width="8" customWidth="1"/>
-    <col min="2" max="2" width="24" customWidth="1"/>
-    <col min="3" max="3" width="38" customWidth="1"/>
-    <col min="4" max="4" width="18" customWidth="1"/>
-  </cols>
+  ${cols}
   <sheetData>${sheetRows}</sheetData>
 </worksheet>`;
 }
 
-function buildWorkbookXml(reports) {
-  const sheets = reports
-    .map((report, index) => `<sheet name="${escapeXml(report.sheetName)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`)
+function buildWorkbookXml(sheets) {
+  const sheetRefs = sheets
+    .map((sheet, index) => `<sheet name="${escapeXml(sheet.name)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`)
     .join("");
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets>${sheets}</sheets>
+  <sheets>${sheetRefs}</sheets>
 </workbook>`;
 }
 
-function buildWorkbookRelsXml(reports) {
-  const sheetRels = reports
-    .map(
-      (_report, index) =>
-        `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`,
-    )
+function buildWorkbookRelsXml(sheets) {
+  const sheetRels = sheets
+    .map((_sheet, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`)
     .join("");
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
@@ -427,12 +533,9 @@ function buildWorkbookRelsXml(reports) {
 </Relationships>`;
 }
 
-function buildContentTypesXml(reports) {
-  const sheetOverrides = reports
-    .map(
-      (_report, index) =>
-        `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`,
-    )
+function buildContentTypesXml(sheets) {
+  const sheetOverrides = sheets
+    .map((_sheet, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`)
     .join("");
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -548,39 +651,121 @@ function zipStored(files) {
   return concatBytes([...localParts, centralDirectory, end]);
 }
 
-function buildWeeklyWorkbook(reports, fromDate, toDate) {
+function safeXlsxSheetName(value, fallback = "Sheet") {
+  const name = `${value || fallback}`
+    .replace(/[\\/?*:[\]]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^'+|'+$/g, "");
+  return (name || fallback).slice(0, 31);
+}
+
+function uniqueXlsxSheetName(value, usedNames, fallback = "Sheet") {
+  const base = safeXlsxSheetName(value, fallback);
+  let name = base;
+  let index = 2;
+  while (usedNames.has(name.toLowerCase())) {
+    const suffix = ` ${index}`;
+    name = `${base.slice(0, 31 - suffix.length)}${suffix}`;
+    index += 1;
+  }
+  usedNames.add(name.toLowerCase());
+  return name;
+}
+
+function displayDateTime(value, timeZone) {
+  const date = new Date(value);
+  if (!value || Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function metricSummaryRows(report) {
+  return [
+    [report.title],
+    [`Period: ${displayDate(report.fromDate)} - ${displayDate(report.toDate)}`],
+    [],
+    ["Rank", "Agent name", "Email", report.countHeader, ...report.days],
+    ["", "Account summary", "", report.total, ...report.timeline.map((day) => day.count)],
+    ...report.rows.map((row) => [row.rank, row.name, row.email || "-", row.total, ...row.dayCounts]),
+  ];
+}
+
+function reportWorkbookSheets(reports, { title, periodLabel, timeZone }) {
+  const usedNames = new Set();
+  const sheets = [
+    {
+      name: uniqueXlsxSheetName("Summary", usedNames),
+      widths: [28, 22, 16, 16],
+      rows: [
+        [title],
+        [`Period: ${periodLabel}`],
+        [`Generated: ${displayDateTime(new Date().toISOString(), timeZone)}`],
+        [],
+        ["Metric", "Total", "Active agents", "Details tabs"],
+        ...reports.map((report) => [report.sheetName, report.total, report.activeAgents, report.rows.length]),
+      ],
+    },
+  ];
+
+  for (const report of reports) {
+    sheets.push({
+      name: uniqueXlsxSheetName(report.sheetName, usedNames),
+      widths: [8, 28, 38, 18, ...report.days.map(() => 12)],
+      rows: metricSummaryRows(report),
+    });
+  }
+
+  for (const report of reports) {
+    for (const agent of report.rows) {
+      const detailRows = agent.details.length
+        ? agent.details.map((detail) => [
+            detail.date || "",
+            detail.shortId || detail.ticketId || "",
+            displayDateTime(detail.eventDate, timeZone),
+            Number(detail.points || 1),
+          ])
+        : [["No details recorded for this agent in the selected period.", "", "", ""]];
+      sheets.push({
+        name: uniqueXlsxSheetName(`${report.metric === "comments" ? "Comments" : "Replies"} - ${agent.name}`, usedNames, "Agent"),
+        widths: [16, 18, 24, 10],
+        rows: [
+          ["Agent", agent.name],
+          ["Email / ID", agent.email || agent.agentId],
+          [report.countHeader, Number(agent.total || 0)],
+          ["Report", report.sheetName],
+          ["Period", periodLabel],
+          [],
+          ["Counted date", "Ticket short ID", report.timeLabel, "Points"],
+          ...detailRows,
+        ],
+      });
+    }
+  }
+
+  return sheets;
+}
+
+function buildWorkbook(sheets) {
   const files = [
-    { name: "[Content_Types].xml", data: buildContentTypesXml(reports) },
+    { name: "[Content_Types].xml", data: buildContentTypesXml(sheets) },
     { name: "_rels/.rels", data: buildRootRelsXml() },
-    { name: "xl/workbook.xml", data: buildWorkbookXml(reports) },
-    { name: "xl/_rels/workbook.xml.rels", data: buildWorkbookRelsXml(reports) },
-    ...reports.map((report, index) => ({
+    { name: "xl/workbook.xml", data: buildWorkbookXml(sheets) },
+    { name: "xl/_rels/workbook.xml.rels", data: buildWorkbookRelsXml(sheets) },
+    ...sheets.map((sheet, index) => ({
       name: `xl/worksheets/sheet${index + 1}.xml`,
-      data: buildWorksheetXml(report, fromDate, toDate),
+      data: buildWorksheetXml(sheet),
     })),
   ];
   return zipStored(files);
-}
-
-async function postSlackMessage(env, text) {
-  const token = `${env.SLACK_BOT_TOKEN || ""}`.trim();
-  if (!token) throw new Error("Missing SLACK_BOT_TOKEN secret.");
-
-  const channel = `${env.SLACK_HELPDESK_REPORT_CHANNEL || DEFAULT_CHANNEL}`.trim();
-  const response = await fetch("https://slack.com/api/chat.postMessage", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json; charset=utf-8",
-    },
-    body: JSON.stringify({ channel, text }),
-  });
-
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || !payload.ok) {
-    throw new Error(`Slack post failed: ${payload.error || response.status}`);
-  }
-  return { channel: payload.channel, ts: payload.ts };
 }
 
 async function slackApi(env, method, body) {
@@ -636,18 +821,80 @@ async function uploadSlackFile(env, { bytes, filename, title, initialComment }) 
   return { channel, fileId: upload.file_id, files: complete.files || [] };
 }
 
-async function sendReports(env, { date, dryRun = false } = {}) {
-  const reportDate = validateDateKey(date) || reportDateForNow(new Date(), env.HELPDESK_ANALYTICS_TIME_ZONE || DEFAULT_TIME_ZONE);
-  const reports = await buildReports(env, reportDate);
-  const posts = [];
+function periodLabel(fromDate, toDate) {
+  return fromDate === toDate ? displayDate(fromDate) : `${displayDate(fromDate)} - ${displayDate(toDate)}`;
+}
+
+function reportFilename(periodType, fromDate, toDate) {
+  return fromDate === toDate
+    ? `helpdesk-${periodType}-report-${fromDate}.xlsx`
+    : `helpdesk-${periodType}-report-${fromDate}-to-${toDate}.xlsx`;
+}
+
+function buildSlackReportFile(reports, { periodType, fromDate, toDate, timeZone }) {
+  const label = periodLabel(fromDate, toDate);
+  const title = `HelpDesk ${periodType} report ${label}`;
+  const workbook = buildWorkbook(reportWorkbookSheets(reports, { title, periodLabel: label, timeZone }));
+  return {
+    filename: reportFilename(periodType, fromDate, toDate),
+    title,
+    initialComment: `${title} attached.`,
+    byteLength: workbook.length,
+    bytes: workbook,
+  };
+}
+
+function reportResponseSummary(report) {
+  return {
+    metric: report.metric,
+    sheetName: report.sheetName,
+    title: report.title,
+    total: report.total,
+    activeAgents: report.activeAgents,
+    days: report.days,
+    rows: report.rows.map((row) => ({
+      rank: row.rank,
+      agentId: row.agentId,
+      name: row.name,
+      email: row.email,
+      total: row.total,
+      dayCounts: row.dayCounts,
+      detailCount: row.details.length,
+    })),
+  };
+}
+
+async function sendReportRange(env, { periodType, fromDate, toDate, dryRun = false } = {}) {
+  const timeZone = env.HELPDESK_ANALYTICS_TIME_ZONE || DEFAULT_TIME_ZONE;
+  const reports = await buildReportsForRange(env, fromDate, toDate);
+  const file = buildSlackReportFile(reports, { periodType, fromDate, toDate, timeZone });
+  const uploads = [];
 
   if (!dryRun) {
-    for (const report of reports) {
-      posts.push(await postSlackMessage(env, report.text));
-    }
+    uploads.push(
+      await uploadSlackFile(env, {
+        bytes: file.bytes,
+        filename: file.filename,
+        title: file.title,
+        initialComment: file.initialComment,
+      }),
+    );
   }
 
-  return { date: reportDate, dryRun, reports, posts };
+  return {
+    periodType,
+    fromDate,
+    toDate,
+    dryRun,
+    file: { ...file, bytes: undefined },
+    reports: reports.map(reportResponseSummary),
+    uploads,
+  };
+}
+
+async function sendReports(env, { date, dryRun = false } = {}) {
+  const reportDate = validateDateKey(date) || reportDateForNow(new Date(), env.HELPDESK_ANALYTICS_TIME_ZONE || DEFAULT_TIME_ZONE);
+  return sendReportRange(env, { periodType: "daily", fromDate: reportDate, toDate: reportDate, dryRun });
 }
 
 async function sendWeeklyReport(env, { fromDate, toDate, dryRun = false } = {}) {
@@ -656,42 +903,16 @@ async function sendWeeklyReport(env, { fromDate, toDate, dryRun = false } = {}) 
     validateDateKey(fromDate) && validateDateKey(toDate)
       ? { from: fromDate, to: toDate }
       : previousWeekRangeForNow(new Date(), timeZone);
-  const reports = await buildWeeklyReports(env, range.from, range.to);
-  const files = reports.map((report) => {
-    const workbook = buildWeeklyWorkbook([report], range.from, range.to);
-    const metricSlug = report.metric === "comments" ? "internal-comments" : "public-replies";
-    return {
-      metric: report.metric,
-      filename: `helpdesk-weekly-${metricSlug}-${range.from}-to-${range.to}.xlsx`,
-      title: `${report.title} ${displayDate(range.from)} - ${displayDate(range.to)}`,
-      initialComment: `${report.title} ${displayDate(range.from)} - ${displayDate(range.to)}`,
-      byteLength: workbook.length,
-      bytes: workbook,
-    };
-  });
-  const uploads = [];
+  return sendReportRange(env, { periodType: "weekly", fromDate: range.from, toDate: range.to, dryRun });
+}
 
-  if (!dryRun) {
-    for (const file of files) {
-      uploads.push(
-        await uploadSlackFile(env, {
-          bytes: file.bytes,
-          filename: file.filename,
-          title: file.title,
-          initialComment: file.initialComment,
-        }),
-      );
-    }
-  }
-
-  return {
-    fromDate: range.from,
-    toDate: range.to,
-    dryRun,
-    files: files.map(({ bytes, ...file }) => file),
-    reports,
-    uploads,
-  };
+async function sendMonthlyReport(env, { fromDate, toDate, dryRun = false } = {}) {
+  const timeZone = env.HELPDESK_ANALYTICS_TIME_ZONE || DEFAULT_TIME_ZONE;
+  const range =
+    validateDateKey(fromDate) && validateDateKey(toDate)
+      ? { from: fromDate, to: toDate }
+      : previousMonthRangeForNow(new Date(), timeZone);
+  return sendReportRange(env, { periodType: "monthly", fromDate: range.from, toDate: range.to, dryRun });
 }
 
 function manualRequestAllowed(request, env) {
@@ -712,6 +933,10 @@ export default {
       const range = previousWeekRangeForNow(now, timeZone);
       tasks.push(sendWeeklyReport(env, { fromDate: range.from, toDate: range.to }));
     }
+    if (localMonthDayInTimeZone(now, timeZone) === 1) {
+      const range = previousMonthRangeForNow(now, timeZone);
+      tasks.push(sendMonthlyReport(env, { fromDate: range.from, toDate: range.to }));
+    }
     ctx.waitUntil(Promise.all(tasks));
   },
 
@@ -721,17 +946,17 @@ export default {
     try {
       const url = new URL(request.url);
       const dryRun = url.searchParams.get("dry_run") === "1";
+      const fromDate = validateDateKey(url.searchParams.get("from"));
+      const toDate = validateDateKey(url.searchParams.get("to"));
       const result =
-        url.searchParams.get("weekly") === "1"
-          ? await sendWeeklyReport(env, {
-              fromDate: validateDateKey(url.searchParams.get("from")),
-              toDate: validateDateKey(url.searchParams.get("to")),
-              dryRun,
-            })
-          : await sendReports(env, {
-              date: validateDateKey(url.searchParams.get("date")),
-              dryRun,
-            });
+        url.searchParams.get("monthly") === "1"
+          ? await sendMonthlyReport(env, { fromDate, toDate, dryRun })
+          : url.searchParams.get("weekly") === "1"
+            ? await sendWeeklyReport(env, { fromDate, toDate, dryRun })
+            : await sendReports(env, {
+                date: validateDateKey(url.searchParams.get("date")),
+                dryRun,
+              });
       return json({ ok: true, ...result });
     } catch (error) {
       console.error("Failed to send HelpDesk Slack report.", error);

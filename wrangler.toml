@@ -1,5 +1,5 @@
 "$schema" = "./node_modules/wrangler/config-schema.json"
-name = "lc-admin"
+name = "lc-admin-panel"
 compatibility_date = "2026-04-22"
 pages_build_output_dir = "."
 
