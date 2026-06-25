@@ -2906,13 +2906,13 @@ function formatDelta(current, previous) {
 
 function helpdeskAgentLabel(agent) {
   const id = String(agent.agent_id || agent.id || "");
-  const dashboardAgent = state.helpdesk.agents.find((item) => String(item.id) === id);
+  const dashboardAgent = helpdeskAnalyticsAgentById(id);
   return agent.name || dashboardAgent?.name || agent.email || dashboardAgent?.email || id;
 }
 
 function helpdeskAgentSubLabel(agent) {
   const id = String(agent.agent_id || agent.id || "");
-  const dashboardAgent = state.helpdesk.agents.find((item) => String(item.id) === id);
+  const dashboardAgent = helpdeskAnalyticsAgentById(id);
   const email = agent.email || dashboardAgent?.email || "";
   const main = helpdeskAgentLabel(agent);
   return email && email !== main ? email : id && id !== main ? id : "";
@@ -2926,11 +2926,28 @@ function normalizeAgentName(value) {
   return `${value || ""}`.trim().toLowerCase();
 }
 
+function helpdeskAnalyticsAgents() {
+  const byId = new Map();
+  (state.helpdesk.agents || []).forEach((agent) => {
+    byId.set(String(agent.id), { ...agent, historical: false });
+  });
+  (state.helpdesk.analyticsAgents || []).forEach((agent) => {
+    const id = String(agent.id || "");
+    if (!id || byId.has(id)) return;
+    byId.set(id, { ...agent, id, historical: true });
+  });
+  return [...byId.values()].sort((left, right) => (left.name || left.email || left.id).localeCompare(right.name || right.email || right.id));
+}
+
+function helpdeskAnalyticsAgentById(id) {
+  return helpdeskAnalyticsAgents().find((agent) => String(agent.id) === String(id));
+}
+
 function defaultHelpdeskAnalyticsAgentIds() {
   const allowed = new Set(DEFAULT_HELPDESK_ANALYTICS_AGENT_NAMES.map(normalizeAgentName));
   const allowedEmails = new Set(DEFAULT_HELPDESK_ANALYTICS_AGENT_EMAILS.map(normalizeAgentName));
   const excludedEmails = new Set(EXCLUDED_DEFAULT_HELPDESK_ANALYTICS_AGENT_EMAILS.map(normalizeAgentName));
-  return (state.helpdesk.agents || [])
+  return helpdeskAnalyticsAgents()
     .filter((agent) => {
       const email = normalizeAgentName(agent.email);
       return !excludedEmails.has(email) && (allowed.has(normalizeAgentName(agent.name)) || allowedEmails.has(email));
@@ -2939,7 +2956,7 @@ function defaultHelpdeskAnalyticsAgentIds() {
 }
 
 function cleanHelpdeskAnalyticsAgentIds(ids) {
-  const availableIds = new Set((state.helpdesk.agents || []).map((agent) => String(agent.id)));
+  const availableIds = new Set(helpdeskAnalyticsAgents().map((agent) => String(agent.id)));
   return [...new Set((Array.isArray(ids) ? ids : []).map((id) => String(id)).filter((id) => !availableIds.size || availableIds.has(id)))];
 }
 
@@ -5064,7 +5081,8 @@ function renderFiltersConditional() {
   };
 
   const normalizedAgentSearch = agentSearch.trim().toLowerCase();
-  const visibleAgents = (state.helpdesk.agents || []).filter((agent) =>
+  const analyticsAgents = helpdeskAnalyticsAgents();
+  const visibleAgents = analyticsAgents.filter((agent) =>
     !normalizedAgentSearch || helpdeskFilterText(agent).includes(normalizedAgentSearch),
   );
   renderChecklist({
@@ -5075,11 +5093,14 @@ function renderFiltersConditional() {
     selected: selectedAgents,
     emptyText: "No agents match this search.",
     nameFor: (agent) => agent.name || agent.email || agent.id,
-    subFor: (agent) => agent.email && agent.email !== agent.name ? agent.email : "",
+    subFor: (agent) => {
+      const email = agent.email && agent.email !== agent.name ? agent.email : "";
+      return [email, agent.historical ? "Historical D1" : ""].filter(Boolean).join(" · ");
+    },
   });
 
   const normalizedExcludeAgentSearch = excludeAgentSearch.trim().toLowerCase();
-  const visibleExcludeAgents = (state.helpdesk.agents || []).filter((agent) =>
+  const visibleExcludeAgents = analyticsAgents.filter((agent) =>
     !normalizedExcludeAgentSearch || helpdeskFilterText(agent).includes(normalizedExcludeAgentSearch),
   );
   renderChecklist({
@@ -5090,7 +5111,10 @@ function renderFiltersConditional() {
     selected: selectedExcludeAgents,
     emptyText: "No agents match this search.",
     nameFor: (agent) => agent.name || agent.email || agent.id,
-    subFor: (agent) => agent.email && agent.email !== agent.name ? agent.email : "",
+    subFor: (agent) => {
+      const email = agent.email && agent.email !== agent.name ? agent.email : "";
+      return [email, agent.historical ? "Historical D1" : ""].filter(Boolean).join(" · ");
+    },
   });
 
   const normalizedGroupSearch = groupSearch.trim().toLowerCase();
