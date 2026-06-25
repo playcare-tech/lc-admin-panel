@@ -1,4 +1,5 @@
-const APP_URL = "https://lc-admin.pages.dev/";
+const APP_URL = "https://lc-admin-panel.pages.dev/";
+const LIVECHAT_AI_QA_WEBHOOK_URL = "https://lc-admin-panel.pages.dev/webhooks/livechat-ai-qa-tagging";
 const HELPDESK_ANALYTICS_TIME_ZONE = "Europe/Nicosia";
 const HELPDESK_ANALYTICS_DEFAULT_METRIC = "public_replies";
 const HELPDESK_ANALYTICS_METRICS = {
@@ -402,6 +403,30 @@ const state = {
       compare: true,
     },
   },
+  livechatAiQa: {
+    loading: false,
+    loaded: false,
+    error: null,
+    rows: [],
+    total: 0,
+    page: 1,
+    pageSize: 50,
+    sort: "date",
+    order: "desc",
+    expanded: new Set(),
+    filters: {
+      from: "",
+      to: "",
+      agent: "",
+      tag: "",
+      chatId: "",
+      transferred: "",
+      reason: "",
+      hasQueue: "",
+      customerLanguage: "",
+      chatbotLanguage: "",
+    },
+  },
   helpdesk_analytics: {
     view: "report",
     metric: HELPDESK_ANALYTICS_DEFAULT_METRIC,
@@ -556,6 +581,12 @@ function resetAccountScopedState() {
     cursorStack: [],
   };
   state.analytics.data = null;
+  state.livechatAiQa.rows = [];
+  state.livechatAiQa.total = 0;
+  state.livechatAiQa.page = 1;
+  state.livechatAiQa.loaded = false;
+  state.livechatAiQa.error = null;
+  state.livechatAiQa.expanded.clear();
   state.helpdesk_analytics.data = null;
   state.helpdesk_analytics.appliedFilters = null;
   state.helpdesk_analytics.webhookStats = null;
@@ -2157,6 +2188,312 @@ function applyLiveChatAnalyticsFilters() {
   filters.pendingExcludeAgents = null;
   state.analytics.data = null;
   fetchAnalytics();
+}
+
+function livechatAiQaChatKey(row) {
+  return `${row.chatId}:${row.threadId}`;
+}
+
+function livechatAiQaDateTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return `${localDateValue(date)} ${localTimeValue(date)}`;
+}
+
+function livechatAiQaMetricLabel(value, fallback = "-") {
+  return value || fallback;
+}
+
+function livechatAiQaQueryParams() {
+  const filters = state.livechatAiQa.filters;
+  const params = new URLSearchParams({
+    page: String(state.livechatAiQa.page),
+    pageSize: String(state.livechatAiQa.pageSize),
+    sort: state.livechatAiQa.sort,
+    order: state.livechatAiQa.order,
+  });
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value) params.set(key, value);
+  });
+  return params;
+}
+
+function syncLivechatAiQaFiltersFromDom() {
+  const filters = state.livechatAiQa.filters;
+  filters.from = document.getElementById("livechatAiQaFrom")?.value || "";
+  filters.to = document.getElementById("livechatAiQaTo")?.value || "";
+  filters.agent = document.getElementById("livechatAiQaAgent")?.value.trim() || "";
+  filters.tag = document.getElementById("livechatAiQaTag")?.value.trim() || "";
+  filters.chatId = document.getElementById("livechatAiQaChatId")?.value.trim() || "";
+  filters.transferred = document.getElementById("livechatAiQaTransferred")?.value || "";
+  filters.reason = document.getElementById("livechatAiQaReason")?.value || "";
+  filters.hasQueue = document.getElementById("livechatAiQaHasQueue")?.value || "";
+  filters.customerLanguage = document.getElementById("livechatAiQaCustomerLanguage")?.value.trim() || "";
+  filters.chatbotLanguage = document.getElementById("livechatAiQaChatbotLanguage")?.value.trim() || "";
+  state.livechatAiQa.page = 1;
+}
+
+function resetLivechatAiQaFilters() {
+  state.livechatAiQa.filters = {
+    from: "",
+    to: "",
+    agent: "",
+    tag: "",
+    chatId: "",
+    transferred: "",
+    reason: "",
+    hasQueue: "",
+    customerLanguage: "",
+    chatbotLanguage: "",
+  };
+  state.livechatAiQa.page = 1;
+}
+
+async function fetchLivechatAiQaTagging() {
+  state.livechatAiQa.loading = true;
+  state.livechatAiQa.error = null;
+  if (state.section === "livechat-ai-qa-tagging") renderApp();
+
+  try {
+    const response = await api(`/api/livechat/ai-qa-tagging?${livechatAiQaQueryParams().toString()}`);
+    state.livechatAiQa.rows = response.rows || [];
+    state.livechatAiQa.total = Number(response.total || 0);
+    state.livechatAiQa.page = Number(response.page || state.livechatAiQa.page);
+    state.livechatAiQa.pageSize = Number(response.pageSize || state.livechatAiQa.pageSize);
+    state.livechatAiQa.loaded = true;
+  } catch (error) {
+    state.livechatAiQa.error = error.message;
+    state.livechatAiQa.rows = [];
+    state.livechatAiQa.total = 0;
+    state.livechatAiQa.loaded = true;
+  } finally {
+    state.livechatAiQa.loading = false;
+    if (state.section === "livechat-ai-qa-tagging") renderApp();
+  }
+}
+
+function livechatAiQaSortButton(key, label) {
+  const active = state.livechatAiQa.sort === key;
+  const direction = active ? state.livechatAiQa.order : "desc";
+  return `
+    <button class="btn btn-link btn-sm p-0" type="button" data-livechat-ai-qa-sort="${escapeHtml(key)}">
+      ${escapeHtml(label)}${active ? ` ${direction === "asc" ? "↑" : "↓"}` : ""}
+    </button>
+  `;
+}
+
+function renderLivechatAiQaFilters() {
+  const filters = state.livechatAiQa.filters;
+  return `
+    <div class="card-shell analytics-filter-bar">
+      <div class="tickets-toolbar">
+        <div>
+          <div class="section-title">AI_QA_Tagging</div>
+          <div class="subtle">Webhook: <code>${escapeHtml(LIVECHAT_AI_QA_WEBHOOK_URL)}</code></div>
+        </div>
+        <button id="livechatAiQaReloadBtn" class="btn btn-sm btn-outline-secondary" type="button">Reload</button>
+      </div>
+      <div class="analytics-filter-grid">
+        <label>
+          <span>From</span>
+          <input id="livechatAiQaFrom" class="form-control" type="date" value="${escapeHtml(filters.from)}" />
+        </label>
+        <label>
+          <span>To</span>
+          <input id="livechatAiQaTo" class="form-control" type="date" value="${escapeHtml(filters.to)}" />
+        </label>
+        <label>
+          <span>Agent</span>
+          <input id="livechatAiQaAgent" class="form-control" type="search" value="${escapeHtml(filters.agent)}" placeholder="email or name" />
+        </label>
+        <label>
+          <span>Tag</span>
+          <input id="livechatAiQaTag" class="form-control" type="search" value="${escapeHtml(filters.tag)}" placeholder="chatbot-transfer" />
+        </label>
+        <label>
+          <span>Chat / Thread</span>
+          <input id="livechatAiQaChatId" class="form-control" type="search" value="${escapeHtml(filters.chatId)}" placeholder="TH..." />
+        </label>
+        <label>
+          <span>Transferred</span>
+          <select id="livechatAiQaTransferred" class="form-select">
+            <option value="" ${filters.transferred === "" ? "selected" : ""}>Any</option>
+            <option value="yes" ${filters.transferred === "yes" ? "selected" : ""}>Yes</option>
+            <option value="no" ${filters.transferred === "no" ? "selected" : ""}>No</option>
+          </select>
+        </label>
+        <label>
+          <span>Reason</span>
+          <select id="livechatAiQaReason" class="form-select">
+            ${["", "manual", "inactive", "assigned", "unassigned", "other"]
+              .map((value) => `<option value="${escapeHtml(value)}" ${filters.reason === value ? "selected" : ""}>${escapeHtml(value || "Any")}</option>`)
+              .join("")}
+          </select>
+        </label>
+        <label>
+          <span>Queue</span>
+          <select id="livechatAiQaHasQueue" class="form-select">
+            <option value="" ${filters.hasQueue === "" ? "selected" : ""}>Any</option>
+            <option value="yes" ${filters.hasQueue === "yes" ? "selected" : ""}>Yes</option>
+            <option value="no" ${filters.hasQueue === "no" ? "selected" : ""}>No</option>
+          </select>
+        </label>
+        <label>
+          <span>User language</span>
+          <input id="livechatAiQaCustomerLanguage" class="form-control" type="search" value="${escapeHtml(filters.customerLanguage)}" placeholder="French" />
+        </label>
+        <label>
+          <span>Bot language</span>
+          <input id="livechatAiQaChatbotLanguage" class="form-control" type="search" value="${escapeHtml(filters.chatbotLanguage)}" placeholder="English" />
+        </label>
+      </div>
+      <div class="analytics-actions">
+        <button id="livechatAiQaFilterBtn" class="btn btn-primary" type="button">Filter</button>
+        <button id="livechatAiQaResetBtn" class="btn btn-outline-secondary" type="button">Reset</button>
+      </div>
+    </div>
+  `;
+}
+
+function livechatAiQaEventLabel(event) {
+  if (event.eventType === "tag_added") return "Tag added";
+  if (event.eventType === "transfer_to_agent") return "Transfer to agent";
+  if (event.eventType === "queued") return "Queue";
+  if (event.eventType === "chat_deactivated") return "Chat deactivated";
+  if (event.actorType === "chatbot") return "Chatbot message";
+  if (event.actorType === "agent") return "Agent message";
+  if (event.actorType === "customer") return "Customer message";
+  if (event.actorType === "system") return `System${event.eventType ? ` / ${event.eventType}` : ""}`;
+  return event.eventType || event.action || "Event";
+}
+
+function renderLivechatAiQaTimeline(row) {
+  if (!row.events?.length) {
+    return `<div class="empty-state">No timeline events recorded for this chat yet.</div>`;
+  }
+  return `
+    <div class="analytics-ticket-detail">
+      <div class="analytics-ticket-detail-title">Timeline · ${escapeHtml(row.chatId)} / ${escapeHtml(row.threadId)}</div>
+      <div class="livechat-ai-qa-timeline">
+        ${row.events
+          .map(
+            (event) => `
+              <div class="livechat-ai-qa-event">
+                <div class="livechat-ai-qa-time">${escapeHtml(livechatAiQaDateTime(event.eventAt))}</div>
+                <div>
+                  <div>
+                    <strong>${escapeHtml(livechatAiQaEventLabel(event))}</strong>
+                    ${event.actorId ? `<span class="subtle"> · ${escapeHtml(event.actorId)}</span>` : ""}
+                  </div>
+                  ${event.messageText ? `<div class="livechat-ai-qa-message">${escapeHtml(event.messageText)}</div>` : ""}
+                  ${
+                    event.tag
+                      ? `<div class="subtle">Tag: <strong>${escapeHtml(event.tag)}</strong></div>`
+                      : ""
+                  }
+                  ${
+                    event.transferReason
+                      ? `<div class="subtle">Reason: <strong>${escapeHtml(event.transferReason)}</strong></div>`
+                      : ""
+                  }
+                  ${
+                    event.languageSignal?.customerLanguage
+                      ? `<div class="subtle">Language: ${escapeHtml(event.languageSignal.customerLanguage)} → ${escapeHtml(event.languageSignal.translationTo || "")}</div>`
+                      : ""
+                  }
+                </div>
+              </div>
+            `,
+          )
+          .join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderLivechatAiQaRows() {
+  const rows = state.livechatAiQa.rows || [];
+  if (state.livechatAiQa.loading) {
+    return `<tr><td colspan="11"><div class="empty-state">Loading AI_QA_Tagging data...</div></td></tr>`;
+  }
+  if (state.livechatAiQa.error) {
+    return `<tr><td colspan="11"><div class="empty-state analytics-error">${escapeHtml(state.livechatAiQa.error)}</div></td></tr>`;
+  }
+  if (!rows.length) {
+    return `<tr><td colspan="11"><div class="empty-state">No LiveChat AI QA webhook data recorded yet.</div></td></tr>`;
+  }
+  return rows
+    .map((row) => {
+      const key = livechatAiQaChatKey(row);
+      const expanded = state.livechatAiQa.expanded.has(key);
+      return `
+        <tr class="livechat-ai-qa-row" data-livechat-ai-qa-toggle="${escapeHtml(key)}">
+          <td>${escapeHtml(livechatAiQaDateTime(row.lastEventAt || row.firstSeenAt))}</td>
+          <td>
+            <strong>${escapeHtml(row.chatId)}</strong>
+            <div class="analytics-agent-sub">${escapeHtml(row.threadId)}</div>
+          </td>
+          <td>${escapeHtml(row.agentLabel || row.transferAgentIds?.join(", ") || "-")}</td>
+          <td>${row.transferredToAgent ? '<span class="chip">Yes</span>' : '<span class="chip">No</span>'}</td>
+          <td>${escapeHtml(row.transferReason || "-")}</td>
+          <td>${escapeHtml(row.queueWaitLabel || (row.queuedAt ? "In queue" : "No queue"))}</td>
+          <td>${escapeHtml(row.customerLanguage || "-")}</td>
+          <td>${escapeHtml(row.chatbotLanguage || "-")}</td>
+          <td>${escapeHtml(row.tagsLabel || "-")}</td>
+          <td>${escapeHtml(livechatAiQaMetricLabel(row.ftrLabel, row.transferredToAgent ? "Pending" : "-"))}</td>
+          <td>${escapeHtml(livechatAiQaMetricLabel(row.chtLabel, row.transferredToAgent ? "In progress" : "-"))}</td>
+        </tr>
+        ${
+          expanded
+            ? `<tr class="analytics-agent-detail-row"><td colspan="11">${renderLivechatAiQaTimeline(row)}</td></tr>`
+            : ""
+        }
+      `;
+    })
+    .join("");
+}
+
+function renderLivechatAiQaTagging() {
+  const totalPages = Math.max(1, Math.ceil((state.livechatAiQa.total || 0) / state.livechatAiQa.pageSize));
+  return `
+    <section class="analytics-page livechat-ai-qa-page">
+      ${renderLivechatAiQaFilters()}
+      <div class="table-shell">
+        <div class="tickets-toolbar">
+          <div>
+            <div class="section-title">Webhook chats</div>
+            <div class="subtle">${Number(state.livechatAiQa.total || 0).toLocaleString()} chat(s)</div>
+          </div>
+          <div class="pagination-controls">
+            <button class="btn btn-sm btn-outline-secondary" type="button" data-livechat-ai-qa-page="prev" ${state.livechatAiQa.page <= 1 ? "disabled" : ""}>Previous</button>
+            <span class="subtle">Page ${state.livechatAiQa.page} / ${totalPages}</span>
+            <button class="btn btn-sm btn-outline-secondary" type="button" data-livechat-ai-qa-page="next" ${state.livechatAiQa.page >= totalPages ? "disabled" : ""}>Next</button>
+          </div>
+        </div>
+        <div class="table-responsive">
+          <table class="table admin-table analytics-table livechat-ai-qa-table">
+            <thead>
+              <tr>
+                <th>${livechatAiQaSortButton("date", "Date / Time")}</th>
+                <th>Chat</th>
+                <th>${livechatAiQaSortButton("agent", "Agent")}</th>
+                <th>${livechatAiQaSortButton("transferred", "Transferred")}</th>
+                <th>${livechatAiQaSortButton("reason", "Reason")}</th>
+                <th>${livechatAiQaSortButton("queue", "Queue wait")}</th>
+                <th>${livechatAiQaSortButton("customerLanguage", "User language")}</th>
+                <th>${livechatAiQaSortButton("chatbotLanguage", "Bot language")}</th>
+                <th>${livechatAiQaSortButton("tags", "Tags")}</th>
+                <th>${livechatAiQaSortButton("ftr", "FTR")}</th>
+                <th>${livechatAiQaSortButton("cht", "CHT")}</th>
+              </tr>
+            </thead>
+            <tbody>${renderLivechatAiQaRows()}</tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
 }
 
 function analyticsDelta(current, previous, { lowerIsBetter = false, formatter = (value) => value } = {}) {
@@ -5638,6 +5975,7 @@ function currentSectionTitle() {
     "livechat-groups": "LiveChat Groups",
     "create-livechat-user": "Create LiveChat User",
     "livechat-analytics": "LiveChat Analytics",
+    "livechat-ai-qa-tagging": "LiveChat AI_QA_Tagging",
     "helpdesk-users": "HelpDesk Users",
     "helpdesk-groups": "HelpDesk Groups",
     "create-helpdesk-user": "Create HelpDesk User",
@@ -6001,6 +6339,9 @@ function renderApp() {
   } else if (state.section === "livechat-analytics") {
     appContent.innerHTML = renderAnalytics();
     filterBar.classList.add("d-none");
+  } else if (state.section === "livechat-ai-qa-tagging") {
+    appContent.innerHTML = renderLivechatAiQaTagging();
+    filterBar.classList.add("d-none");
   } else if (state.section === "helpdesk-analytics") {
     filterBar.classList.add("d-none");
     renderHelpdeskAnalytics();
@@ -6032,6 +6373,15 @@ function renderApp() {
 
   if (state.section === "livechat-analytics" && !state.analytics.loading && !state.analytics.data && !state.analytics.error) {
     fetchAnalytics();
+  }
+
+  if (
+    state.section === "livechat-ai-qa-tagging" &&
+    !state.livechatAiQa.loading &&
+    !state.livechatAiQa.loaded &&
+    !state.livechatAiQa.error
+  ) {
+    fetchLivechatAiQaTagging();
   }
 
   if (
@@ -6419,6 +6769,51 @@ function bindAppEvents() {
   document.querySelectorAll("[data-analytics-sort]").forEach((button) => {
     button.onclick = () => {
       state.analytics.sort = button.dataset.analyticsSort;
+      renderApp();
+    };
+  });
+  bindClick("livechatAiQaFilterBtn", () => {
+    syncLivechatAiQaFiltersFromDom();
+    fetchLivechatAiQaTagging();
+  });
+  bindClick("livechatAiQaResetBtn", () => {
+    resetLivechatAiQaFilters();
+    fetchLivechatAiQaTagging();
+  });
+  bindClick("livechatAiQaReloadBtn", () => {
+    fetchLivechatAiQaTagging();
+  });
+  document.querySelectorAll("[data-livechat-ai-qa-sort]").forEach((button) => {
+    button.onclick = () => {
+      const sort = button.dataset.livechatAiQaSort;
+      if (state.livechatAiQa.sort === sort) {
+        state.livechatAiQa.order = state.livechatAiQa.order === "asc" ? "desc" : "asc";
+      } else {
+        state.livechatAiQa.sort = sort;
+        state.livechatAiQa.order = "desc";
+      }
+      state.livechatAiQa.page = 1;
+      fetchLivechatAiQaTagging();
+    };
+  });
+  document.querySelectorAll("[data-livechat-ai-qa-page]").forEach((button) => {
+    button.onclick = () => {
+      const direction = button.dataset.livechatAiQaPage;
+      const totalPages = Math.max(1, Math.ceil((state.livechatAiQa.total || 0) / state.livechatAiQa.pageSize));
+      state.livechatAiQa.page = direction === "next"
+        ? Math.min(totalPages, state.livechatAiQa.page + 1)
+        : Math.max(1, state.livechatAiQa.page - 1);
+      fetchLivechatAiQaTagging();
+    };
+  });
+  document.querySelectorAll("[data-livechat-ai-qa-toggle]").forEach((row) => {
+    row.onclick = () => {
+      const key = row.dataset.livechatAiQaToggle;
+      if (state.livechatAiQa.expanded.has(key)) {
+        state.livechatAiQa.expanded.delete(key);
+      } else {
+        state.livechatAiQa.expanded.add(key);
+      }
       renderApp();
     };
   });

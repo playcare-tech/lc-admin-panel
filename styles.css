@@ -1667,6 +1667,44 @@ body {
   gap: 8px;
 }
 
+.livechat-ai-qa-row {
+  cursor: pointer;
+}
+
+.livechat-ai-qa-table th,
+.livechat-ai-qa-table td {
+  vertical-align: top;
+}
+
+.livechat-ai-qa-timeline {
+  display: grid;
+  gap: 10px;
+}
+
+.livechat-ai-qa-event {
+  display: grid;
+  grid-template-columns: 155px minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.livechat-ai-qa-event:last-child {
+  border-bottom: 0;
+}
+
+.livechat-ai-qa-time {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.livechat-ai-qa-message {
+  margin-top: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .analytics-switch {
   display: flex;
   align-items: center;
@@ -1967,6 +2005,11 @@ body {
 
   .analytics-switch {
     margin-left: 0;
+  }
+
+  .livechat-ai-qa-event {
+    grid-template-columns: 1fr;
+    gap: 4px;
   }
 
   .toolbar-row {
