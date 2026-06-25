@@ -2327,7 +2327,7 @@ function renderLivechatAiQaFilters() {
         <label>
           <span>Reason</span>
           <select id="livechatAiQaReason" class="form-select">
-            ${["", "manual", "inactive", "assigned", "unassigned", "other"]
+            ${["", "manual", "inactive", "assigned", "unassigned", "other", "manual_archived_customer", "chat_deactivated"]
               .map((value) => `<option value="${escapeHtml(value)}" ${filters.reason === value ? "selected" : ""}>${escapeHtml(value || "Any")}</option>`)
               .join("")}
           </select>

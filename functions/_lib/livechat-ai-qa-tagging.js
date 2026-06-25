@@ -3,6 +3,7 @@ import { accountIndexName, accountTableName } from "./accounts.js";
 const CHAT_TABLE_BASE = "livechat_ai_qa_chats";
 const EVENT_TABLE_BASE = "livechat_ai_qa_events";
 const VALID_ACTIONS = new Set(["incoming_chat", "chat_transferred", "incoming_event", "thread_tagged", "chat_deactivated"]);
+const NO_TRANSFER_REASON_EVENT_TYPES = new Set(["manual_archived_customer"]);
 
 function nowIso() {
   return new Date().toISOString();
@@ -101,6 +102,11 @@ function parseTranslationSignal(event) {
 
 function isQueueStartSystemEvent(event) {
   return event?.type === "system_message" && event?.system_message_type === "chat_transferred";
+}
+
+function noTransferReasonForEvent(event) {
+  const systemType = text(event?.system_message_type);
+  return NO_TRANSFER_REASON_EVENT_TYPES.has(systemType) ? systemType : "";
 }
 
 function eventKeyForWebhook(body) {
@@ -423,6 +429,7 @@ async function applyIncomingEvent(env, body, receivedAt) {
   const actorType = actorTypeForIncomingEvent(event);
   const languageSignal = parseTranslationSignal(event);
   const queueStarted = isQueueStartSystemEvent(event);
+  const noTransferReason = noTransferReasonForEvent(event);
   const inserted = await insertEvent(env, body, receivedAt, {
     eventId: text(event.id),
     eventAt: eventDate(body.action, payload, receivedAt),
@@ -433,6 +440,17 @@ async function applyIncomingEvent(env, body, receivedAt) {
     languageSignalJson: languageSignal ? jsonText(languageSignal) : "",
   });
   if (!inserted) return;
+
+  if (noTransferReason) {
+    await env.DB.prepare(`
+      UPDATE ${tables.chats}
+      SET transfer_reason = COALESCE(NULLIF(transfer_reason, ''), ?),
+          updated_at = ?
+      WHERE chat_id = ? AND thread_id = ? AND transferred_to_agent = 0
+    `)
+      .bind(noTransferReason, receivedAt, chatId, threadId)
+      .run();
+  }
 
   if (queueStarted) {
     await env.DB.prepare(`
@@ -495,7 +513,16 @@ async function applyChatDeactivated(env, body, receivedAt) {
     eventType: "chat_deactivated",
     messageText: "Chat deactivated",
   });
-  await env.DB.prepare(`UPDATE ${tables.chats} SET deactivated_at = COALESCE(deactivated_at, ?), updated_at = ? WHERE chat_id = ? AND thread_id = ?`)
+  await env.DB.prepare(`
+    UPDATE ${tables.chats}
+    SET deactivated_at = COALESCE(deactivated_at, ?),
+        transfer_reason = CASE
+          WHEN transferred_to_agent = 0 THEN COALESCE(NULLIF(transfer_reason, ''), 'chat_deactivated')
+          ELSE transfer_reason
+        END,
+        updated_at = ?
+    WHERE chat_id = ? AND thread_id = ?
+  `)
     .bind(eventAt, receivedAt, chatId, threadId)
     .run();
 }
@@ -547,6 +574,10 @@ function chatRow(row, events = []) {
   const tags = parseJson(row.tags_json, []);
   const agentIds = parseJson(row.agent_ids_json, []);
   const transferAgentIds = parseJson(row.transferred_to_agent_ids_json, []);
+  const transferredToAgent = Boolean(row.transferred_to_agent);
+  const noTransferReason = !transferredToAgent
+    ? (events || []).find((event) => NO_TRANSFER_REASON_EVENT_TYPES.has(event.event_type))?.event_type || ""
+    : "";
   return {
     chatId: row.chat_id,
     threadId: row.thread_id,
@@ -555,8 +586,8 @@ function chatRow(row, events = []) {
     lastEventAt: row.last_event_at || "",
     agentIds,
     agentLabel: row.agent_label || agentIds.join(", "),
-    transferredToAgent: Boolean(row.transferred_to_agent),
-    transferReason: row.transfer_reason || "",
+    transferredToAgent,
+    transferReason: row.transfer_reason || noTransferReason,
     transferAgentIds,
     transferGroupIds: parseJson(row.transferred_to_group_ids_json, []),
     queue: parseJson(row.transfer_queue_json, null),
@@ -631,8 +662,19 @@ export async function listLivechatAiQaChats(env, filters = {}) {
   if (filters.transferred === "yes") where.push("transferred_to_agent = 1");
   if (filters.transferred === "no") where.push("transferred_to_agent = 0");
   if (filters.reason) {
-    where.push("transfer_reason = ?");
-    binds.push(filters.reason);
+    where.push(`(
+      transfer_reason = ?
+      OR (
+        transferred_to_agent = 0
+        AND EXISTS (
+          SELECT 1 FROM ${tables.events}
+          WHERE ${tables.events}.chat_id = ${tables.chats}.chat_id
+            AND ${tables.events}.thread_id = ${tables.chats}.thread_id
+            AND ${tables.events}.event_type = ?
+        )
+      )
+    )`);
+    binds.push(filters.reason, filters.reason);
   }
   if (filters.hasQueue === "yes") where.push("queued_at IS NOT NULL");
   if (filters.hasQueue === "no") where.push("queued_at IS NULL");
