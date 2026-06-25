@@ -2,7 +2,7 @@ import { accountIndexName, accountTableName } from "./accounts.js";
 
 const CHAT_TABLE_BASE = "livechat_ai_qa_chats";
 const EVENT_TABLE_BASE = "livechat_ai_qa_events";
-const VALID_ACTIONS = new Set(["chat_transferred", "incoming_event", "thread_tagged", "chat_deactivated"]);
+const VALID_ACTIONS = new Set(["incoming_chat", "chat_transferred", "incoming_event", "thread_tagged", "chat_deactivated"]);
 
 function nowIso() {
   return new Date().toISOString();
@@ -29,8 +29,20 @@ function unique(values) {
   return [...new Set((Array.isArray(values) ? values : []).map((value) => text(value)).filter(Boolean))];
 }
 
+function chatIdFromPayload(payload) {
+  return text(payload?.chat_id || payload?.chat?.id || payload?.id);
+}
+
+function threadFromIncomingChat(payload) {
+  return payload?.chat?.thread || {};
+}
+
+function threadIdFromPayload(payload) {
+  return text(payload?.thread_id || payload?.chat?.thread?.id || payload?.thread?.id);
+}
+
 function eventDate(action, payload, receivedAt) {
-  return payload?.event?.created_at || payload?.created_at || receivedAt;
+  return payload?.event?.created_at || payload?.chat?.thread?.created_at || payload?.created_at || receivedAt;
 }
 
 function diffMs(from, to) {
@@ -87,11 +99,18 @@ function parseTranslationSignal(event) {
   };
 }
 
+function isQueueStartSystemEvent(event) {
+  return event?.type === "system_message" && event?.system_message_type === "chat_transferred";
+}
+
 function eventKeyForWebhook(body) {
   const action = text(body.action);
   const payload = body.payload || {};
-  const chatId = text(payload.chat_id);
-  const threadId = text(payload.thread_id);
+  const chatId = chatIdFromPayload(payload);
+  const threadId = threadIdFromPayload(payload);
+  if (action === "incoming_chat") {
+    return `incoming_chat:${chatId}:${threadId}:${text(body.webhook_id || payload.chat?.thread?.id || crypto.randomUUID())}`;
+  }
   if (action === "incoming_event") {
     return `incoming_event:${chatId}:${threadId}:${text(payload.event?.id || body.webhook_id)}`;
   }
@@ -181,8 +200,8 @@ export async function ensureLivechatAiQaTables(env) {
 async function ensureChat(env, body, receivedAt) {
   const tables = livechatAiQaTables(env);
   const payload = body.payload || {};
-  const chatId = text(payload.chat_id);
-  const threadId = text(payload.thread_id);
+  const chatId = chatIdFromPayload(payload);
+  const threadId = threadIdFromPayload(payload);
   await env.DB.prepare(`
     INSERT INTO ${tables.chats}
       (chat_id, thread_id, organization_id, first_seen_at, last_event_at, created_at, updated_at)
@@ -215,8 +234,8 @@ async function insertEvent(env, body, receivedAt, normalized) {
       text(body.webhook_id),
       text(body.action),
       text(body.organization_id),
-      text(payload.chat_id),
-      text(payload.thread_id),
+      chatIdFromPayload(payload),
+      threadIdFromPayload(payload),
       normalized.eventId || "",
       normalized.eventAt || receivedAt,
       normalized.actorType || "",
@@ -271,14 +290,15 @@ async function refreshChatMetrics(env, chatId, threadId) {
 async function applyChatTransferred(env, body, receivedAt) {
   const tables = livechatAiQaTables(env);
   const payload = body.payload || {};
-  const chatId = text(payload.chat_id);
-  const threadId = text(payload.thread_id);
-  const eventAt = eventDate(body.action, payload, receivedAt);
+  const chatId = chatIdFromPayload(payload);
+  const threadId = threadIdFromPayload(payload);
+  const eventAt = receivedAt;
   const agentIds = unique(payload.transferred_to?.agent_ids || []);
   const groupIds = unique(payload.transferred_to?.group_ids || []);
   const hasAgent = agentIds.length > 0;
   const reason = text(payload.reason);
   const queueJson = payload.queue ? jsonText(payload.queue) : null;
+  const fallbackQueuedAt = text(payload.queue?.queued_at);
 
   await insertEvent(env, body, receivedAt, {
     eventAt,
@@ -317,8 +337,8 @@ async function applyChatTransferred(env, body, receivedAt) {
       hasAgent ? 1 : 0,
       agentIds.join(", "),
       queueJson,
-      payload.queue ? 1 : 0,
-      eventAt,
+      fallbackQueuedAt ? 1 : 0,
+      fallbackQueuedAt,
       eventAt,
       hasAgent ? 1 : 0,
       eventAt,
@@ -329,11 +349,55 @@ async function applyChatTransferred(env, body, receivedAt) {
     .run();
 }
 
+async function applyIncomingChat(env, body, receivedAt) {
+  const tables = livechatAiQaTables(env);
+  const payload = body.payload || {};
+  const chat = payload.chat || {};
+  const thread = threadFromIncomingChat(payload);
+  const chatId = chatIdFromPayload(payload);
+  const threadId = threadIdFromPayload(payload);
+  const eventAt = thread.created_at || chat.created_at || receivedAt;
+
+  await insertEvent(env, body, receivedAt, {
+    eventAt,
+    actorType: "system",
+    eventType: "incoming_chat",
+    messageText: "Incoming chat started",
+  });
+
+  const threadTags = unique(thread.tags || []);
+  if (threadTags.length) {
+    const row = await env.DB.prepare(`SELECT tags_json FROM ${tables.chats} WHERE chat_id = ? AND thread_id = ?`)
+      .bind(chatId, threadId)
+      .first();
+    const tags = unique([...parseJson(row?.tags_json, []), ...threadTags]);
+    await env.DB.prepare(`UPDATE ${tables.chats} SET tags_json = ?, updated_at = ? WHERE chat_id = ? AND thread_id = ?`)
+      .bind(jsonText(tags), receivedAt, chatId, threadId)
+      .run();
+  }
+
+  for (const event of thread.events || []) {
+    await applyIncomingEvent(
+      env,
+      {
+        ...body,
+        action: "incoming_event",
+        payload: {
+          chat_id: chatId,
+          thread_id: threadId,
+          event,
+        },
+      },
+      receivedAt,
+    );
+  }
+}
+
 async function applyThreadTagged(env, body, receivedAt) {
   const tables = livechatAiQaTables(env);
   const payload = body.payload || {};
-  const chatId = text(payload.chat_id);
-  const threadId = text(payload.thread_id);
+  const chatId = chatIdFromPayload(payload);
+  const threadId = threadIdFromPayload(payload);
   const tag = text(payload.tag);
   await insertEvent(env, body, receivedAt, {
     eventAt: eventDate(body.action, payload, receivedAt),
@@ -354,20 +418,32 @@ async function applyIncomingEvent(env, body, receivedAt) {
   const tables = livechatAiQaTables(env);
   const payload = body.payload || {};
   const event = payload.event || {};
-  const chatId = text(payload.chat_id);
-  const threadId = text(payload.thread_id);
+  const chatId = chatIdFromPayload(payload);
+  const threadId = threadIdFromPayload(payload);
   const actorType = actorTypeForIncomingEvent(event);
   const languageSignal = parseTranslationSignal(event);
+  const queueStarted = isQueueStartSystemEvent(event);
   const inserted = await insertEvent(env, body, receivedAt, {
     eventId: text(event.id),
     eventAt: eventDate(body.action, payload, receivedAt),
     actorType,
     actorId: text(event.author_id),
-    eventType: text(event.system_message_type || event.type),
+    eventType: queueStarted ? "queue_started" : text(event.system_message_type || event.type),
     messageText: messageTextForEvent(event),
     languageSignalJson: languageSignal ? jsonText(languageSignal) : "",
   });
   if (!inserted) return;
+
+  if (queueStarted) {
+    await env.DB.prepare(`
+      UPDATE ${tables.chats}
+      SET queued_at = COALESCE(queued_at, ?),
+          updated_at = ?
+      WHERE chat_id = ? AND thread_id = ?
+    `)
+      .bind(eventDate(body.action, payload, receivedAt), receivedAt, chatId, threadId)
+      .run();
+  }
 
   if (actorType === "agent" && isAgentId(event.author_id)) {
     const current = await env.DB.prepare(`SELECT agent_ids_json, agent_label FROM ${tables.chats} WHERE chat_id = ? AND thread_id = ?`)
@@ -411,8 +487,8 @@ async function applyIncomingEvent(env, body, receivedAt) {
 async function applyChatDeactivated(env, body, receivedAt) {
   const tables = livechatAiQaTables(env);
   const payload = body.payload || {};
-  const chatId = text(payload.chat_id);
-  const threadId = text(payload.thread_id);
+  const chatId = chatIdFromPayload(payload);
+  const threadId = threadIdFromPayload(payload);
   const eventAt = eventDate(body.action, payload, receivedAt);
   await insertEvent(env, body, receivedAt, {
     eventAt,
@@ -429,8 +505,8 @@ export async function recordLivechatAiQaWebhook(env, body) {
     return { recorded: false, ignored: true, reason: "unsupported_action" };
   }
   const payload = body.payload || {};
-  const chatId = text(payload.chat_id);
-  const threadId = text(payload.thread_id);
+  const chatId = chatIdFromPayload(payload);
+  const threadId = threadIdFromPayload(payload);
   if (!chatId || !threadId) {
     return { recorded: false, ignored: true, reason: "missing_chat_or_thread" };
   }
@@ -439,7 +515,9 @@ export async function recordLivechatAiQaWebhook(env, body) {
   await ensureLivechatAiQaTables(env);
   await ensureChat(env, body, receivedAt);
 
-  if (body.action === "chat_transferred") {
+  if (body.action === "incoming_chat") {
+    await applyIncomingChat(env, body, receivedAt);
+  } else if (body.action === "chat_transferred") {
     await applyChatTransferred(env, body, receivedAt);
   } else if (body.action === "thread_tagged") {
     await applyThreadTagged(env, body, receivedAt);

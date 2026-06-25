@@ -2357,6 +2357,8 @@ function renderLivechatAiQaFilters() {
 }
 
 function livechatAiQaEventLabel(event) {
+  if (event.eventType === "incoming_chat") return "Incoming chat";
+  if (event.eventType === "queue_started") return "Queue started";
   if (event.eventType === "tag_added") return "Tag added";
   if (event.eventType === "transfer_to_agent") return "Transfer to agent";
   if (event.eventType === "queued") return "Queue";
