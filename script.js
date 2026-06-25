@@ -2198,7 +2198,8 @@ function livechatAiQaDateTime(value) {
   if (!value) return "-";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return `${localDateValue(date)} ${localTimeValue(date)}`;
+  const time = `${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}:${padDatePart(date.getSeconds())}`;
+  return `${localDateValue(date)} ${time}`;
 }
 
 function livechatAiQaMetricLabel(value, fallback = "-") {
