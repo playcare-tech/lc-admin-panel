@@ -6,6 +6,7 @@ import {
   setAdminDisabled,
   updateAdminPermissions,
 } from "../_lib/admin-users.js";
+import { sendAdminInviteEmail } from "../_lib/admin-invites.js";
 import { requireAuth } from "../_lib/auth.js";
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../_lib/http.js";
 import { writeLogSafely } from "../_lib/logs.js";
@@ -172,6 +173,25 @@ export async function onRequest(context) {
         inviteEmail: `${body.inviteEmail || ""}`.trim(),
         inviteOrigin: new URL(context.request.url).origin,
       });
+      let inviteEmail = { sent: false, reason: "not_attempted" };
+      try {
+        inviteEmail = await sendAdminInviteEmail(context.env, {
+          ...invite,
+          inviteEmail: `${body.inviteEmail || ""}`.trim(),
+          firstName: `${body.firstName || ""}`.trim(),
+          lastName: `${body.lastName || ""}`.trim(),
+        });
+      } catch (error) {
+        await writeLogSafely(context.env, {
+          actor: auth.session.user,
+          area: "admin",
+          action: "send_admin_invite_email",
+          target: username,
+          status: "error",
+          details: error.message || "Failed to send admin invitation email.",
+        });
+        throw error;
+      }
 
       await writeLogSafely(context.env, {
         actor: auth.session.user,
@@ -182,7 +202,7 @@ export async function onRequest(context) {
         details: `Created admin user ${username}.`,
       });
 
-      return json({ ok: true, invite });
+      return json({ ok: true, invite: { ...invite, email: inviteEmail } });
     } catch (error) {
       return adminErrorResponse(error, "Failed to create admin user.");
     }

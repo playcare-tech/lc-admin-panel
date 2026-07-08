@@ -713,6 +713,8 @@ function resetAccountScopedState() {
 
 function renderLoginChallenge() {
   if (!loginChallengeFields) return;
+  const passwordInput = document.getElementById("password");
+  const passwordField = passwordInput?.closest(".col-12");
   if (state.inviteSetup) {
     const setup = state.inviteSetup;
     loginChallengeFields.innerHTML = `
@@ -726,11 +728,19 @@ function renderLoginChallenge() {
       <input id="inviteOtp" name="inviteOtp" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" class="form-control" placeholder="Google Authenticator code" autocomplete="one-time-code" required />
     `;
     document.getElementById("username").value = setup.username || document.getElementById("username").value || "";
-    document.getElementById("password").closest(".col-12")?.classList.add("d-none");
+    if (passwordInput) {
+      passwordInput.required = false;
+      passwordInput.disabled = true;
+    }
+    passwordField?.classList.add("d-none");
     renderTotpQr();
     return;
   }
-  document.getElementById("password").closest(".col-12")?.classList.remove("d-none");
+  if (passwordInput) {
+    passwordInput.required = true;
+    passwordInput.disabled = false;
+  }
+  passwordField?.classList.remove("d-none");
   const challenge = state.loginChallenge;
   if (!challenge) {
     loginChallengeFields.innerHTML = "";
@@ -1875,7 +1885,7 @@ function renderCreateUserForm(type) {
 
 function renderAdminUsers() {
   const inviteText = state.lastAdminInvite
-    ? `Invite link: ${state.lastAdminInvite.inviteLink}\nUsername: ${state.lastAdminInvite.username}\nExpires: ${state.lastAdminInvite.inviteExpiresAt}`
+    ? `Invite link: ${state.lastAdminInvite.inviteLink}\nUsername: ${state.lastAdminInvite.username}\nEmail: ${state.lastAdminInvite.email?.sent ? "sent" : inviteEmailStatusLabel(state.lastAdminInvite.email)}\nExpires: ${state.lastAdminInvite.inviteExpiresAt}`
     : "";
 
   return `
@@ -1989,6 +1999,13 @@ function renderAdminUsers() {
       </div>
     </div>
   `;
+}
+
+function inviteEmailStatusLabel(email = {}) {
+  if (email.sent) return "sent";
+  if (email.reason === "missing_email_provider") return "not sent - email provider is not configured";
+  if (email.reason === "missing_email") return "not sent - missing email";
+  return "not sent";
 }
 
 async function fetchQaDashboard() {
