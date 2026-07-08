@@ -1,3 +1,5 @@
+import { helpDeskAnalyticsAgentProfile } from "./helpdesk-analytics-agents.js";
+
 function getAuthHeader(env) {
   const value = `${env.TEXT_BASIC_AUTH_B64 || ""}`.trim();
   if (!value) {
@@ -341,18 +343,22 @@ export async function getHelpDeskDashboard(env) {
 
   return {
     agents: (agents || [])
-      .map((agent) => ({
-        id: String(agent.ID),
-        email: agent.email,
-        name: agent.name || agent.email,
-        status: agent.status || "unknown",
-        roles: agent.roles || [],
-        teamIDs: (agent.teamIDs || []).map(String),
-        teams: (agent.teamIDs || []).map((teamId) => ({
-          id: String(teamId),
-          name: teamNameById.get(String(teamId)) || `Team ${teamId}`,
-        })),
-      }))
+      .map((agent) => {
+        const id = String(agent.ID);
+        const override = helpDeskAnalyticsAgentProfile(id);
+        return {
+          id,
+          email: override?.email || agent.email,
+          name: override?.name || agent.name || override?.email || agent.email,
+          status: agent.status || "unknown",
+          roles: agent.roles || [],
+          teamIDs: (agent.teamIDs || []).map(String),
+          teams: (agent.teamIDs || []).map((teamId) => ({
+            id: String(teamId),
+            name: teamNameById.get(String(teamId)) || `Team ${teamId}`,
+          })),
+        };
+      })
       .sort((left, right) => left.name.localeCompare(right.name)),
     teams: (teams || [])
       .map((team) => ({

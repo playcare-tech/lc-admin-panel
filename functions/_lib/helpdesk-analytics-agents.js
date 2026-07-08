@@ -1,3 +1,7 @@
+const AGENT_PROFILES = new Map([
+  ["1a25f8e5-e076-4cea-8904-ebe5ebffca3f", { name: "Mikhail G", email: "mikhail.g@playcare.tech" }],
+]);
+
 const AGENT_EMAILS = new Map([
   ["00caa5a7-8743-4636-848a-c3581425d5e1", "yauheni.khadnevich@boomerang-partners.com"],
   ["023d62bf-9bc1-4a1c-ae1f-89ade9df5ab8", "khushnur.turgunbaev@boomerang-partners.com"],
@@ -15,6 +19,7 @@ const AGENT_EMAILS = new Map([
   ["1529bd1b-fc0b-40d9-b1e7-1bbcea0e4e52", "igar.k@playcare.tech"],
   ["1738c448-4713-4459-b315-37f3fbe2dc85", "arslan.abubikirov@boomerang-partners.com"],
   ["18c1a37e-fa34-4d07-b163-da15f34d313c", "maryia.kavalchuk@boomerang-partners.com"],
+  ["1a25f8e5-e076-4cea-8904-ebe5ebffca3f", "mikhail.g@playcare.tech"],
   ["2084ab9f-6801-42b0-bf47-48a4ec077c35", "valerii.b@playcare.tech"],
   ["2f8b235f-cd18-4579-828c-fcfa12433a36", "anastasiya.l@playcare.tech"],
   ["32fd48b0-57c2-40c4-ad53-a8cf028fac82", "gleb.dedovich@boomerang-partners.com"],
@@ -92,5 +97,14 @@ const AGENT_EMAILS = new Map([
 ]);
 
 export function helpDeskAnalyticsAgentEmail(agentId) {
-  return AGENT_EMAILS.get(String(agentId || "")) || "";
+  const id = String(agentId || "");
+  return AGENT_PROFILES.get(id)?.email || AGENT_EMAILS.get(id) || "";
+}
+
+export function helpDeskAnalyticsAgentProfile(agentId) {
+  const id = String(agentId || "");
+  const profile = AGENT_PROFILES.get(id);
+  if (profile) return { id, ...profile };
+  const email = AGENT_EMAILS.get(id) || "";
+  return email ? { id, name: "", email } : null;
 }

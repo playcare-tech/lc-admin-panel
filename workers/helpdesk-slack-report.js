@@ -1,4 +1,5 @@
 import { accountTableName } from "../functions/_lib/accounts.js";
+import { helpDeskAnalyticsAgentProfile } from "../functions/_lib/helpdesk-analytics-agents.js";
 
 const DEFAULT_TIME_ZONE = "Europe/Nicosia";
 const DEFAULT_CHANNEL = "C0B8SQY3LNR";
@@ -403,10 +404,11 @@ function buildMetricReport(env, config, fromDate, toDate, dailyRows, detailRows)
   const ensureAgent = (row) => {
     const agentId = String(row.agent_id || row.agentId || "");
     if (!agentId) return null;
+    const override = helpDeskAnalyticsAgentProfile(agentId);
     const profile = {
       agentId,
-      name: String(row.agent_name || row.name || agentId || "Unknown agent"),
-      email: String(row.agent_email || row.email || ""),
+      name: String(override?.name || row.agent_name || row.name || agentId || "Unknown agent"),
+      email: String(override?.email || row.agent_email || row.email || ""),
     };
     if (!isIncludedReportAgent(env, profile)) return null;
     if (!agentsById.has(agentId)) {

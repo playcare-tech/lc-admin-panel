@@ -1,5 +1,6 @@
 import { requireAuth } from "../../_lib/auth.js";
 import { accountTableName, withAccountContext } from "../../_lib/accounts.js";
+import { helpDeskAnalyticsAgentProfile } from "../../_lib/helpdesk-analytics-agents.js";
 import { getHelpDeskDashboard } from "../../_lib/helpdesk.js";
 import { json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 
@@ -38,8 +39,8 @@ async function getAnalyticsAgents(env, activeAgents = []) {
     if (!id) continue;
     const current = byId.get(id) || {
       id,
-      name: row.name || id,
-      email: row.email || "",
+      name: helpDeskAnalyticsAgentProfile(id)?.name || row.name || id,
+      email: helpDeskAnalyticsAgentProfile(id)?.email || row.email || "",
       status: activeIds.has(id) ? "active" : "historical",
       historical: !activeIds.has(id),
       analytics_points: 0,
@@ -47,8 +48,9 @@ async function getAnalyticsAgents(env, activeAgents = []) {
       teamIDs: [],
       teams: [],
     };
-    current.name = current.name || row.name || id;
-    current.email = current.email || row.email || "";
+    const override = helpDeskAnalyticsAgentProfile(id);
+    current.name = override?.name || current.name || row.name || id;
+    current.email = override?.email || current.email || row.email || "";
     current.analytics_points += Number(row.analytics_points || 0);
     if (row.last_seen_at && (!current.last_seen_at || row.last_seen_at > current.last_seen_at)) {
       current.last_seen_at = row.last_seen_at;

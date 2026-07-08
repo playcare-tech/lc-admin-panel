@@ -17,15 +17,27 @@ const HELPDESK_ANALYTICS_METRICS = {
   },
   comments: {
     id: "comments",
-    tabLabel: "Comments count report",
-    totalLabel: "Comments",
-    periodLabel: "Period comments",
-    itemSingular: "comment",
-    itemPlural: "comments",
-    detailTitle: "comment points",
-    detailEmpty: "No comment details for this agent in the selected range.",
-    timeLabel: "Comment time",
-    exportSlug: "comments-count",
+    tabLabel: "Internal notes report",
+    totalLabel: "Internal Notes",
+    periodLabel: "Period notes",
+    itemSingular: "note",
+    itemPlural: "notes",
+    detailTitle: "internal note points",
+    detailEmpty: "No internal note details for this agent in the selected range.",
+    timeLabel: "Note time",
+    exportSlug: "internal-notes-count",
+  },
+  combined: {
+    id: "combined",
+    tabLabel: "Public + internal report",
+    totalLabel: "Total activity",
+    periodLabel: "Period activity",
+    itemSingular: "activity",
+    itemPlural: "activities",
+    detailTitle: "activity points",
+    detailEmpty: "No activity for this agent in the selected range.",
+    timeLabel: "Activity time",
+    exportSlug: "public-internal",
   },
 };
 const DEFAULT_HELPDESK_ANALYTICS_AGENT_EMAILS = [
@@ -6671,11 +6683,12 @@ function renderHelpdeskAnalytics() {
 
   const actionBar = document.createElement("div");
   actionBar.className = "helpdesk-analytics-actions";
+  const combinedMetric = isHelpdeskCombinedMetric();
   actionBar.innerHTML = `
     <button id="helpdeskAnalyticsApplyBtn" class="btn btn-primary" type="button">Filter</button>
-    <button id="helpdeskAnalyticsPdfBtn" class="btn btn-outline-secondary" type="button" ${data ? "" : "disabled"}>Export PDF</button>
-    <button id="helpdeskAnalyticsExcelBtn" class="btn btn-outline-secondary" type="button" ${data ? "" : "disabled"}>Export Excel</button>
-    <button id="helpdeskAnalyticsSlackBtn" class="btn btn-outline-secondary" type="button" ${data && !state.helpdesk_analytics.slackSending ? "" : "disabled"}>${state.helpdesk_analytics.slackSending ? "Sending..." : "Send to Slack"}</button>
+    <button id="helpdeskAnalyticsPdfBtn" class="btn btn-outline-secondary" type="button" ${data && !combinedMetric ? "" : "disabled"}>Export PDF</button>
+    <button id="helpdeskAnalyticsExcelBtn" class="btn btn-outline-secondary" type="button" ${data && !combinedMetric ? "" : "disabled"}>Export Excel</button>
+    <button id="helpdeskAnalyticsSlackBtn" class="btn btn-outline-secondary" type="button" ${data && !combinedMetric && !state.helpdesk_analytics.slackSending ? "" : "disabled"}>${state.helpdesk_analytics.slackSending ? "Sending..." : "Send to Slack"}</button>
     <button id="helpdeskAnalyticsResetBtn" class="btn btn-outline-secondary" type="button">Reset filters</button>
   `;
   filterBarContainer.appendChild(actionBar);
@@ -6734,8 +6747,12 @@ function renderHelpdeskAnalytics() {
 
   // Render data sections if available
   if (data) {
-    renderMetricsAndPanels();
-    renderLeaderboard();
+    if (combinedMetric) {
+      renderHelpdeskCombinedReport();
+    } else {
+      renderMetricsAndPanels();
+      renderLeaderboard();
+    }
   } else if (loading) {
   } else if (error) {
     const errorDiv = document.createElement("div");
@@ -6964,6 +6981,75 @@ function renderMetricsAndPanels() {
   top5Row.appendChild(top5TicketsPanel);
 
   metricsSection.appendChild(top5Row);
+}
+
+function renderHelpdeskCombinedReport() {
+  const analytics = state.helpdesk_analytics.data;
+  if (!analytics) return;
+  const container = document.getElementById("appContent");
+  const agents = [...(analytics.agents || [])].sort((left, right) =>
+    Number(right.total_tickets || 0) - Number(left.total_tickets || 0) ||
+    Number(right.public_replies || 0) - Number(left.public_replies || 0) ||
+    helpdeskAgentLabel(left).localeCompare(helpdeskAgentLabel(right)),
+  );
+
+  const metricsRow = document.createElement("div");
+  metricsRow.className = "metrics-row d-flex gap-4 mb-4 flex-wrap";
+  const cards = [
+    ["Public replies", analytics.summary?.public_replies || 0],
+    ["Internal notes", analytics.summary?.internal_notes || 0],
+    ["Total activity", analytics.summary?.total_tickets || 0],
+    ["Active agents", analytics.summary?.active_agents || 0],
+  ];
+  cards.forEach(([title, value]) => {
+    const card = document.createElement("div");
+    card.className = "analytics-card";
+    card.innerHTML = `
+      <div class="card-value">${Number(value || 0).toLocaleString()}</div>
+      <hr class="card-divider" />
+      <div class="card-title">${escapeHtml(title)}</div>
+    `;
+    metricsRow.appendChild(card);
+  });
+  container.appendChild(metricsRow);
+
+  const shell = document.createElement("div");
+  shell.className = "table-shell";
+  shell.innerHTML = agents.length
+    ? `<div class="table-responsive">
+        <table class="table align-middle">
+          <thead>
+            <tr>
+              <th>Agent</th>
+              <th>Email / ID</th>
+              <th>Public replies</th>
+              <th>Internal notes</th>
+              <th>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${agents
+              .map(
+                (agent) => `
+                  <tr>
+                    <td><strong>${escapeHtml(helpdeskAgentLabel(agent))}</strong></td>
+                    <td>${escapeHtml(helpdeskAgentSubLabel(agent) || agent.agent_id || "-")}</td>
+                    <td>${Number(agent.public_replies || 0).toLocaleString()}</td>
+                    <td>${Number(agent.internal_notes || 0).toLocaleString()}</td>
+                    <td><strong>${Number(agent.total_tickets || 0).toLocaleString()}</strong></td>
+                  </tr>
+                `,
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>`
+    : '<div class="empty-state">No public replies or internal notes for the selected period.</div>';
+  container.appendChild(shell);
+}
+
+function isHelpdeskCombinedMetric() {
+  return helpdeskAnalyticsMetricConfig().id === "combined";
 }
 
 function renderLeaderboard() {

@@ -1,6 +1,6 @@
 import { requirePermission } from "../../_lib/auth.js";
 import { accountIndexName, accountTableName, withAccountContext } from "../../_lib/accounts.js";
-import { helpDeskAnalyticsAgentEmail } from "../../_lib/helpdesk-analytics-agents.js";
+import { helpDeskAnalyticsAgentEmail, helpDeskAnalyticsAgentProfile } from "../../_lib/helpdesk-analytics-agents.js";
 import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 import { getHelpDeskDashboard, helpdeskRequestWithMeta } from "../../_lib/helpdesk.js";
 
@@ -9,6 +9,7 @@ const MAX_PAGES_PER_RANGE = 20;
 const STATUSES = ["open", "pending", "onhold", "solved", "closed"];
 const METRIC_PUBLIC_REPLIES = "public_replies";
 const METRIC_COMMENTS = "comments";
+const METRIC_COMBINED = "combined";
 const COMMENT_TIME_ZONE = "Europe/Nicosia";
 const DAILY_TABLE_BASE = "helpdesk_analytics_daily_v7";
 const MESSAGE_EVENTS_TABLE_BASE = "helpdesk_analytics_message_events_v4";
@@ -60,6 +61,7 @@ function splitParam(value) {
 }
 
 function normalizeMetric(value) {
+  if (value === METRIC_COMBINED) return METRIC_COMBINED;
   return value === METRIC_COMMENTS ? METRIC_COMMENTS : METRIC_PUBLIC_REPLIES;
 }
 
@@ -148,10 +150,11 @@ function authorProfile(event, agentDirectory) {
     "";
   const agentId = String(id || "");
   const profile = agentDirectory.get(agentId) || {};
+  const override = helpDeskAnalyticsAgentProfile(agentId);
   return {
     id: agentId,
-    name: author.name || author.fullName || event.agentName || event.authorName || profile.name || agentId,
-    email: author.email || event.agentEmail || event.authorEmail || profile.email || helpDeskAnalyticsAgentEmail(agentId),
+    name: override?.name || author.name || author.fullName || event.agentName || event.authorName || profile.name || agentId,
+    email: override?.email || author.email || event.agentEmail || event.authorEmail || profile.email || helpDeskAnalyticsAgentEmail(agentId),
   };
 }
 
@@ -512,6 +515,103 @@ function filterDetailRows(rows, filters, agentDirectory = new Map()) {
   return rows.filter((row) => matchesFilters(row.agent_id, filters, agentDirectory));
 }
 
+function agentNameForAnalyticsRow(row, profile = {}) {
+  const override = helpDeskAnalyticsAgentProfile(row.agent_id);
+  return override?.name || row.agent_name || profile.name || override?.email || row.agent_email || row.agent_id || "Unknown agent";
+}
+
+function agentEmailForAnalyticsRow(row, profile = {}) {
+  const override = helpDeskAnalyticsAgentProfile(row.agent_id);
+  return override?.email || row.agent_email || profile.email || helpDeskAnalyticsAgentEmail(row.agent_id) || "";
+}
+
+async function rowsToCombinedResponse(env, from, to, fromDate, toDate, filters, agentDirectory = new Map()) {
+  await Promise.all([
+    ensureHelpDeskAnalyticsCache(env, METRIC_PUBLIC_REPLIES),
+    ensureHelpDeskAnalyticsCache(env, METRIC_COMMENTS),
+  ]);
+
+  const commentFromDate = dateKeyInTimeZone(from, COMMENT_TIME_ZONE);
+  const commentToDate = dateKeyInTimeZone(new Date(to.getTime() - 1), COMMENT_TIME_ZONE);
+  const [publicRows, commentRows] = await Promise.all([
+    readCachedRange(env, fromDate, toDate, METRIC_PUBLIC_REPLIES),
+    readCachedRange(env, commentFromDate, commentToDate, METRIC_COMMENTS),
+  ]);
+  const filteredPublicRows = filterRows(publicRows, filters, agentDirectory);
+  const filteredCommentRows = filterRows(commentRows, filters, agentDirectory);
+  const agentsById = new Map();
+
+  const ensureAgent = (row) => {
+    const agentId = String(row.agent_id || "");
+    if (!agentId) return null;
+    if (!agentsById.has(agentId)) {
+      const profile = agentDirectory.get(agentId) || {};
+      agentsById.set(agentId, {
+        agent_id: agentId,
+        id: agentId,
+        name: agentNameForAnalyticsRow(row, profile),
+        email: agentEmailForAnalyticsRow(row, profile),
+        public_replies: 0,
+        internal_notes: 0,
+        total_tickets: 0,
+      });
+    }
+    return agentsById.get(agentId);
+  };
+
+  for (const row of filteredPublicRows) {
+    const agent = ensureAgent(row);
+    if (!agent) continue;
+    agent.public_replies += Number(row.handled_tickets || 0);
+  }
+  for (const row of filteredCommentRows) {
+    const agent = ensureAgent(row);
+    if (!agent) continue;
+    agent.internal_notes += Number(row.handled_tickets || 0);
+  }
+
+  const agents = [...agentsById.values()]
+    .map((agent) => ({
+      ...agent,
+      total_tickets: agent.public_replies + agent.internal_notes,
+    }))
+    .sort((left, right) =>
+      right.total_tickets - left.total_tickets ||
+      right.public_replies - left.public_replies ||
+      left.name.localeCompare(right.name),
+    );
+
+  const publicReplies = agents.reduce((sum, agent) => sum + agent.public_replies, 0);
+  const internalNotes = agents.reduce((sum, agent) => sum + agent.internal_notes, 0);
+
+  return {
+    metric: METRIC_COMBINED,
+    period: { from: from.toISOString(), to: to.toISOString() },
+    summary: {
+      public_replies: publicReplies,
+      internal_notes: internalNotes,
+      total_tickets: publicReplies + internalNotes,
+      active_agents: agents.filter((agent) => agent.total_tickets > 0).length,
+      prev_period: { total_tickets: 0, total_replies: 0, active_agents: 0 },
+    },
+    agents,
+    timeline: [],
+    cache: {
+      date: fromDate,
+      from_date: fromDate,
+      to_date: toDate,
+      checked: true,
+      hit: publicRows.length > 0 || commentRows.length > 0,
+      source: "d1_combined_range",
+      metric: METRIC_COMBINED,
+    },
+    capabilities: {
+      per_agent_period_metrics: true,
+      combined_public_and_internal_counts: true,
+    },
+  };
+}
+
 function addDateKeyDays(value, days) {
   const date = new Date(`${value}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() + days);
@@ -768,20 +868,21 @@ function rowsToResponse(rows, from, to, agentDirectory, cache = {}, detailRows =
     const profile = agentDirectory.get(String(row.agent_id)) || {};
     const agentId = String(row.agent_id);
     const replies = Number(row.handled_tickets || 0);
+    const override = helpDeskAnalyticsAgentProfile(agentId);
     if (!agentsById.has(agentId)) {
       agentsById.set(agentId, {
         agent_id: agentId,
         id: agentId,
-        name: row.agent_name || profile.name || agentId,
-        email: row.agent_email || profile.email || agentId,
+        name: override?.name || row.agent_name || profile.name || agentId,
+        email: override?.email || row.agent_email || profile.email || agentId,
         total_tickets: 0,
         total_replies: 0,
         days: [],
       });
     }
     const agent = agentsById.get(agentId);
-    agent.name = agent.name || row.agent_name || profile.name || agentId;
-    agent.email = agent.email || row.agent_email || profile.email || agentId;
+    agent.name = override?.name || agent.name || row.agent_name || profile.name || agentId;
+    agent.email = override?.email || agent.email || row.agent_email || profile.email || agentId;
     agent.total_tickets += replies;
     agent.total_replies += replies;
     agent.days.push({ date: row.date, tickets: replies, replies });
@@ -791,12 +892,13 @@ function rowsToResponse(rows, from, to, agentDirectory, cache = {}, detailRows =
     const agentId = String(detail.agent_id || "");
     if (!agentId) continue;
     const profile = agentDirectory.get(agentId) || {};
+    const override = helpDeskAnalyticsAgentProfile(agentId);
     if (!agentsById.has(agentId)) {
       agentsById.set(agentId, {
         agent_id: agentId,
         id: agentId,
-        name: detail.agent_name || profile.name || agentId,
-        email: detail.agent_email || profile.email || agentId,
+        name: override?.name || detail.agent_name || profile.name || agentId,
+        email: override?.email || detail.agent_email || profile.email || agentId,
         total_tickets: 0,
         total_replies: 0,
         days: [],
@@ -901,6 +1003,9 @@ export async function onRequest(context) {
     const agentDirectory = filters.groupIds.length > 0 ? buildAgentDirectory(await getHelpDeskDashboard(context.env)) : new Map();
     const rangeFromDate = metricDateKey(metric, from, timezoneOffsetMinutes);
     const rangeToDate = metricDateKey(metric, new Date(to.getTime() - 1), timezoneOffsetMinutes);
+    if (metric === METRIC_COMBINED) {
+      return json(await rowsToCombinedResponse(context.env, from, to, rangeFromDate, rangeToDate, filters, agentDirectory));
+    }
     const cachedRangeRows = await readCachedRange(context.env, rangeFromDate, rangeToDate, metric);
     const cachedDetailRows = await readCachedDetailsRange(context.env, rangeFromDate, rangeToDate, metric);
     const rows = filterRows(cachedRangeRows, filters, agentDirectory);
