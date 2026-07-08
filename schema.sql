@@ -60,6 +60,14 @@ CREATE TABLE IF NOT EXISTS admin_users (
   totp_locked_until TEXT,
   can_manage_users INTEGER NOT NULL DEFAULT 0,
   can_manage_admins INTEGER NOT NULL DEFAULT 0,
+  user_role TEXT NOT NULL DEFAULT 'admin',
+  access_level TEXT NOT NULL DEFAULT 'full',
+  first_name TEXT,
+  last_name TEXT,
+  invite_email TEXT,
+  invite_token_hash TEXT,
+  invite_expires_at TEXT,
+  invite_accepted_at TEXT,
   disabled_at TEXT,
   disabled_by TEXT
 );
@@ -175,3 +183,194 @@ CREATE TABLE IF NOT EXISTS helpdesk_analytics_sync_meta (
   value TEXT,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS livechat_ai_qa_reviews (
+  id TEXT PRIMARY KEY,
+  chat_id TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  organization_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending_review',
+  ai_status TEXT NOT NULL DEFAULT 'pending',
+  ai_model TEXT,
+  ai_fallback_model TEXT,
+  prompt_version TEXT,
+  taxonomy_version TEXT,
+  transcript_snapshot_json TEXT NOT NULL DEFAULT '[]',
+  existing_tags_json TEXT NOT NULL DEFAULT '[]',
+  suggested_tags_json TEXT NOT NULL DEFAULT '[]',
+  ai_summary TEXT,
+  ai_overall_confidence REAL,
+  ai_response_json TEXT,
+  ai_error TEXT,
+  queued_at TEXT,
+  ai_started_at TEXT,
+  ai_completed_at TEXT,
+  review_started_at TEXT,
+  reviewed_at TEXT,
+  reviewer TEXT,
+  final_tags_json TEXT NOT NULL DEFAULT '[]',
+  decision_note TEXT,
+  livechat_tags_applied_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(chat_id, thread_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_livechat_ai_qa_reviews_status ON livechat_ai_qa_reviews(status, ai_status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_livechat_ai_qa_reviews_chat ON livechat_ai_qa_reviews(chat_id, thread_id);
+
+CREATE TABLE IF NOT EXISTS livechat_ai_qa_suggestions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  review_id TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  confidence REAL,
+  why TEXT,
+  evidence_json TEXT NOT NULL DEFAULT '[]',
+  existing_tags_considered_json TEXT NOT NULL DEFAULT '[]',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(review_id, tag)
+);
+
+CREATE INDEX IF NOT EXISTS idx_livechat_ai_qa_suggestions_review ON livechat_ai_qa_suggestions(review_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS livechat_ai_qa_feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  review_id TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  feedback_type TEXT NOT NULL,
+  comment TEXT,
+  ai_suggested INTEGER NOT NULL DEFAULT 0,
+  final_selected INTEGER NOT NULL DEFAULT 0,
+  reviewer TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_livechat_ai_qa_feedback_review ON livechat_ai_qa_feedback(review_id, created_at);
+
+CREATE TABLE IF NOT EXISTS livechat_ai_qa_knowledge_base (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tag TEXT NOT NULL,
+  entry_type TEXT NOT NULL DEFAULT 'rule',
+  polarity TEXT NOT NULL DEFAULT 'positive',
+  content TEXT NOT NULL,
+  example_chat_id TEXT,
+  example_thread_id TEXT,
+  source_review_id TEXT,
+  source_feedback_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_by TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_livechat_ai_qa_knowledge_base_tag ON livechat_ai_qa_knowledge_base(tag, status);
+CREATE INDEX IF NOT EXISTS idx_livechat_ai_qa_knowledge_base_status ON livechat_ai_qa_knowledge_base(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS livechat_ai_qa_usage_daily (
+  usage_date TEXT PRIMARY KEY,
+  neuron_limit INTEGER NOT NULL DEFAULT 8500,
+  requests_count INTEGER NOT NULL DEFAULT 0,
+  skipped_count INTEGER NOT NULL DEFAULT 0,
+  failed_count INTEGER NOT NULL DEFAULT 0,
+  estimated_neurons REAL NOT NULL DEFAULT 0,
+  actual_neurons REAL NOT NULL DEFAULT 0,
+  prompt_tokens INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS livechat_ai_agent_qa_reviews (
+  id TEXT PRIMARY KEY,
+  chat_id TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  organization_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending_review',
+  ai_status TEXT NOT NULL DEFAULT 'pending',
+  ai_model TEXT,
+  ai_fallback_model TEXT,
+  prompt_version TEXT,
+  rules_version TEXT,
+  transcript_snapshot_json TEXT NOT NULL DEFAULT '[]',
+  agent_ids_json TEXT NOT NULL DEFAULT '[]',
+  agent_label TEXT,
+  existing_tags_json TEXT NOT NULL DEFAULT '[]',
+  system_tags_json TEXT NOT NULL DEFAULT '[]',
+  check_tags_json TEXT NOT NULL DEFAULT '[]',
+  ai_summary TEXT,
+  ai_overall_confidence REAL,
+  ai_response_json TEXT,
+  ai_error TEXT,
+  queued_at TEXT,
+  ai_started_at TEXT,
+  ai_completed_at TEXT,
+  reviewed_at TEXT,
+  reviewer TEXT,
+  final_tags_json TEXT NOT NULL DEFAULT '[]',
+  decision_note TEXT,
+  livechat_tags_applied_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(chat_id, thread_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_livechat_ai_agent_qa_reviews_status ON livechat_ai_agent_qa_reviews(status, ai_status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_livechat_ai_agent_qa_reviews_chat ON livechat_ai_agent_qa_reviews(chat_id, thread_id);
+CREATE INDEX IF NOT EXISTS idx_livechat_ai_agent_qa_reviews_agent ON livechat_ai_agent_qa_reviews(agent_label, updated_at);
+
+CREATE TABLE IF NOT EXISTS livechat_ai_agent_qa_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  review_id TEXT NOT NULL,
+  rule_key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  pass_tag TEXT NOT NULL,
+  fail_tag TEXT NOT NULL,
+  selected_tag TEXT NOT NULL,
+  result TEXT NOT NULL,
+  confidence REAL,
+  why TEXT,
+  evidence_json TEXT NOT NULL DEFAULT '[]',
+  source TEXT NOT NULL DEFAULT 'ai',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(review_id, rule_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_livechat_ai_agent_qa_checks_review ON livechat_ai_agent_qa_checks(review_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_livechat_ai_agent_qa_checks_tag ON livechat_ai_agent_qa_checks(selected_tag, result);
+
+CREATE TABLE IF NOT EXISTS livechat_ai_agent_qa_feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  review_id TEXT NOT NULL,
+  rule_key TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  feedback_type TEXT NOT NULL,
+  comment TEXT,
+  ai_tag TEXT,
+  final_tag TEXT,
+  reviewer TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_livechat_ai_agent_qa_feedback_review ON livechat_ai_agent_qa_feedback(review_id, created_at);
+
+CREATE TABLE IF NOT EXISTS livechat_ai_agent_qa_knowledge_base (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rule_key TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  entry_type TEXT NOT NULL DEFAULT 'correction',
+  polarity TEXT NOT NULL DEFAULT 'positive',
+  content TEXT NOT NULL,
+  example_chat_id TEXT,
+  example_thread_id TEXT,
+  source_review_id TEXT,
+  source_feedback_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_by TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_livechat_ai_agent_qa_knowledge_base_tag ON livechat_ai_agent_qa_knowledge_base(rule_key, tag, status);

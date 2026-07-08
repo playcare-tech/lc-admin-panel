@@ -44,7 +44,6 @@ const AGENT_EMAILS = new Map([
   ["6ceea4ad-3839-4873-a236-0c92128621e4", "andrey.solovyev@boomerang-partners.com"],
   ["70a9deae-9ae4-4bc3-8416-237fd263295c", "arman.harutyunyan@boomerang-partners.com"],
   ["711a3968-ead3-424b-a854-7452ad371d56", "evelina.i@pkheadwaysolutions.com"],
-  ["74cb3fac-c4aa-4431-8b78-2805c586b683", "kateryna.b@playtraffpartners.com"],
   ["75d6d3bb-8994-47db-9d42-4e31a7fabe99", "vladislav.kholkin@boomerang-partners.com"],
   ["7afed23d-9590-41b5-a57f-4191b123864e", "dzmitry.hryshel@boomerang-partners.com"],
   ["8211522a-e501-43f3-a658-ee9dd80c2c58", "aldiyar.kadyrbekov@boomerang-partners.com"],

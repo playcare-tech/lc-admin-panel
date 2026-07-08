@@ -227,8 +227,13 @@ export async function requireAuth(context) {
 export async function requirePermission(context, permission) {
   const auth = await requireAuth(context);
   if (auth.error) return auth;
-  if (!auth.session.permissions?.[permission]) {
+  if (!sessionHasPermission(auth.session, permission)) {
     return { error: errorResponse("Forbidden.", 403) };
   }
   return auth;
+}
+
+export function sessionHasPermission(session, permission) {
+  if (!session?.permissions?.role) return true;
+  return Boolean(session?.permissions?.[permission] || session?.permissions?.canManageAdmins);
 }

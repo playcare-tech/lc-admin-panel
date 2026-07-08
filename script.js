@@ -186,6 +186,7 @@ const DEFAULT_HELPDESK_ANALYTICS_AGENT_NAMES = [
   "Anastasiya Leonchikova",
   "Nikita Tsyganov",
   "Gurgen Abelyan",
+  "Mikhail G",
   "Sofia Kalinovskaya",
   "Viktoria Zaitsava",
   "Oswald",
@@ -221,15 +222,52 @@ const HELPDESK_TICKET_SORTS = [
   { value: "updatedAt", label: "Last activity" },
   { value: "lastMessageAt", label: "Last message" },
 ];
+const AI_QA_CONTENT_TAGS = [
+  "Bonus_request",
+  "VIP",
+  "Withdrawal_hold",
+  "No_communication",
+  "Sportsbook",
+  "Closure_other",
+  "Bonus_info",
+  "account",
+  "kyc",
+  "bonus_problem",
+  "withdrawal_problem",
+  "other",
+  "rg_closure",
+  "reopen",
+  "product_info",
+  "esc",
+  "product_problem",
+  "tech_issue",
+  "truspilot",
+  "refund",
+  "Loyalty bonus",
+  "Сashback",
+  "Promo bonus",
+];
+const AGENT_QA_RULES = [
+  { rule: "q0x", title: "No human agent interaction", tags: ["q0x"] },
+  { rule: "q0l", title: "Customer left after greeting", tags: ["q0l"] },
+  { rule: "q0m", title: "Manual review needed", tags: ["q0m"] },
+  { rule: "q1", title: "Closure Reason", tags: ["q1a", "q1b"] },
+  { rule: "q2", title: "Closure Retention", tags: ["q2a", "q2b"] },
+  { rule: "q3", title: "Closure Final Clarification", tags: ["q3a", "q3b"] },
+  { rule: "q4", title: "GA Closure Non-VIP", tags: ["q4a", "q4b"] },
+  { rule: "q5", title: "GA Closure VIP licensed project", tags: ["q5a", "q5b"] },
+  { rule: "q6", title: "GA Closure VIP non-license project", tags: ["q6a", "q6b"] },
+  { rule: "q7", title: "Technical Issue Website", tags: ["q7a", "q7b"] },
+  { rule: "q8", title: "Technical Issue Game", tags: ["q8a", "q8b"] },
+  { rule: "q9", title: "Rude Communication", tags: ["q9a", "q9b"] },
+  { rule: "q10", title: "Explanation quality", tags: ["q10a", "q10b"] },
+  { rule: "q11", title: "Tone of Voice", tags: ["q11a", "q11b"] },
+];
+const AGENT_QA_TAGS = AGENT_QA_RULES.flatMap((rule) => rule.tags);
 const HELPDESK_TICKET_TEXT_SORTS = new Set(["requester", "assignedAgent"]);
 const HELPDESK_TICKET_DATE_SORTS = new Set(["createdAt", "updatedAt", "lastMessageAt"]);
 const LIVECHAT_GROUP_BUCKETS = ["VIP", "SS", "TL", "S2B"];
-const ACCOUNT_STORAGE_KEY = "lc-admin-selected-account";
 const HELPDESK_ANALYTICS_AGENT_DEFAULTS_STORAGE_KEY = "lc-admin-helpdesk-analytics-agent-defaults-v2";
-const ACCOUNT_OPTIONS = [
-  { id: "default", label: "Playcare" },
-  { id: "playtraffpartners", label: "playtraffpartners" },
-];
 const LIVECHAT_PRIORITY_OPTIONS = [
   { value: "normal", label: "Primary" },
   { value: "last", label: "Last" },
@@ -271,30 +309,16 @@ function defaultHelpdeskWorkflowForm() {
 }
 
 function normalizeAccountId(value) {
-  if (["2", "second", "secondary", "playtraffpartners"].includes(`${value || ""}`.trim().toLowerCase())) {
-    return "playtraffpartners";
-  }
-  return ACCOUNT_OPTIONS.some((account) => account.id === value) ? value : "default";
-}
-
-function storedAccountId() {
-  try {
-    return normalizeAccountId(localStorage.getItem(ACCOUNT_STORAGE_KEY));
-  } catch (_error) {
-    return "default";
-  }
-}
-
-function accountLabel(accountId = state.accountId) {
-  return ACCOUNT_OPTIONS.find((account) => account.id === accountId)?.label || "Playcare";
+  return "default";
 }
 
 const state = {
   user: null,
   permissions: {},
   csrfToken: "",
-  accountId: storedAccountId(),
+  accountId: "default",
   loginChallenge: null,
+  inviteSetup: null,
   section: "livechat-users",
   livechat: { agents: [], groups: [] },
   helpdesk: { agents: [], teams: [] },
@@ -385,6 +409,13 @@ const state = {
   modalLiveChatSelectedGroupIds: new Set(),
   livechatPriorityDialog: null,
   generatedAdminPassword: "",
+  lastAdminInvite: null,
+  qaDashboard: {
+    loading: false,
+    loaded: false,
+    error: null,
+    data: null,
+  },
   analytics: {
     loading: false,
     error: null,
@@ -427,6 +458,58 @@ const state = {
       chatbotLanguage: "",
     },
   },
+  livechatAiQaReview: {
+    loading: false,
+    detailLoading: false,
+    actionLoading: false,
+    loaded: false,
+    error: null,
+    actionError: null,
+    rows: [],
+    detail: null,
+    selectedId: "",
+    total: 0,
+    page: 1,
+    pageSize: 25,
+    filters: {
+      status: "pending_review",
+      aiStatus: "",
+      chatId: "",
+    },
+  },
+  livechatAgentQaReview: {
+    loading: false,
+    detailLoading: false,
+    actionLoading: false,
+    loaded: false,
+    error: null,
+    actionError: null,
+    rows: [],
+    detail: null,
+    selectedId: "",
+    total: 0,
+    page: 1,
+    pageSize: 25,
+    filters: {
+      status: "pending_review",
+      aiStatus: "",
+      agent: "",
+      tag: "",
+      chatId: "",
+    },
+  },
+  livechatAgentQaLeaderboard: {
+    loading: false,
+    loaded: false,
+    error: null,
+    rows: [],
+    reviewedCount: 0,
+    filters: {
+      from: "",
+      to: "",
+      agent: "",
+    },
+  },
   helpdesk_analytics: {
     view: "report",
     metric: HELPDESK_ANALYTICS_DEFAULT_METRIC,
@@ -454,6 +537,7 @@ const state = {
     },
     expandedAgents: new Set(),
     defaultAgentsApplied: false,
+    slackSending: false,
     ticketModal: {
       loading: false,
       error: null,
@@ -469,7 +553,6 @@ const loginChallengeFields = document.getElementById("loginChallengeFields");
 const loginMessage = document.getElementById("loginMessage");
 const statusMessage = document.getElementById("statusMessage");
 const sessionBadge = document.getElementById("sessionBadge");
-const accountSelect = document.getElementById("accountSelect");
 const pageTitle = document.getElementById("pageTitle");
 const appContent = document.getElementById("appContent");
 const modalRoot = document.getElementById("modalRoot");
@@ -482,7 +565,7 @@ function setMessage(element, message, tone = "info") {
 }
 
 function accountRequestHeaders() {
-  return { "X-LC-Account": normalizeAccountId(state.accountId) };
+  return {};
 }
 
 async function api(path, options = {}) {
@@ -534,22 +617,26 @@ function showApp() {
   loginView.classList.add("d-none");
   appView.classList.remove("d-none");
   syncAccountSwitcher();
+  ensureAllowedSection();
+  renderApp();
 }
 
 function showLogin() {
   state.user = null;
   state.permissions = {};
   state.csrfToken = "";
+  state.inviteSetup = inviteSetupFromLocation();
   appView.classList.add("d-none");
   loginView.classList.remove("d-none");
+  renderLoginChallenge();
+  if (state.inviteSetup && !state.inviteSetup.setupSecret) {
+    fetchInviteSetupChallenge();
+  }
   stopHelpdeskTicketsRealtime();
 }
 
 function syncAccountSwitcher() {
-  if (accountSelect) {
-    accountSelect.value = normalizeAccountId(state.accountId);
-  }
-  sessionBadge.textContent = `Signed in as ${state.user} · ${accountLabel()}`;
+  sessionBadge.textContent = `Signed in as ${state.user}`;
 }
 
 function resetAccountScopedState() {
@@ -587,6 +674,30 @@ function resetAccountScopedState() {
   state.livechatAiQa.loaded = false;
   state.livechatAiQa.error = null;
   state.livechatAiQa.expanded.clear();
+  state.livechatAiQaReview.rows = [];
+  state.livechatAiQaReview.detail = null;
+  state.livechatAiQaReview.selectedId = "";
+  state.livechatAiQaReview.total = 0;
+  state.livechatAiQaReview.page = 1;
+  state.livechatAiQaReview.loaded = false;
+  state.livechatAiQaReview.error = null;
+  state.livechatAiQaReview.actionError = null;
+  state.livechatAgentQaReview.rows = [];
+  state.livechatAgentQaReview.detail = null;
+  state.livechatAgentQaReview.selectedId = "";
+  state.livechatAgentQaReview.total = 0;
+  state.livechatAgentQaReview.page = 1;
+  state.livechatAgentQaReview.loaded = false;
+  state.livechatAgentQaReview.error = null;
+  state.livechatAgentQaReview.actionError = null;
+  state.livechatAgentQaLeaderboard.rows = [];
+  state.livechatAgentQaLeaderboard.reviewedCount = 0;
+  state.livechatAgentQaLeaderboard.loaded = false;
+  state.livechatAgentQaLeaderboard.error = null;
+  state.qaDashboard.loading = false;
+  state.qaDashboard.loaded = false;
+  state.qaDashboard.error = null;
+  state.qaDashboard.data = null;
   state.helpdesk_analytics.data = null;
   state.helpdesk_analytics.appliedFilters = null;
   state.helpdesk_analytics.webhookStats = null;
@@ -600,21 +711,26 @@ function resetAccountScopedState() {
   state.modalType = null;
 }
 
-async function switchAccount(accountId) {
-  const nextAccountId = normalizeAccountId(accountId);
-  if (nextAccountId === state.accountId) return;
-  state.accountId = nextAccountId;
-  try {
-    localStorage.setItem(ACCOUNT_STORAGE_KEY, nextAccountId);
-  } catch (_error) {}
-  resetAccountScopedState();
-  syncAccountSwitcher();
-  setMessage(statusMessage, `Switching to ${accountLabel(nextAccountId)}...`);
-  await refreshData();
-}
-
 function renderLoginChallenge() {
   if (!loginChallengeFields) return;
+  if (state.inviteSetup) {
+    const setup = state.inviteSetup;
+    loginChallengeFields.innerHTML = `
+      <input id="inviteNewPassword" name="inviteNewPassword" type="password" class="form-control" placeholder="Create password (12+ chars, Aa1!)" autocomplete="new-password" required />
+      <div class="totp-setup-box">
+        <div class="subtle">Scan the QR code in Google Authenticator, or use the setup key, then enter the 6-digit code.</div>
+        <canvas id="totpQrCanvas" class="totp-qr" aria-label="Google Authenticator QR code"></canvas>
+        <div class="credentials-box">${escapeHtml(setup.setupSecret || "Submit once to generate your setup key.")}</div>
+        <input type="hidden" name="setupSecret" value="${escapeHtml(setup.setupSecret || "")}" />
+      </div>
+      <input id="inviteOtp" name="inviteOtp" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" class="form-control" placeholder="Google Authenticator code" autocomplete="one-time-code" required />
+    `;
+    document.getElementById("username").value = setup.username || document.getElementById("username").value || "";
+    document.getElementById("password").closest(".col-12")?.classList.add("d-none");
+    renderTotpQr();
+    return;
+  }
+  document.getElementById("password").closest(".col-12")?.classList.remove("d-none");
   const challenge = state.loginChallenge;
   if (!challenge) {
     loginChallengeFields.innerHTML = "";
@@ -654,9 +770,110 @@ function canManageAdmins() {
   return Boolean(state.permissions?.canManageAdmins);
 }
 
+function isAdminRole() {
+  return state.permissions?.role !== "qa_manager";
+}
+
+function hasPermission(permission) {
+  return Boolean(state.permissions?.[permission] || canManageAdmins());
+}
+
+const SECTION_PERMISSIONS = {
+  "qa-dashboard": "canViewQaDashboard",
+  "livechat-ai-qa-tagging": "canViewLivechatAiQaTagging",
+  "livechat-ai-qa-review": "canReviewLivechatAiAutoTags",
+  "livechat-agent-qa-review": "canReviewLivechatAgentQa",
+  "livechat-agent-qa-leaderboard": "canViewLivechatAgentQaLeaderboard",
+  "helpdesk-analytics": "canViewHelpdeskAnalytics",
+  "admin-users": "canManageAdmins",
+};
+
+const ADMIN_ONLY_SECTIONS = new Set([
+  "livechat-users",
+  "livechat-groups",
+  "create-livechat-user",
+  "livechat-analytics",
+  "helpdesk-users",
+  "helpdesk-groups",
+  "create-helpdesk-user",
+  "helpdesk-tickets",
+  "helpdesk-workflows",
+  "logs",
+]);
+
+function canAccessSection(section) {
+  if (ADMIN_ONLY_SECTIONS.has(section)) return isAdminRole();
+  const permission = SECTION_PERMISSIONS[section];
+  return permission ? hasPermission(permission) : true;
+}
+
+function firstAllowedSection() {
+  return [
+    "qa-dashboard",
+    "livechat-ai-qa-tagging",
+    "livechat-ai-qa-review",
+    "livechat-agent-qa-review",
+    "livechat-agent-qa-leaderboard",
+    "helpdesk-analytics",
+    "livechat-users",
+  ].find(canAccessSection) || "qa-dashboard";
+}
+
+function ensureAllowedSection() {
+  if (!canAccessSection(state.section)) {
+    state.section = firstAllowedSection();
+  }
+}
+
+function syncSidebarAccess() {
+  document.querySelectorAll(".sidebar-link").forEach((button) => {
+    const section = button.dataset.section;
+    button.classList.toggle("d-none", !canAccessSection(section));
+  });
+  document.querySelectorAll(".sidebar-group").forEach((group) => {
+    const hasVisibleLink = [...group.querySelectorAll(".sidebar-link")].some((button) => !button.classList.contains("d-none"));
+    group.classList.toggle("d-none", !hasVisibleLink);
+  });
+}
+
+function inviteSetupFromLocation() {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get("invite") || "";
+  if (!token) return null;
+  return {
+    token,
+    username: params.get("username") || "",
+    setupSecret: "",
+    otpauthUri: "",
+  };
+}
+
+async function fetchInviteSetupChallenge() {
+  try {
+    const result = await api("/api/auth/invite-setup", {
+      method: "POST",
+      body: {
+        token: state.inviteSetup.token,
+        username: state.inviteSetup.username,
+      },
+    });
+    if (!result.ok && result.requiresInviteSetup) {
+      state.inviteSetup = {
+        ...state.inviteSetup,
+        setupSecret: result.setupSecret || "",
+        otpauthUri: result.otpauthUri || "",
+      };
+      renderLoginChallenge();
+      setMessage(loginMessage, result.message || "Complete account setup.", "info");
+    }
+  } catch (error) {
+    setMessage(loginMessage, error.message, "error");
+  }
+}
+
 function renderTotpQr() {
   const canvas = document.getElementById("totpQrCanvas");
-  const uri = state.loginChallenge?.otpauthUri;
+  const uri = state.inviteSetup?.otpauthUri || state.loginChallenge?.otpauthUri;
   if (!canvas || !uri) return;
   if (!window.QRCode?.toCanvas) {
     canvas.replaceWith(Object.assign(document.createElement("div"), {
@@ -1657,8 +1874,8 @@ function renderCreateUserForm(type) {
 }
 
 function renderAdminUsers() {
-  const credentialsText = state.generatedAdminPassword
-    ? `App: ${APP_URL}\nUsername: ${document.getElementById("adminUsername")?.value || ""}\nPassword: ${state.generatedAdminPassword}`
+  const inviteText = state.lastAdminInvite
+    ? `Invite link: ${state.lastAdminInvite.inviteLink}\nUsername: ${state.lastAdminInvite.username}\nExpires: ${state.lastAdminInvite.inviteExpiresAt}`
     : "";
 
   return `
@@ -1670,35 +1887,50 @@ function renderAdminUsers() {
     ])}
     <div class="section-grid admin-users-grid">
       <div class="card-shell">
-        <div class="section-title">Create admin user</div>
+        <div class="section-title">Add user</div>
         <form id="createAdminUserForm" class="row g-2">
+          <div class="col-md-6">
+            <input id="adminFirstName" class="form-control" type="text" placeholder="First name" />
+          </div>
+          <div class="col-md-6">
+            <input id="adminLastName" class="form-control" type="text" placeholder="Last name" />
+          </div>
           <div class="col-12">
             <input id="adminUsername" class="form-control" type="text" placeholder="Username" required />
           </div>
           <div class="col-12">
-            <input id="adminPassword" class="form-control" type="text" placeholder="Password (12+ chars, Aa1!)" required value="${escapeHtml(state.generatedAdminPassword)}" />
+            <input id="adminInviteEmail" class="form-control" type="email" placeholder="Invitation email" required />
           </div>
-          <div class="col-12 d-flex gap-2 flex-wrap">
-            <button type="button" id="generateAdminPasswordBtn" class="btn btn-outline-secondary">Generate password</button>
-            <button type="button" id="copyAdminCredentialsBtn" class="btn btn-outline-secondary">Copy credentials</button>
+          <div class="col-md-6">
+            <select id="adminUserRole" class="form-select">
+              <option value="qa_manager" selected>QA manager</option>
+              <option value="admin">Admin</option>
+            </select>
           </div>
-          <div class="col-12">
+          <div class="col-md-6">
+            <select id="adminAccessLevel" class="form-select">
+              <option value="qa_manager" selected>QA manager access</option>
+              <option value="full">Full admin access</option>
+            </select>
+          </div>
+          <div class="col-12 admin-permission-row d-none">
             <label class="analytics-check-option">
               <input id="adminCanManageUsers" class="form-check-input" type="checkbox" />
               <span><strong>Can delete/deactivate users</strong><small>Allows LiveChat suspend and HelpDesk delete actions</small></span>
             </label>
           </div>
-          <div class="col-12">
+          <div class="col-12 admin-permission-row d-none">
             <label class="analytics-check-option">
               <input id="adminCanManageAdmins" class="form-check-input" type="checkbox" />
               <span><strong>Can manage admin accounts</strong><small>Allows permission changes and 2FA resets for others</small></span>
             </label>
           </div>
           <div class="col-12 d-grid">
-            <button type="submit" class="btn btn-primary">Create admin</button>
+            <button type="submit" class="btn btn-primary">Create invitation</button>
           </div>
         </form>
-        <div class="credentials-box mt-3">${escapeHtml(credentialsText || "Generated credentials will appear here for quick copy.")}</div>
+        <div class="credentials-box mt-3">${escapeHtml(inviteText || "The personal registration link will appear here after creation.")}</div>
+        ${state.lastAdminInvite ? '<button type="button" id="copyAdminInviteBtn" class="btn btn-outline-secondary mt-2">Copy invitation link</button>' : ""}
       </div>
       <div class="card-shell">
         <div class="section-title">HelpDesk analytics cache</div>
@@ -1710,16 +1942,20 @@ function renderAdminUsers() {
           state.adminUsers.length
             ? `<div class="table-responsive">
                 <table class="table admin-table">
-                  <thead><tr><th>Username</th><th>Status</th><th>2FA</th><th>Login reset</th><th>Permissions</th><th>Created at</th><th>Created by</th><th></th></tr></thead>
+                  <thead><tr><th>User</th><th>Role</th><th>Status</th><th>2FA</th><th>Invite</th><th>Permissions</th><th>Created at</th><th>Created by</th><th></th></tr></thead>
                   <tbody>
                     ${state.adminUsers
                       .map(
                         (user) => `
                           <tr>
-                            <td>${escapeHtml(user.username)}</td>
+                            <td>
+                              <strong>${escapeHtml([user.first_name, user.last_name].filter(Boolean).join(" ") || user.username)}</strong>
+                              <div class="subtle">${escapeHtml(user.invite_email || user.username)}</div>
+                            </td>
+                            <td>${escapeHtml(user.user_role === "qa_manager" ? "QA manager" : "Admin")}</td>
                             <td>${user.disabled_at ? '<span class="chip last">Disabled</span>' : '<span class="chip primary">Active</span>'}</td>
                             <td>${Number(user.totp_enabled) ? "Enabled" : "Setup required"}</td>
-                            <td>${Number(user.password_reset_required) ? "Required" : "No"}</td>
+                            <td>${user.invite_accepted_at ? "Accepted" : user.invite_expires_at ? `Pending until ${new Date(user.invite_expires_at).toLocaleDateString()}` : "-"}</td>
                             <td>
                               <label class="permission-check">
                                 <input class="form-check-input" type="checkbox" data-admin-permission="canManageUsers" data-admin-username="${escapeHtml(user.username)}" ${Number(user.can_manage_users) ? "checked" : ""} ${canManageAdmins() ? "" : "disabled"} />
@@ -1750,6 +1986,75 @@ function renderAdminUsers() {
               </div>`
             : '<div class="empty-state">No admin users created in D1 yet. You can still log in with the secret-based fallback admin.</div>'
         }
+      </div>
+    </div>
+  `;
+}
+
+async function fetchQaDashboard() {
+  state.qaDashboard.loading = true;
+  state.qaDashboard.error = null;
+  if (state.section === "qa-dashboard") renderApp();
+  try {
+    state.qaDashboard.data = await api("/api/qa-manager/dashboard");
+    state.qaDashboard.loaded = true;
+  } catch (error) {
+    state.qaDashboard.error = error.message;
+    state.qaDashboard.loaded = true;
+  } finally {
+    state.qaDashboard.loading = false;
+    if (state.section === "qa-dashboard") renderApp();
+  }
+}
+
+function renderQaDashboardList(rows, valueLabel, emptyLabel = "No data yet.") {
+  return rows?.length
+    ? `<div class="qa-dashboard-list">
+        ${rows
+          .map(
+            (row, index) => `
+              <div class="qa-dashboard-row">
+                <span class="qa-dashboard-rank">${index + 1}</span>
+                <span class="qa-dashboard-agent">${escapeHtml(row.agent || "Unknown")}</span>
+                <strong>${escapeHtml(row.score === null || row.score === undefined ? row.total || row.reviews || 0 : `${row.score}%`)}</strong>
+                <small>${escapeHtml(valueLabel)}</small>
+              </div>
+            `,
+          )
+          .join("")}
+      </div>`
+    : `<div class="empty-state">${escapeHtml(emptyLabel)}</div>`;
+}
+
+function renderQaDashboard() {
+  const data = state.qaDashboard.data;
+  if (state.qaDashboard.loading && !data) return '<div class="empty-state">Loading QA dashboard...</div>';
+  if (state.qaDashboard.error) return `<div class="empty-state analytics-error">${escapeHtml(state.qaDashboard.error)}</div>`;
+  if (!data) return '<div class="empty-state">QA dashboard is not loaded yet.</div>';
+
+  return `
+    ${renderStats([
+      { label: "QA pending", value: Number(data.pending?.agentQa || 0).toLocaleString(), meta: "Manual AI QA Review" },
+      { label: "Auto-tag pending", value: Number(data.pending?.autoTag || 0).toLocaleString(), meta: "Manual AI auto-tag review" },
+      { label: "My reviews", value: Number(data.reviewedByMeLast7Days || 0).toLocaleString(), meta: "Last 7 days" },
+      { label: "Range", value: "7d", meta: `${data.range?.from || "-"} to ${data.range?.to || "-"}` },
+    ])}
+    <div class="section-grid qa-dashboard-grid">
+      <div class="card-shell">
+        <div class="section-title">Top 5 HelpDesk agents</div>
+        ${renderQaDashboardList(data.helpdesk?.best || [], "handled")}
+      </div>
+      <div class="card-shell">
+        <div class="section-title">Bottom 5 HelpDesk agents</div>
+        ${renderQaDashboardList(data.helpdesk?.worst || [], "handled")}
+      </div>
+      <div class="card-shell">
+        <div class="section-title">Top 5 chat leaderboard</div>
+        ${renderQaDashboardList(data.livechat?.best || [], "score")}
+      </div>
+      <div class="card-shell">
+        <div class="section-title">Bottom 5 chat leaderboard</div>
+        ${renderQaDashboardList(data.livechat?.worst || [], "score")}
       </div>
     </div>
   `;
@@ -2206,6 +2511,19 @@ function livechatAiQaMetricLabel(value, fallback = "-") {
   return value || fallback;
 }
 
+function livechatAiQaTagChips(value, empty = "-") {
+  const tags = `${value || ""}`
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+  if (!tags.length) return `<span class="subtle">${escapeHtml(empty)}</span>`;
+  return `
+    <div class="chip-list livechat-ai-qa-chip-list">
+      ${tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join("")}
+    </div>
+  `;
+}
+
 function livechatAiQaQueryParams() {
   const filters = state.livechatAiQa.filters;
   const params = new URLSearchParams({
@@ -2287,10 +2605,10 @@ function livechatAiQaSortButton(key, label) {
 function renderLivechatAiQaFilters() {
   const filters = state.livechatAiQa.filters;
   return `
-    <div class="card-shell analytics-filter-bar">
+    <div class="card-shell analytics-filter-bar livechat-ai-qa-filter-shell">
       <div class="tickets-toolbar">
         <div>
-          <div class="section-title">AI_QA_Tagging</div>
+          <div class="section-title">Chats pre-AI-analysis</div>
           <div class="subtle">Webhook: <code>${escapeHtml(LIVECHAT_AI_QA_WEBHOOK_URL)}</code></div>
         </div>
         <button id="livechatAiQaReloadBtn" class="btn btn-sm btn-outline-secondary" type="button">Reload</button>
@@ -2418,40 +2736,75 @@ function renderLivechatAiQaTimeline(row) {
 function renderLivechatAiQaRows() {
   const rows = state.livechatAiQa.rows || [];
   if (state.livechatAiQa.loading) {
-    return `<tr><td colspan="11"><div class="empty-state">Loading AI_QA_Tagging data...</div></td></tr>`;
+    return `<div class="empty-state">Loading Chats pre-AI-analysis data...</div>`;
   }
   if (state.livechatAiQa.error) {
-    return `<tr><td colspan="11"><div class="empty-state analytics-error">${escapeHtml(state.livechatAiQa.error)}</div></td></tr>`;
+    return `<div class="empty-state analytics-error">${escapeHtml(state.livechatAiQa.error)}</div>`;
   }
   if (!rows.length) {
-    return `<tr><td colspan="11"><div class="empty-state">No LiveChat AI QA webhook data recorded yet.</div></td></tr>`;
+    return `<div class="empty-state">No LiveChat AI QA webhook data recorded yet.</div>`;
   }
   return rows
     .map((row) => {
       const key = livechatAiQaChatKey(row);
       const expanded = state.livechatAiQa.expanded.has(key);
+      const chatEnded = Boolean(row.deactivatedAt);
       return `
-        <tr class="livechat-ai-qa-row" data-livechat-ai-qa-toggle="${escapeHtml(key)}">
-          <td>${escapeHtml(livechatAiQaDateTime(row.lastEventAt || row.firstSeenAt))}</td>
-          <td>
-            <strong>${escapeHtml(row.chatId)}</strong>
-            <div class="analytics-agent-sub">${escapeHtml(row.threadId)}</div>
-          </td>
-          <td>${escapeHtml(row.agentLabel || row.transferAgentIds?.join(", ") || "-")}</td>
-          <td>${row.transferredToAgent ? '<span class="chip">Yes</span>' : '<span class="chip">No</span>'}</td>
-          <td>${escapeHtml(row.transferReason || "-")}</td>
-          <td>${escapeHtml(row.queueWaitLabel || (row.queuedAt ? "In queue" : "No queue"))}</td>
-          <td>${escapeHtml(row.customerLanguage || "-")}</td>
-          <td>${escapeHtml(row.chatbotLanguage || "-")}</td>
-          <td>${escapeHtml(row.tagsLabel || "-")}</td>
-          <td>${escapeHtml(livechatAiQaMetricLabel(row.ftrLabel, row.transferredToAgent ? "Pending" : "-"))}</td>
-          <td>${escapeHtml(livechatAiQaMetricLabel(row.chtLabel, row.transferredToAgent ? "In progress" : "-"))}</td>
-        </tr>
-        ${
-          expanded
-            ? `<tr class="analytics-agent-detail-row"><td colspan="11">${renderLivechatAiQaTimeline(row)}</td></tr>`
-            : ""
-        }
+        <article class="livechat-ai-qa-row ${expanded ? "expanded" : ""}" data-livechat-ai-qa-toggle="${escapeHtml(key)}">
+          <div class="livechat-ai-qa-row-main">
+            <div class="livechat-ai-qa-cell livechat-ai-qa-date">
+              <span class="livechat-ai-qa-label">Date</span>
+              <strong>${escapeHtml(livechatAiQaDateTime(row.lastEventAt || row.firstSeenAt))}</strong>
+            </div>
+            <div class="livechat-ai-qa-cell livechat-ai-qa-chat">
+              <span class="livechat-ai-qa-label">Chat</span>
+              <strong>${escapeHtml(row.chatId)}</strong>
+              <span>${escapeHtml(row.threadId)}</span>
+            </div>
+            <div class="livechat-ai-qa-cell livechat-ai-qa-agent">
+              <span class="livechat-ai-qa-label">Agent</span>
+              <span>${escapeHtml(row.agentLabel || row.transferAgentIds?.join(", ") || "-")}</span>
+            </div>
+            <div class="livechat-ai-qa-cell">
+              <span class="livechat-ai-qa-label">Ended</span>
+              ${chatEnded ? '<span class="chip chip-success">true</span>' : '<span class="chip chip-warning">false</span>'}
+            </div>
+            <div class="livechat-ai-qa-cell livechat-ai-qa-metric">
+              <span class="livechat-ai-qa-label">FTR</span>
+              <strong>${escapeHtml(livechatAiQaMetricLabel(row.ftrLabel, row.transferredToAgent ? "Pending" : "-"))}</strong>
+            </div>
+            <div class="livechat-ai-qa-cell livechat-ai-qa-metric">
+              <span class="livechat-ai-qa-label">CHT</span>
+              <strong>${escapeHtml(livechatAiQaMetricLabel(row.chtLabel, row.transferredToAgent ? "In progress" : "-"))}</strong>
+            </div>
+          </div>
+          <div class="livechat-ai-qa-row-meta">
+            <div>
+              <span class="livechat-ai-qa-label">Transfer</span>
+              <div class="livechat-ai-qa-inline">
+                ${row.transferredToAgent ? '<span class="chip">Yes</span>' : '<span class="chip">No</span>'}
+                <span>${escapeHtml(row.transferReason || "No reason")}</span>
+                <span>${escapeHtml(row.queueWaitLabel || (row.queuedAt ? "In queue" : "No queue"))}</span>
+              </div>
+            </div>
+            <div>
+              <span class="livechat-ai-qa-label">Languages</span>
+              <div class="livechat-ai-qa-inline">
+                <span>${escapeHtml(row.customerLanguage || "-")}</span>
+                <span>${escapeHtml(row.chatbotLanguage || "-")}</span>
+              </div>
+            </div>
+            <div>
+              <span class="livechat-ai-qa-label">Tags</span>
+              ${livechatAiQaTagChips(row.tagsLabel)}
+            </div>
+            <div>
+              <span class="livechat-ai-qa-label">System tags</span>
+              ${livechatAiQaTagChips(row.systemTagsLabel)}
+            </div>
+          </div>
+          ${expanded ? `<div class="livechat-ai-qa-row-detail">${renderLivechatAiQaTimeline(row)}</div>` : ""}
+        </article>
       `;
     })
     .join("");
@@ -2462,7 +2815,7 @@ function renderLivechatAiQaTagging() {
   return `
     <section class="analytics-page livechat-ai-qa-page">
       ${renderLivechatAiQaFilters()}
-      <div class="table-shell">
+      <div class="table-shell livechat-ai-qa-results-shell">
         <div class="tickets-toolbar">
           <div>
             <div class="section-title">Webhook chats</div>
@@ -2474,26 +2827,1318 @@ function renderLivechatAiQaTagging() {
             <button class="btn btn-sm btn-outline-secondary" type="button" data-livechat-ai-qa-page="next" ${state.livechatAiQa.page >= totalPages ? "disabled" : ""}>Next</button>
           </div>
         </div>
-        <div class="table-responsive">
-          <table class="table admin-table analytics-table livechat-ai-qa-table">
-            <thead>
-              <tr>
-                <th>${livechatAiQaSortButton("date", "Date / Time")}</th>
-                <th>Chat</th>
-                <th>${livechatAiQaSortButton("agent", "Agent")}</th>
-                <th>${livechatAiQaSortButton("transferred", "Transferred")}</th>
-                <th>${livechatAiQaSortButton("reason", "Reason")}</th>
-                <th>${livechatAiQaSortButton("queue", "Queue wait")}</th>
-                <th>${livechatAiQaSortButton("customerLanguage", "User language")}</th>
-                <th>${livechatAiQaSortButton("chatbotLanguage", "Bot language")}</th>
-                <th>${livechatAiQaSortButton("tags", "Tags")}</th>
-                <th>${livechatAiQaSortButton("ftr", "FTR")}</th>
-                <th>${livechatAiQaSortButton("cht", "CHT")}</th>
-              </tr>
-            </thead>
-            <tbody>${renderLivechatAiQaRows()}</tbody>
-          </table>
+        <div class="livechat-ai-qa-table" role="table" aria-label="LiveChat AI QA webhook chats">
+          <div class="livechat-ai-qa-header" role="row">
+            <div>${livechatAiQaSortButton("date", "Date")}</div>
+            <div>Chat</div>
+            <div>${livechatAiQaSortButton("agent", "Agent")}</div>
+            <div>${livechatAiQaSortButton("ended", "Ended")}</div>
+            <div>${livechatAiQaSortButton("ftr", "FTR")}</div>
+            <div>${livechatAiQaSortButton("cht", "CHT")}</div>
+          </div>
+          <div class="livechat-ai-qa-list">${renderLivechatAiQaRows()}</div>
         </div>
+      </div>
+    </section>
+  `;
+}
+
+function aiQaReviewQueryParams() {
+  const filters = state.livechatAiQaReview.filters;
+  const params = new URLSearchParams({
+    page: String(state.livechatAiQaReview.page),
+    pageSize: String(state.livechatAiQaReview.pageSize),
+  });
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value) params.set(key, value);
+  });
+  return params;
+}
+
+function syncLivechatAiQaReviewFiltersFromDom() {
+  const filters = state.livechatAiQaReview.filters;
+  filters.status = document.getElementById("aiQaReviewStatus")?.value || "";
+  filters.aiStatus = document.getElementById("aiQaReviewAiStatus")?.value || "";
+  filters.chatId = document.getElementById("aiQaReviewChatId")?.value.trim() || "";
+  state.livechatAiQaReview.page = 1;
+}
+
+function resetLivechatAiQaReviewFilters() {
+  state.livechatAiQaReview.filters = {
+    status: "pending_review",
+    aiStatus: "",
+    chatId: "",
+  };
+  state.livechatAiQaReview.page = 1;
+}
+
+function aiQaReviewSuggestedTags(detail = state.livechatAiQaReview.detail) {
+  const suggestions = detail?.suggestions || [];
+  const tags = suggestions.map((item) => item.tag).filter(Boolean);
+  return tags.length ? tags : detail?.suggestedTags || [];
+}
+
+function aiQaReviewFinalTags(detail = state.livechatAiQaReview.detail) {
+  if (detail?.finalTags?.length) return detail.finalTags;
+  return aiQaReviewSuggestedTags(detail);
+}
+
+function aiQaReviewIsClosed(detail = state.livechatAiQaReview.detail) {
+  return ["approved", "corrected"].includes(detail?.status);
+}
+
+function aiQaReviewConfidence(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  return `${Math.round(Math.max(0, Math.min(1, number)) * 100)}%`;
+}
+
+function aiQaReviewStatusChip(status, aiStatus = "") {
+  const value = status || aiStatus || "unknown";
+  const tone =
+    value === "approved" || value === "corrected" || aiStatus === "completed"
+      ? "chip-success"
+      : value === "pending_review" || aiStatus === "running" || aiStatus === "pending"
+        ? "chip-warning"
+        : aiStatus === "failed" || aiStatus === "skipped"
+          ? "chip-danger"
+          : "";
+  return `<span class="chip ${tone}">${escapeHtml(value)}</span>`;
+}
+
+function aiQaReviewTagChips(tags, empty = "-") {
+  const values = Array.isArray(tags) ? tags : `${tags || ""}`.split(",").map((tag) => tag.trim()).filter(Boolean);
+  if (!values.length) return `<span class="subtle">${escapeHtml(empty)}</span>`;
+  return `<div class="chip-list">${values.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join("")}</div>`;
+}
+
+async function fetchLivechatAiQaReviewDetail(reviewId, { silent = false } = {}) {
+  if (!reviewId) return;
+  state.livechatAiQaReview.selectedId = reviewId;
+  state.livechatAiQaReview.detailLoading = true;
+  state.livechatAiQaReview.actionError = null;
+  if (!silent && state.section === "livechat-ai-qa-review") renderApp();
+
+  try {
+    state.livechatAiQaReview.detail = await api(`/api/livechat/ai-qa-reviews/${encodeURIComponent(reviewId)}`);
+  } catch (error) {
+    state.livechatAiQaReview.actionError = error.message;
+    state.livechatAiQaReview.detail = null;
+  } finally {
+    state.livechatAiQaReview.detailLoading = false;
+    if (state.section === "livechat-ai-qa-review") renderApp();
+  }
+}
+
+async function fetchLivechatAiQaReviews({ keepSelection = false } = {}) {
+  state.livechatAiQaReview.loading = true;
+  state.livechatAiQaReview.error = null;
+  if (state.section === "livechat-ai-qa-review") renderApp();
+
+  try {
+    const response = await api(`/api/livechat/ai-qa-reviews?${aiQaReviewQueryParams().toString()}`);
+    const rows = response.rows || [];
+    state.livechatAiQaReview.rows = rows;
+    state.livechatAiQaReview.total = Number(response.total || 0);
+    state.livechatAiQaReview.page = Number(response.page || state.livechatAiQaReview.page);
+    state.livechatAiQaReview.pageSize = Number(response.pageSize || state.livechatAiQaReview.pageSize);
+    state.livechatAiQaReview.loaded = true;
+    const stillVisible = rows.some((row) => row.id === state.livechatAiQaReview.selectedId);
+    if (!keepSelection || !stillVisible) {
+      state.livechatAiQaReview.selectedId = rows[0]?.id || "";
+      state.livechatAiQaReview.detail = null;
+    }
+    if (state.livechatAiQaReview.selectedId) {
+      await fetchLivechatAiQaReviewDetail(state.livechatAiQaReview.selectedId, { silent: true });
+    }
+  } catch (error) {
+    state.livechatAiQaReview.error = error.message;
+    state.livechatAiQaReview.rows = [];
+    state.livechatAiQaReview.total = 0;
+    state.livechatAiQaReview.loaded = true;
+  } finally {
+    state.livechatAiQaReview.loading = false;
+    if (state.section === "livechat-ai-qa-review") renderApp();
+  }
+}
+
+async function processLivechatAiQaReviews({ selected = false, force = false } = {}) {
+  state.livechatAiQaReview.actionLoading = true;
+  state.livechatAiQaReview.actionError = null;
+  renderApp();
+  try {
+    if (selected) {
+      const reviewId = state.livechatAiQaReview.selectedId;
+      if (!reviewId) throw new Error("Select a review first.");
+      await api(`/api/livechat/ai-qa-reviews/${encodeURIComponent(reviewId)}`, {
+        method: "POST",
+        body: { action: force ? "retry" : "process" },
+      });
+      await fetchLivechatAiQaReviewDetail(reviewId, { silent: true });
+    } else {
+      await api("/api/livechat/ai-qa-reviews", {
+        method: "POST",
+        body: { action: force ? "retry_pending" : "process_pending", limit: 5, force },
+      });
+      await fetchLivechatAiQaReviews({ keepSelection: true });
+    }
+    setMessage(statusMessage, "AI QA review processing updated.", "success");
+  } catch (error) {
+    state.livechatAiQaReview.actionError = error.message;
+    setMessage(statusMessage, error.message, "error");
+  } finally {
+    state.livechatAiQaReview.actionLoading = false;
+    renderApp();
+  }
+}
+
+function collectAiQaReviewDecision() {
+  const detail = state.livechatAiQaReview.detail;
+  const suggestedSet = new Set(aiQaReviewSuggestedTags(detail));
+  const finalTags = [...document.querySelectorAll('input[name="aiQaFinalTag"]:checked')]
+    .map((input) => input.value)
+    .filter(Boolean);
+  if (!finalTags.length) {
+    throw new Error("Select at least one final tag.");
+  }
+
+  const finalSet = new Set(finalTags);
+  const feedbackByTag = new Map();
+  document.querySelectorAll("[data-ai-qa-feedback-tag]").forEach((textarea) => {
+    feedbackByTag.set(textarea.dataset.aiQaFeedbackTag, textarea.value.trim());
+  });
+
+  const feedback = [];
+  const missingComments = [];
+  AI_QA_CONTENT_TAGS.forEach((tag) => {
+    const aiSuggested = suggestedSet.has(tag);
+    const finalSelected = finalSet.has(tag);
+    const changed = aiSuggested !== finalSelected;
+    const comment = feedbackByTag.get(tag) || "";
+    if (changed && !comment) {
+      missingComments.push(tag);
+    }
+    if (!changed && !comment) return;
+    feedback.push({
+      tag,
+      type: changed ? (finalSelected ? "missed_tag" : "wrong_tag") : "comment",
+      comment,
+      aiSuggested,
+      finalSelected,
+    });
+  });
+
+  if (missingComments.length) {
+    throw new Error(`Add AI feedback comment for: ${missingComments.join(", ")}.`);
+  }
+
+  return {
+    finalTags,
+    feedback,
+    applyToLiveChat: document.getElementById("aiQaApplyToLiveChat")?.checked !== false,
+    note: document.getElementById("aiQaDecisionNote")?.value.trim() || "",
+  };
+}
+
+async function approveLivechatAiQaReview() {
+  const detail = state.livechatAiQaReview.detail;
+  if (!detail?.id) return;
+  const finalTags = aiQaReviewSuggestedTags(detail);
+  if (!finalTags.length) {
+    setMessage(statusMessage, "AI did not suggest tags. Use Correct & Apply.", "error");
+    return;
+  }
+  state.livechatAiQaReview.actionLoading = true;
+  state.livechatAiQaReview.actionError = null;
+  renderApp();
+  try {
+    const response = await api(`/api/livechat/ai-qa-reviews/${encodeURIComponent(detail.id)}`, {
+      method: "PATCH",
+      body: {
+        action: "approve",
+        finalTags,
+        applyToLiveChat: document.getElementById("aiQaApplyToLiveChat")?.checked !== false,
+      },
+    });
+    await fetchLivechatAiQaReviews({ keepSelection: true });
+    const failedTags = response.applyResult?.failed?.map((item) => item.tag).filter(Boolean) || [];
+    setMessage(
+      statusMessage,
+      failedTags.length
+        ? `AI QA tags approved. Failed to apply in LiveChat: ${failedTags.join(", ")}.`
+        : "AI QA tags approved and sent to LiveChat.",
+      failedTags.length ? "error" : "success",
+    );
+  } catch (error) {
+    state.livechatAiQaReview.actionError = error.message;
+    setMessage(statusMessage, error.message, "error");
+  } finally {
+    state.livechatAiQaReview.actionLoading = false;
+    renderApp();
+  }
+}
+
+async function correctLivechatAiQaReview() {
+  const detail = state.livechatAiQaReview.detail;
+  if (!detail?.id) return;
+  let decision;
+  try {
+    decision = collectAiQaReviewDecision();
+  } catch (error) {
+    state.livechatAiQaReview.actionError = error.message;
+    setMessage(statusMessage, error.message, "error");
+    renderApp();
+    return;
+  }
+
+  state.livechatAiQaReview.actionLoading = true;
+  state.livechatAiQaReview.actionError = null;
+  renderApp();
+  try {
+    const response = await api(`/api/livechat/ai-qa-reviews/${encodeURIComponent(detail.id)}`, {
+      method: "PATCH",
+      body: {
+        action: "correct",
+        ...decision,
+      },
+    });
+    await fetchLivechatAiQaReviews({ keepSelection: true });
+    const failedTags = response.applyResult?.failed?.map((item) => item.tag).filter(Boolean) || [];
+    setMessage(
+      statusMessage,
+      failedTags.length
+        ? `Corrected QA tags saved. Failed to apply in LiveChat: ${failedTags.join(", ")}.`
+        : "Corrected QA tags saved and sent to LiveChat.",
+      failedTags.length ? "error" : "success",
+    );
+  } catch (error) {
+    state.livechatAiQaReview.actionError = error.message;
+    setMessage(statusMessage, error.message, "error");
+  } finally {
+    state.livechatAiQaReview.actionLoading = false;
+    renderApp();
+  }
+}
+
+function renderAiQaReviewFilters() {
+  const filters = state.livechatAiQaReview.filters;
+  return `
+    <div class="card-shell ai-qa-review-filter-shell">
+      <div class="tickets-toolbar">
+        <div>
+          <div class="section-title">Manual AI auto-tag review</div>
+          <div class="subtle">${Number(state.livechatAiQaReview.total || 0).toLocaleString()} review(s)</div>
+        </div>
+        <div class="analytics-actions">
+          <button id="aiQaReviewsProcessBtn" class="btn btn-sm btn-outline-secondary" type="button" ${state.livechatAiQaReview.actionLoading ? "disabled" : ""}>Process pending</button>
+          <button id="aiQaReviewsReloadBtn" class="btn btn-sm btn-outline-secondary" type="button">Reload</button>
+        </div>
+      </div>
+      <div class="ai-qa-review-filter-grid">
+        <label>
+          <span>Status</span>
+          <select id="aiQaReviewStatus" class="form-select">
+            ${[
+              ["pending_review", "Pending review"],
+              ["approved", "Approved"],
+              ["corrected", "Corrected"],
+              ["", "Any"],
+            ]
+              .map(([value, label]) => `<option value="${escapeHtml(value)}" ${filters.status === value ? "selected" : ""}>${escapeHtml(label)}</option>`)
+              .join("")}
+          </select>
+        </label>
+        <label>
+          <span>AI status</span>
+          <select id="aiQaReviewAiStatus" class="form-select">
+            ${["", "pending", "running", "completed", "failed", "skipped"]
+              .map((value) => `<option value="${escapeHtml(value)}" ${filters.aiStatus === value ? "selected" : ""}>${escapeHtml(value || "Any")}</option>`)
+              .join("")}
+          </select>
+        </label>
+        <label>
+          <span>Chat / Thread</span>
+          <input id="aiQaReviewChatId" class="form-control" type="search" value="${escapeHtml(filters.chatId)}" placeholder="chat or thread id" />
+        </label>
+        <div class="ai-qa-review-filter-actions">
+          <button id="aiQaReviewFilterBtn" class="btn btn-primary" type="button">Filter</button>
+          <button id="aiQaReviewResetBtn" class="btn btn-outline-secondary" type="button">Reset</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderAiQaReviewQueue() {
+  const rows = state.livechatAiQaReview.rows || [];
+  const totalPages = Math.max(1, Math.ceil((state.livechatAiQaReview.total || 0) / state.livechatAiQaReview.pageSize));
+  return `
+    <aside class="ai-qa-review-queue">
+      <div class="ai-qa-review-panel-head">
+        <div>
+          <div class="section-title">Review queue</div>
+          <div class="subtle">Page ${state.livechatAiQaReview.page} / ${totalPages}</div>
+        </div>
+        <div class="pagination-controls">
+          <button class="btn btn-sm btn-outline-secondary" type="button" data-ai-qa-review-page="prev" ${state.livechatAiQaReview.page <= 1 ? "disabled" : ""}>Prev</button>
+          <button class="btn btn-sm btn-outline-secondary" type="button" data-ai-qa-review-page="next" ${state.livechatAiQaReview.page >= totalPages ? "disabled" : ""}>Next</button>
+        </div>
+      </div>
+      ${
+        state.livechatAiQaReview.loading
+          ? '<div class="empty-state">Loading reviews...</div>'
+          : state.livechatAiQaReview.error
+            ? `<div class="empty-state analytics-error">${escapeHtml(state.livechatAiQaReview.error)}</div>`
+            : rows.length
+              ? `<div class="ai-qa-review-list">
+                  ${rows
+                    .map((row) => {
+                      const selected = row.id === state.livechatAiQaReview.selectedId;
+                      return `
+                        <button class="ai-qa-review-list-item ${selected ? "active" : ""}" type="button" data-ai-qa-review-open="${escapeHtml(row.id)}">
+                          <span class="ai-qa-review-list-top">
+                            <strong>${escapeHtml(row.chatId)}</strong>
+                            ${aiQaReviewStatusChip(row.status, row.aiStatus)}
+                          </span>
+                          <span class="subtle">${escapeHtml(livechatAiQaDateTime(row.deactivatedAt || row.updatedAt))}</span>
+                          <span class="ai-qa-review-list-tags">${aiQaReviewTagChips(row.suggestedTags, "No suggestions")}</span>
+                          ${row.aiError ? `<span class="ai-qa-review-error">${escapeHtml(row.aiError)}</span>` : ""}
+                        </button>
+                      `;
+                    })
+                    .join("")}
+                </div>`
+              : '<div class="empty-state">No reviews match the current filters.</div>'
+      }
+    </aside>
+  `;
+}
+
+function renderAiQaReviewTranscript(detail) {
+  if (state.livechatAiQaReview.detailLoading) {
+    return `<main class="ai-qa-review-thread"><div class="empty-state">Loading selected review...</div></main>`;
+  }
+  if (!detail) {
+    return `<main class="ai-qa-review-thread"><div class="empty-state">Select a review.</div></main>`;
+  }
+  const transcript = detail.transcript || [];
+  return `
+    <main class="ai-qa-review-thread">
+      <div class="ai-qa-review-thread-head">
+        <div>
+          <div class="section-title">Chat transcript</div>
+          <div class="subtle">${escapeHtml(detail.chatId)} / ${escapeHtml(detail.threadId)}</div>
+        </div>
+        <div class="chip-list">
+          ${aiQaReviewStatusChip(detail.status, detail.aiStatus)}
+          ${detail.chat?.deactivatedAt ? '<span class="chip chip-success">ended</span>' : '<span class="chip chip-warning">open</span>'}
+        </div>
+      </div>
+      <div class="ai-qa-review-meta-strip">
+        <span>Agent: <strong>${escapeHtml(detail.chat?.agentLabel || "-")}</strong></span>
+        <span>Language: <strong>${escapeHtml(detail.chat?.customerLanguage || "-")}</strong></span>
+        <span>FTR: <strong>${escapeHtml(livechatAiQaMetricLabel(detail.chat?.ftrMs ? `${Math.round(detail.chat.ftrMs / 1000)}s` : ""))}</strong></span>
+      </div>
+      <div class="ai-qa-review-thread-body">
+        ${
+          transcript.length
+            ? transcript
+                .map((event) => {
+                  const actorType = event.actorType || "system";
+                  const side = actorType === "customer" ? "customer" : "agent";
+                  return `
+                    <div class="ai-qa-review-message ${side} ${actorType === "system" ? "system" : ""}">
+                      <div class="ai-qa-review-message-meta">
+                        <strong>${escapeHtml(actorType)}</strong>
+                        ${event.actorId ? `<span>${escapeHtml(event.actorId)}</span>` : ""}
+                        <span>${escapeHtml(livechatAiQaDateTime(event.at))}</span>
+                      </div>
+                      <div class="ai-qa-review-bubble">${escapeHtml(event.text || event.eventType || "")}</div>
+                    </div>
+                  `;
+                })
+                .join("")
+            : '<div class="empty-state">No transcript messages stored for this review.</div>'
+        }
+      </div>
+    </main>
+  `;
+}
+
+function renderAiQaSuggestionCard(suggestion) {
+  return `
+    <article class="ai-qa-suggestion-card">
+      <div class="ai-qa-suggestion-head">
+        <span class="chip primary">${escapeHtml(suggestion.tag)}</span>
+        <strong>${escapeHtml(aiQaReviewConfidence(suggestion.confidence))}</strong>
+      </div>
+      ${suggestion.why ? `<div class="ai-qa-suggestion-why">${escapeHtml(suggestion.why)}</div>` : ""}
+      ${
+        suggestion.evidence?.length
+          ? `<div class="ai-qa-evidence-list">
+              ${suggestion.evidence.map((item) => `<blockquote>${escapeHtml(item)}</blockquote>`).join("")}
+            </div>`
+          : ""
+      }
+      ${
+        suggestion.existingTagsConsidered?.length
+          ? `<div class="subtle">Existing: ${escapeHtml(suggestion.existingTagsConsidered.join(", "))}</div>`
+          : ""
+      }
+    </article>
+  `;
+}
+
+function renderExistingHumanTagsBlock(detail) {
+  const tags = detail?.existingTags || [];
+  return `
+    <div class="ai-qa-existing-tags">
+      <div class="section-title">Existing LiveChat tags</div>
+      <div class="subtle">Added outside system automation</div>
+      <div class="chip-list">${aiQaReviewTagChips(tags, "No existing human tags")}</div>
+    </div>
+  `;
+}
+
+function renderAiQaFinalTagControls(detail) {
+  const finalTags = new Set(aiQaReviewFinalTags(detail));
+  const suggestedTags = new Set(aiQaReviewSuggestedTags(detail));
+  const closed = aiQaReviewIsClosed(detail);
+  return `
+    <div class="ai-qa-final-tags">
+      ${AI_QA_CONTENT_TAGS.map((tag) => {
+        const checked = finalTags.has(tag);
+        const suggested = suggestedTags.has(tag);
+        return `
+          <label class="ai-qa-final-tag ${checked ? "selected" : ""} ${suggested ? "suggested" : ""}">
+            <input type="checkbox" name="aiQaFinalTag" value="${escapeHtml(tag)}" ${checked ? "checked" : ""} ${closed ? "disabled" : ""} />
+            <span>${escapeHtml(tag)}</span>
+          </label>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderAiQaFeedbackControls(detail) {
+  const finalTags = new Set(aiQaReviewFinalTags(detail));
+  const suggestedTags = new Set(aiQaReviewSuggestedTags(detail));
+  const existingTags = new Set(detail?.existingTags || []);
+  const closed = aiQaReviewIsClosed(detail);
+  return `
+    <div class="ai-qa-feedback-grid">
+      ${AI_QA_CONTENT_TAGS.map((tag) => {
+        const suggested = suggestedTags.has(tag);
+        const selected = finalTags.has(tag);
+        const existing = existingTags.has(tag);
+        const visible = suggested || selected || existing;
+        const tone = suggested && selected ? "kept" : suggested ? "remove" : selected ? "add" : "";
+        return `
+          <label class="ai-qa-feedback-row ${tone} ${visible ? "" : "is-hidden"}" data-ai-qa-feedback-row="${escapeHtml(tag)}" data-suggested="${suggested ? "1" : "0"}" data-existing="${existing ? "1" : "0"}">
+            <span>
+              <strong>${escapeHtml(tag)}</strong>
+              <small data-ai-qa-feedback-state="${escapeHtml(tag)}">${suggested ? "AI suggested" : ""}${existing ? `${suggested ? " · " : ""}Existing` : ""}${suggested && selected ? " · kept" : ""}${!suggested && selected ? "Selected" : ""}</small>
+            </span>
+            <textarea class="form-control" rows="2" data-ai-qa-feedback-tag="${escapeHtml(tag)}" placeholder="Correction comment for AI" ${closed ? "disabled" : ""}></textarea>
+          </label>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function refreshAiQaFeedbackVisibility() {
+  const selected = new Set(
+    [...document.querySelectorAll('input[name="aiQaFinalTag"]:checked')]
+      .map((input) => input.value)
+      .filter(Boolean),
+  );
+  document.querySelectorAll("[data-ai-qa-feedback-row]").forEach((row) => {
+    const tag = row.dataset.aiQaFeedbackRow;
+    const suggested = row.dataset.suggested === "1";
+    const existing = row.dataset.existing === "1";
+    const checked = selected.has(tag);
+    row.classList.toggle("is-hidden", !(suggested || existing || checked));
+    row.classList.toggle("add", checked && !suggested);
+    row.classList.toggle("remove", suggested && !checked);
+    row.classList.toggle("kept", suggested && checked);
+    const stateLabel = row.querySelector(`[data-ai-qa-feedback-state="${CSS.escape(tag)}"]`);
+    if (stateLabel) {
+      stateLabel.textContent = [
+        suggested ? "AI suggested" : "",
+        existing ? "Existing" : "",
+        suggested && checked ? "kept" : "",
+        !suggested && checked ? "Selected" : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+    }
+  });
+}
+
+function renderAiQaReviewDecisionPanel(detail) {
+  if (state.livechatAiQaReview.detailLoading) {
+    return `<aside class="ai-qa-review-decision"><div class="empty-state">Loading AI suggestions...</div></aside>`;
+  }
+  if (!detail) {
+    return `<aside class="ai-qa-review-decision"><div class="empty-state">No review selected.</div></aside>`;
+  }
+  const closed = aiQaReviewIsClosed(detail);
+  const suggestions = detail.suggestions || [];
+  return `
+    <aside class="ai-qa-review-decision">
+      <div class="ai-qa-review-panel-head">
+        <div>
+          <div class="section-title">AI suggestions</div>
+          <div class="subtle">${escapeHtml(detail.aiModel || "Workers AI")} ${detail.aiFallbackModel ? `→ ${escapeHtml(detail.aiFallbackModel)}` : ""}</div>
+        </div>
+        ${detail.aiOverallConfidence !== null && detail.aiOverallConfidence !== undefined ? `<span class="chip">${escapeHtml(aiQaReviewConfidence(detail.aiOverallConfidence))}</span>` : ""}
+      </div>
+      ${detail.aiSummary ? `<div class="ai-qa-summary">${escapeHtml(detail.aiSummary)}</div>` : ""}
+      ${detail.aiError ? `<div class="empty-state analytics-error">${escapeHtml(detail.aiError)}</div>` : ""}
+      ${renderExistingHumanTagsBlock(detail)}
+      <div class="ai-qa-suggestions-list">
+        ${suggestions.length ? suggestions.map(renderAiQaSuggestionCard).join("") : '<div class="empty-state">No AI suggestions yet.</div>'}
+      </div>
+      <div class="ai-qa-review-decision-block">
+        <div class="section-title">Final tags</div>
+        ${renderAiQaFinalTagControls(detail)}
+      </div>
+      <div class="ai-qa-review-decision-block">
+        <div class="section-title">Feedback for AI</div>
+        ${renderAiQaFeedbackControls(detail)}
+      </div>
+      <label class="ai-qa-apply-toggle">
+        <input id="aiQaApplyToLiveChat" class="form-check-input" type="checkbox" ${closed ? "disabled" : "checked"} />
+        <span>Apply tags to LiveChat</span>
+      </label>
+      <textarea id="aiQaDecisionNote" class="form-control" rows="2" placeholder="Review note" ${closed ? "disabled" : ""}>${escapeHtml(detail.decisionNote || "")}</textarea>
+      ${state.livechatAiQaReview.actionError ? `<div class="empty-state analytics-error">${escapeHtml(state.livechatAiQaReview.actionError)}</div>` : ""}
+      <div class="ai-qa-review-actions">
+        <button id="aiQaApproveBtn" class="btn btn-primary" type="button" ${closed || state.livechatAiQaReview.actionLoading || detail.aiStatus !== "completed" ? "disabled" : ""}>Approve</button>
+        <button id="aiQaCorrectBtn" class="btn btn-outline-secondary" type="button" ${closed || state.livechatAiQaReview.actionLoading ? "disabled" : ""}>Correct & Apply</button>
+        <button id="aiQaRetryBtn" class="btn btn-outline-secondary" type="button" ${state.livechatAiQaReview.actionLoading ? "disabled" : ""}>Retry AI</button>
+      </div>
+      ${
+        closed
+          ? `<div class="ai-qa-reviewed-box">
+              <strong>${escapeHtml(detail.status)}</strong>
+              <span>${escapeHtml(detail.reviewer || "")}</span>
+              <span>${escapeHtml(livechatAiQaDateTime(detail.reviewedAt))}</span>
+              ${aiQaReviewTagChips(detail.finalTags, "No final tags")}
+            </div>`
+          : ""
+      }
+    </aside>
+  `;
+}
+
+function renderLivechatAiQaReview() {
+  const detail = state.livechatAiQaReview.detail;
+  return `
+    <section class="ai-qa-review-page">
+      ${renderAiQaReviewFilters()}
+      <div class="ai-qa-review-workspace">
+        ${renderAiQaReviewQueue()}
+        ${renderAiQaReviewTranscript(detail)}
+        ${renderAiQaReviewDecisionPanel(detail)}
+      </div>
+    </section>
+  `;
+}
+
+function agentQaReviewQueryParams() {
+  const filters = state.livechatAgentQaReview.filters;
+  return new URLSearchParams({
+    page: String(state.livechatAgentQaReview.page),
+    pageSize: String(state.livechatAgentQaReview.pageSize),
+    status: filters.status,
+    aiStatus: filters.aiStatus,
+    agent: filters.agent,
+    tag: filters.tag,
+    chatId: filters.chatId,
+  });
+}
+
+function syncLivechatAgentQaReviewFiltersFromDom() {
+  const filters = state.livechatAgentQaReview.filters;
+  filters.status = document.getElementById("agentQaReviewStatus")?.value || "";
+  filters.aiStatus = document.getElementById("agentQaReviewAiStatus")?.value || "";
+  filters.agent = document.getElementById("agentQaReviewAgent")?.value.trim() || "";
+  filters.tag = document.getElementById("agentQaReviewTag")?.value.trim() || "";
+  filters.chatId = document.getElementById("agentQaReviewChatId")?.value.trim() || "";
+  state.livechatAgentQaReview.page = 1;
+}
+
+function resetLivechatAgentQaReviewFilters() {
+  state.livechatAgentQaReview.filters = {
+    status: "pending_review",
+    aiStatus: "",
+    agent: "",
+    tag: "",
+    chatId: "",
+  };
+  state.livechatAgentQaReview.page = 1;
+}
+
+function agentQaReviewChecks(detail = state.livechatAgentQaReview.detail) {
+  return (Array.isArray(detail?.checks) ? detail.checks : []).filter((check) => AGENT_QA_TAGS.includes(check.selectedTag));
+}
+
+function normalizeAgentQaTags(tags = []) {
+  return [...new Set((tags || []).filter((tag) => AGENT_QA_TAGS.includes(tag)))];
+}
+
+function agentQaReviewSuggestedTags(detail = state.livechatAgentQaReview.detail) {
+  const tags = detail?.checkTags?.length ? detail.checkTags : agentQaReviewChecks(detail).map((check) => check.selectedTag);
+  return normalizeAgentQaTags(tags);
+}
+
+function agentQaReviewFinalTags(detail = state.livechatAgentQaReview.detail) {
+  return detail?.finalTags?.length ? normalizeAgentQaTags(detail.finalTags) : agentQaReviewSuggestedTags(detail);
+}
+
+function agentQaReviewIsClosed(detail = state.livechatAgentQaReview.detail) {
+  return ["approved", "corrected"].includes(detail?.status);
+}
+
+function agentQaRuleForTag(tag) {
+  return AGENT_QA_RULES.find((rule) => rule.tags.includes(tag)) || null;
+}
+
+function agentQaCheckByRule(detail) {
+  return new Map(agentQaReviewChecks(detail).map((check) => [check.ruleKey, check]));
+}
+
+async function fetchLivechatAgentQaReviewDetail(reviewId, { silent = false } = {}) {
+  if (!reviewId) return;
+  state.livechatAgentQaReview.selectedId = reviewId;
+  state.livechatAgentQaReview.detailLoading = true;
+  state.livechatAgentQaReview.actionError = null;
+  if (!silent && state.section === "livechat-agent-qa-review") renderApp();
+  try {
+    state.livechatAgentQaReview.detail = await api(`/api/livechat/ai-agent-qa-reviews/${encodeURIComponent(reviewId)}`);
+  } catch (error) {
+    state.livechatAgentQaReview.actionError = error.message;
+    state.livechatAgentQaReview.detail = null;
+  } finally {
+    state.livechatAgentQaReview.detailLoading = false;
+    if (state.section === "livechat-agent-qa-review") renderApp();
+  }
+}
+
+async function fetchLivechatAgentQaReviews({ keepSelection = false } = {}) {
+  state.livechatAgentQaReview.loading = true;
+  state.livechatAgentQaReview.error = null;
+  if (state.section === "livechat-agent-qa-review") renderApp();
+  try {
+    const response = await api(`/api/livechat/ai-agent-qa-reviews?${agentQaReviewQueryParams().toString()}`);
+    const rows = response.rows || [];
+    state.livechatAgentQaReview.rows = rows;
+    state.livechatAgentQaReview.total = Number(response.total || 0);
+    state.livechatAgentQaReview.page = Number(response.page || state.livechatAgentQaReview.page);
+    state.livechatAgentQaReview.pageSize = Number(response.pageSize || state.livechatAgentQaReview.pageSize);
+    state.livechatAgentQaReview.loaded = true;
+    const stillVisible = rows.some((row) => row.id === state.livechatAgentQaReview.selectedId);
+    if (!keepSelection || !stillVisible) {
+      state.livechatAgentQaReview.selectedId = rows[0]?.id || "";
+      state.livechatAgentQaReview.detail = null;
+    }
+    if (state.livechatAgentQaReview.selectedId) {
+      await fetchLivechatAgentQaReviewDetail(state.livechatAgentQaReview.selectedId, { silent: true });
+    }
+  } catch (error) {
+    state.livechatAgentQaReview.error = error.message;
+    state.livechatAgentQaReview.rows = [];
+    state.livechatAgentQaReview.total = 0;
+    state.livechatAgentQaReview.loaded = true;
+  } finally {
+    state.livechatAgentQaReview.loading = false;
+    if (state.section === "livechat-agent-qa-review") renderApp();
+  }
+}
+
+async function processLivechatAgentQaReviews({ selected = false, force = false } = {}) {
+  state.livechatAgentQaReview.actionLoading = true;
+  state.livechatAgentQaReview.actionError = null;
+  renderApp();
+  try {
+    if (selected) {
+      const reviewId = state.livechatAgentQaReview.selectedId;
+      if (!reviewId) throw new Error("Select a review first.");
+      await api(`/api/livechat/ai-agent-qa-reviews/${encodeURIComponent(reviewId)}`, {
+        method: "POST",
+        body: { action: force ? "retry" : "process" },
+      });
+      await fetchLivechatAgentQaReviewDetail(reviewId, { silent: true });
+    } else {
+      await api("/api/livechat/ai-agent-qa-reviews", {
+        method: "POST",
+        body: { action: force ? "retry_pending" : "process_pending", limit: 5, force },
+      });
+      await fetchLivechatAgentQaReviews({ keepSelection: true });
+    }
+    setMessage(statusMessage, "Agent QA processing updated.", "success");
+  } catch (error) {
+    state.livechatAgentQaReview.actionError = error.message;
+    setMessage(statusMessage, error.message, "error");
+  } finally {
+    state.livechatAgentQaReview.actionLoading = false;
+    renderApp();
+  }
+}
+
+function selectedAgentQaFinalTagsFromDom() {
+  return [...document.querySelectorAll('select[name="agentQaFinalTag"]')]
+    .map((select) => select.value)
+    .filter(Boolean);
+}
+
+function collectAgentQaReviewDecision() {
+  const detail = state.livechatAgentQaReview.detail;
+  const checkByRule = agentQaCheckByRule(detail);
+  const finalTags = selectedAgentQaFinalTagsFromDom();
+  if (!finalTags.length) {
+    throw new Error("Select at least one final QA tag.");
+  }
+
+  const feedbackByRule = new Map();
+  document.querySelectorAll("[data-agent-qa-feedback-rule]").forEach((textarea) => {
+    feedbackByRule.set(textarea.dataset.agentQaFeedbackRule, textarea.value.trim());
+  });
+
+  const feedback = [];
+  const missingComments = [];
+  AGENT_QA_RULES.forEach((rule) => {
+    const select = document.querySelector(`select[name="agentQaFinalTag"][data-rule="${CSS.escape(rule.rule)}"]`);
+    const finalTag = select?.value || "";
+    const aiTag = checkByRule.get(rule.rule)?.selectedTag || "";
+    const comment = feedbackByRule.get(rule.rule) || "";
+    const changed = aiTag !== finalTag;
+    if (changed && !comment) {
+      missingComments.push(rule.rule);
+    }
+    if (!changed && !comment) return;
+    feedback.push({
+      ruleKey: rule.rule,
+      tag: finalTag || aiTag,
+      type: changed ? "corrected_tag" : "comment",
+      comment,
+      aiTag,
+      finalTag,
+    });
+  });
+
+  if (missingComments.length) {
+    throw new Error(`Add AI feedback comment for: ${missingComments.join(", ")}.`);
+  }
+
+  return {
+    finalTags,
+    feedback,
+    applyToLiveChat: document.getElementById("agentQaApplyToLiveChat")?.checked !== false,
+    note: document.getElementById("agentQaDecisionNote")?.value.trim() || "",
+  };
+}
+
+async function approveLivechatAgentQaReview() {
+  const detail = state.livechatAgentQaReview.detail;
+  if (!detail?.id) return;
+  const finalTags = agentQaReviewSuggestedTags(detail);
+  if (!finalTags.length) {
+    setMessage(statusMessage, "AI did not produce QA checks. Use Correct & Apply.", "error");
+    return;
+  }
+  state.livechatAgentQaReview.actionLoading = true;
+  state.livechatAgentQaReview.actionError = null;
+  renderApp();
+  try {
+    await api(`/api/livechat/ai-agent-qa-reviews/${encodeURIComponent(detail.id)}`, {
+      method: "PATCH",
+      body: {
+        action: "approve",
+        finalTags,
+        applyToLiveChat: document.getElementById("agentQaApplyToLiveChat")?.checked !== false,
+      },
+    });
+    await fetchLivechatAgentQaReviews({ keepSelection: true });
+    await fetchLivechatAgentQaLeaderboard();
+    setMessage(statusMessage, "Agent QA approved and sent to LiveChat.", "success");
+  } catch (error) {
+    state.livechatAgentQaReview.actionError = error.message;
+    setMessage(statusMessage, error.message, "error");
+  } finally {
+    state.livechatAgentQaReview.actionLoading = false;
+    renderApp();
+  }
+}
+
+async function correctLivechatAgentQaReview() {
+  const detail = state.livechatAgentQaReview.detail;
+  if (!detail?.id) return;
+  let decision;
+  try {
+    decision = collectAgentQaReviewDecision();
+  } catch (error) {
+    state.livechatAgentQaReview.actionError = error.message;
+    setMessage(statusMessage, error.message, "error");
+    renderApp();
+    return;
+  }
+
+  state.livechatAgentQaReview.actionLoading = true;
+  state.livechatAgentQaReview.actionError = null;
+  renderApp();
+  try {
+    await api(`/api/livechat/ai-agent-qa-reviews/${encodeURIComponent(detail.id)}`, {
+      method: "PATCH",
+      body: {
+        action: "correct",
+        ...decision,
+      },
+    });
+    await fetchLivechatAgentQaReviews({ keepSelection: true });
+    await fetchLivechatAgentQaLeaderboard();
+    setMessage(statusMessage, "Corrected agent QA saved and sent to LiveChat.", "success");
+  } catch (error) {
+    state.livechatAgentQaReview.actionError = error.message;
+    setMessage(statusMessage, error.message, "error");
+  } finally {
+    state.livechatAgentQaReview.actionLoading = false;
+    renderApp();
+  }
+}
+
+function renderAgentQaReviewFilters() {
+  const filters = state.livechatAgentQaReview.filters;
+  return `
+    <div class="card-shell ai-qa-review-filter-shell">
+      <div class="tickets-toolbar">
+        <div>
+          <div class="section-title">Manual AI QA Review</div>
+          <div class="subtle">${Number(state.livechatAgentQaReview.total || 0).toLocaleString()} review(s)</div>
+        </div>
+        <div class="analytics-actions">
+          <button id="agentQaReviewsProcessBtn" class="btn btn-sm btn-outline-secondary" type="button" ${state.livechatAgentQaReview.actionLoading ? "disabled" : ""}>Process pending</button>
+          <button id="agentQaReviewsReloadBtn" class="btn btn-sm btn-outline-secondary" type="button">Reload</button>
+        </div>
+      </div>
+      <div class="ai-qa-review-filter-grid agent-qa-filter-grid">
+        <label>
+          <span>Status</span>
+          <select id="agentQaReviewStatus" class="form-select">
+            ${[
+              ["pending_review", "Pending review"],
+              ["approved", "Approved"],
+              ["corrected", "Corrected"],
+              ["", "Any"],
+            ]
+              .map(([value, label]) => `<option value="${escapeHtml(value)}" ${filters.status === value ? "selected" : ""}>${escapeHtml(label)}</option>`)
+              .join("")}
+          </select>
+        </label>
+        <label>
+          <span>AI status</span>
+          <select id="agentQaReviewAiStatus" class="form-select">
+            ${["", "pending", "running", "completed", "failed", "skipped"]
+              .map((value) => `<option value="${escapeHtml(value)}" ${filters.aiStatus === value ? "selected" : ""}>${escapeHtml(value || "Any")}</option>`)
+              .join("")}
+          </select>
+        </label>
+        <label>
+          <span>Agent</span>
+          <input id="agentQaReviewAgent" class="form-control" type="search" value="${escapeHtml(filters.agent)}" placeholder="email or name" />
+        </label>
+        <label>
+          <span>Tag</span>
+          <input id="agentQaReviewTag" class="form-control" type="search" value="${escapeHtml(filters.tag)}" placeholder="q9b" />
+        </label>
+        <label>
+          <span>Chat / Thread</span>
+          <input id="agentQaReviewChatId" class="form-control" type="search" value="${escapeHtml(filters.chatId)}" placeholder="chat or thread id" />
+        </label>
+        <div class="ai-qa-review-filter-actions">
+          <button id="agentQaReviewFilterBtn" class="btn btn-primary" type="button">Filter</button>
+          <button id="agentQaReviewResetBtn" class="btn btn-outline-secondary" type="button">Reset</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderAgentQaReviewQueue() {
+  const rows = state.livechatAgentQaReview.rows || [];
+  const totalPages = Math.max(1, Math.ceil((state.livechatAgentQaReview.total || 0) / state.livechatAgentQaReview.pageSize));
+  return `
+    <aside class="ai-qa-review-queue">
+      <div class="ai-qa-review-panel-head">
+        <div>
+          <div class="section-title">Review queue</div>
+          <div class="subtle">Page ${state.livechatAgentQaReview.page} / ${totalPages}</div>
+        </div>
+        <div class="pagination-controls">
+          <button class="btn btn-sm btn-outline-secondary" type="button" data-agent-qa-review-page="prev" ${state.livechatAgentQaReview.page <= 1 ? "disabled" : ""}>Prev</button>
+          <button class="btn btn-sm btn-outline-secondary" type="button" data-agent-qa-review-page="next" ${state.livechatAgentQaReview.page >= totalPages ? "disabled" : ""}>Next</button>
+        </div>
+      </div>
+      ${
+        state.livechatAgentQaReview.loading
+          ? '<div class="empty-state">Loading reviews...</div>'
+          : state.livechatAgentQaReview.error
+            ? `<div class="empty-state analytics-error">${escapeHtml(state.livechatAgentQaReview.error)}</div>`
+            : rows.length
+              ? `<div class="ai-qa-review-list">
+                  ${rows
+                    .map((row) => {
+                      const selected = row.id === state.livechatAgentQaReview.selectedId;
+                      return `
+                        <button class="ai-qa-review-list-item ${selected ? "active" : ""}" type="button" data-agent-qa-review-open="${escapeHtml(row.id)}">
+                          <span class="ai-qa-review-list-top">
+                            <strong>${escapeHtml(row.chatId)}</strong>
+                            ${aiQaReviewStatusChip(row.status, row.aiStatus)}
+                          </span>
+                          <span class="subtle">${escapeHtml(row.agentLabel || "No agent")}</span>
+                          <span class="subtle">${escapeHtml(livechatAiQaDateTime(row.updatedAt || row.createdAt))}</span>
+                          <span class="ai-qa-review-list-tags">${aiQaReviewTagChips(row.checkTags, "No checks")}</span>
+                          ${row.aiError ? `<span class="ai-qa-review-error">${escapeHtml(row.aiError)}</span>` : ""}
+                        </button>
+                      `;
+                    })
+                    .join("")}
+                </div>`
+              : '<div class="empty-state">No reviews match the current filters.</div>'
+      }
+    </aside>
+  `;
+}
+
+function renderAgentQaReviewTranscript(detail) {
+  if (state.livechatAgentQaReview.detailLoading) {
+    return `<main class="ai-qa-review-thread"><div class="empty-state">Loading selected review...</div></main>`;
+  }
+  if (!detail) {
+    return `<main class="ai-qa-review-thread"><div class="empty-state">Select a review.</div></main>`;
+  }
+  const transcript = detail.transcript || [];
+  return `
+    <main class="ai-qa-review-thread">
+      <div class="ai-qa-review-thread-head">
+        <div>
+          <div class="section-title">Chat transcript</div>
+          <div class="subtle">${escapeHtml(detail.chatId)} / ${escapeHtml(detail.threadId)}</div>
+        </div>
+        <div class="chip-list">
+          ${aiQaReviewStatusChip(detail.status, detail.aiStatus)}
+          <span class="chip chip-success">ended</span>
+        </div>
+      </div>
+      <div class="ai-qa-review-meta-strip">
+        <span>Agent: <strong>${escapeHtml(detail.agentLabel || "-")}</strong></span>
+        <span>FTR: <strong>${escapeHtml(livechatAiQaMetricLabel(detail.ftrLabel || (Number.isFinite(Number(detail.ftrMs)) ? `${Math.round(Number(detail.ftrMs) / 1000)}s` : "")))}</strong></span>
+        <span>System tags: <strong>${escapeHtml((detail.systemTags || []).join(", ") || "-")}</strong></span>
+      </div>
+      <div class="ai-qa-review-thread-body">
+        ${
+          transcript.length
+            ? transcript
+                .map((event) => {
+                  const actorType = event.actorType || "system";
+                  const side = actorType === "customer" ? "customer" : "agent";
+                  return `
+                    <div class="ai-qa-review-message ${side} ${actorType === "system" ? "system" : ""} ${actorType === "chatbot" ? "chatbot" : ""}">
+                      <div class="ai-qa-review-message-meta">
+                        <strong>${escapeHtml(actorType)}</strong>
+                        ${event.actorId ? `<span>${escapeHtml(event.actorId)}</span>` : ""}
+                        <span>${escapeHtml(livechatAiQaDateTime(event.at))}</span>
+                      </div>
+                      <div class="ai-qa-review-bubble">${escapeHtml(event.text || event.eventType || "")}</div>
+                    </div>
+                  `;
+                })
+                .join("")
+            : '<div class="empty-state">No transcript messages stored for this review.</div>'
+        }
+      </div>
+    </main>
+  `;
+}
+
+function renderAgentQaCheckCard(check) {
+  return `
+    <article class="ai-qa-suggestion-card agent-qa-check-card">
+      <div class="ai-qa-suggestion-head">
+        <span class="chip primary">${escapeHtml(check.selectedTag || "-")}</span>
+        <strong>${escapeHtml(aiQaReviewConfidence(check.confidence))}</strong>
+      </div>
+      <div class="agent-qa-check-title">${escapeHtml(check.title || check.ruleKey)}</div>
+      ${check.why ? `<div class="ai-qa-suggestion-why">${escapeHtml(check.why)}</div>` : ""}
+      ${
+        check.evidence?.length
+          ? `<div class="ai-qa-evidence-list">
+              ${check.evidence.map((item) => `<blockquote>${escapeHtml(item)}</blockquote>`).join("")}
+            </div>`
+          : ""
+      }
+    </article>
+  `;
+}
+
+function renderAgentQaFinalTagControls(detail) {
+  const finalTags = new Set(agentQaReviewFinalTags(detail));
+  const checkByRule = agentQaCheckByRule(detail);
+  const closed = agentQaReviewIsClosed(detail);
+  return `
+    <div class="agent-qa-final-grid">
+      ${AGENT_QA_RULES.map((rule) => {
+        const check = checkByRule.get(rule.rule);
+        const selected = rule.tags.find((tag) => finalTags.has(tag)) || "";
+        return `
+          <label class="agent-qa-final-row ${selected ? "selected" : ""} ${check ? "suggested" : ""}">
+            <span>
+              <strong>${escapeHtml(rule.rule)}</strong>
+              <small>${escapeHtml(rule.title)}</small>
+            </span>
+            <select class="form-select" name="agentQaFinalTag" data-rule="${escapeHtml(rule.rule)}" ${closed ? "disabled" : ""}>
+              <option value="">Not applicable</option>
+              ${rule.tags
+                .map((tag) => `<option value="${escapeHtml(tag)}" ${selected === tag ? "selected" : ""}>${escapeHtml(tag)}</option>`)
+                .join("")}
+            </select>
+          </label>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderAgentQaFeedbackControls(detail) {
+  const checkByRule = agentQaCheckByRule(detail);
+  const finalTags = new Set(agentQaReviewFinalTags(detail));
+  const closed = agentQaReviewIsClosed(detail);
+  return `
+    <div class="ai-qa-feedback-grid agent-qa-feedback-grid">
+      ${AGENT_QA_RULES.map((rule) => {
+        const check = checkByRule.get(rule.rule);
+        const selected = rule.tags.some((tag) => finalTags.has(tag));
+        const visible = Boolean(check || selected);
+        return `
+          <label class="ai-qa-feedback-row ${visible ? "" : "is-hidden"}" data-agent-qa-feedback-row="${escapeHtml(rule.rule)}" data-ai-tag="${escapeHtml(check?.selectedTag || "")}">
+            <span>
+              <strong>${escapeHtml(rule.rule)}</strong>
+              <small data-agent-qa-feedback-state="${escapeHtml(rule.rule)}">${escapeHtml([check?.selectedTag ? `AI: ${check.selectedTag}` : "", selected ? "Selected" : ""].filter(Boolean).join(" · "))}</small>
+            </span>
+            <textarea class="form-control" rows="2" data-agent-qa-feedback-rule="${escapeHtml(rule.rule)}" placeholder="Correction comment for AI" ${closed ? "disabled" : ""}></textarea>
+          </label>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function refreshAgentQaFeedbackVisibility() {
+  const selectedByRule = new Map(
+    [...document.querySelectorAll('select[name="agentQaFinalTag"]')].map((select) => [select.dataset.rule, select.value]),
+  );
+  document.querySelectorAll("[data-agent-qa-feedback-row]").forEach((row) => {
+    const rule = row.dataset.agentQaFeedbackRow;
+    const aiTag = row.dataset.aiTag || "";
+    const finalTag = selectedByRule.get(rule) || "";
+    row.classList.toggle("is-hidden", !(aiTag || finalTag));
+    const stateLabel = row.querySelector(`[data-agent-qa-feedback-state="${CSS.escape(rule)}"]`);
+    if (stateLabel) {
+      stateLabel.textContent = [aiTag ? `AI: ${aiTag}` : "", finalTag ? `Final: ${finalTag}` : ""].filter(Boolean).join(" · ");
+    }
+  });
+}
+
+function renderAgentQaReviewDecisionPanel(detail) {
+  if (state.livechatAgentQaReview.detailLoading) {
+    return `<aside class="ai-qa-review-decision"><div class="empty-state">Loading QA checks...</div></aside>`;
+  }
+  if (!detail) {
+    return `<aside class="ai-qa-review-decision"><div class="empty-state">No review selected.</div></aside>`;
+  }
+  const closed = agentQaReviewIsClosed(detail);
+  const checks = agentQaReviewChecks(detail);
+  return `
+    <aside class="ai-qa-review-decision">
+      <div class="ai-qa-review-panel-head">
+        <div>
+          <div class="section-title">QA checks</div>
+          <div class="subtle">${escapeHtml(detail.aiModel || "Workers AI")} ${detail.aiFallbackModel ? `→ ${escapeHtml(detail.aiFallbackModel)}` : ""}</div>
+        </div>
+        ${detail.aiOverallConfidence !== null && detail.aiOverallConfidence !== undefined ? `<span class="chip">${escapeHtml(aiQaReviewConfidence(detail.aiOverallConfidence))}</span>` : ""}
+      </div>
+      ${detail.aiSummary ? `<div class="ai-qa-summary">${escapeHtml(detail.aiSummary)}</div>` : ""}
+      ${detail.aiError ? `<div class="empty-state analytics-error">${escapeHtml(detail.aiError)}</div>` : ""}
+      ${renderExistingHumanTagsBlock(detail)}
+      <div class="ai-qa-suggestions-list">
+        ${checks.length ? checks.map(renderAgentQaCheckCard).join("") : '<div class="empty-state">No QA checks yet.</div>'}
+      </div>
+      <div class="ai-qa-review-decision-block">
+        <div class="section-title">Final QA tags</div>
+        ${renderAgentQaFinalTagControls(detail)}
+      </div>
+      <div class="ai-qa-review-decision-block">
+        <div class="section-title">Feedback for AI</div>
+        ${renderAgentQaFeedbackControls(detail)}
+      </div>
+      <label class="ai-qa-apply-toggle">
+        <input id="agentQaApplyToLiveChat" class="form-check-input" type="checkbox" ${closed ? "disabled" : "checked"} />
+        <span>Apply tags to LiveChat</span>
+      </label>
+      <textarea id="agentQaDecisionNote" class="form-control" rows="2" placeholder="Review note" ${closed ? "disabled" : ""}>${escapeHtml(detail.decisionNote || "")}</textarea>
+      ${state.livechatAgentQaReview.actionError ? `<div class="empty-state analytics-error">${escapeHtml(state.livechatAgentQaReview.actionError)}</div>` : ""}
+      <div class="ai-qa-review-actions">
+        <button id="agentQaApproveBtn" class="btn btn-primary" type="button" ${closed || state.livechatAgentQaReview.actionLoading || detail.aiStatus !== "completed" ? "disabled" : ""}>Approve</button>
+        <button id="agentQaCorrectBtn" class="btn btn-outline-secondary" type="button" ${closed || state.livechatAgentQaReview.actionLoading ? "disabled" : ""}>Correct & Apply</button>
+        <button id="agentQaRetryBtn" class="btn btn-outline-secondary" type="button" ${state.livechatAgentQaReview.actionLoading ? "disabled" : ""}>Retry AI</button>
+      </div>
+      ${
+        closed
+          ? `<div class="ai-qa-reviewed-box">
+              <strong>${escapeHtml(detail.status)}</strong>
+              <span>${escapeHtml(detail.reviewer || "")}</span>
+              <span>${escapeHtml(livechatAiQaDateTime(detail.reviewedAt))}</span>
+              ${aiQaReviewTagChips(detail.finalTags, "No final tags")}
+            </div>`
+          : ""
+      }
+    </aside>
+  `;
+}
+
+function renderLivechatAgentQaReview() {
+  const detail = state.livechatAgentQaReview.detail;
+  return `
+    <section class="ai-qa-review-page">
+      ${renderAgentQaReviewFilters()}
+      <div class="ai-qa-review-workspace">
+        ${renderAgentQaReviewQueue()}
+        ${renderAgentQaReviewTranscript(detail)}
+        ${renderAgentQaReviewDecisionPanel(detail)}
+      </div>
+    </section>
+  `;
+}
+
+function agentQaLeaderboardQueryParams() {
+  const filters = state.livechatAgentQaLeaderboard.filters;
+  return new URLSearchParams({
+    from: filters.from,
+    to: filters.to,
+    agent: filters.agent,
+  });
+}
+
+function syncAgentQaLeaderboardFiltersFromDom() {
+  const filters = state.livechatAgentQaLeaderboard.filters;
+  filters.from = document.getElementById("agentQaLeaderboardFrom")?.value || "";
+  filters.to = document.getElementById("agentQaLeaderboardTo")?.value || "";
+  filters.agent = document.getElementById("agentQaLeaderboardAgent")?.value.trim() || "";
+}
+
+async function fetchLivechatAgentQaLeaderboard() {
+  state.livechatAgentQaLeaderboard.loading = true;
+  state.livechatAgentQaLeaderboard.error = null;
+  if (state.section === "livechat-agent-qa-leaderboard") renderApp();
+  try {
+    const response = await api(`/api/livechat/ai-agent-qa-leaderboard?${agentQaLeaderboardQueryParams().toString()}`);
+    state.livechatAgentQaLeaderboard.rows = response.rows || [];
+    state.livechatAgentQaLeaderboard.reviewedCount = Number(response.reviewedCount || 0);
+    state.livechatAgentQaLeaderboard.loaded = true;
+  } catch (error) {
+    state.livechatAgentQaLeaderboard.error = error.message;
+    state.livechatAgentQaLeaderboard.rows = [];
+    state.livechatAgentQaLeaderboard.loaded = true;
+  } finally {
+    state.livechatAgentQaLeaderboard.loading = false;
+    if (state.section === "livechat-agent-qa-leaderboard") renderApp();
+  }
+}
+
+function renderAgentQaLeaderboard() {
+  const stateSlice = state.livechatAgentQaLeaderboard;
+  const filters = stateSlice.filters;
+  const rows = stateSlice.rows || [];
+  return `
+    <section class="ai-qa-review-page">
+      <div class="card-shell ai-qa-review-filter-shell">
+        <div class="tickets-toolbar">
+          <div>
+            <div class="section-title">AI QA leaderboard</div>
+            <div class="subtle">${Number(stateSlice.reviewedCount || 0).toLocaleString()} reviewed chat(s)</div>
+          </div>
+          <button id="agentQaLeaderboardReloadBtn" class="btn btn-sm btn-outline-secondary" type="button">Reload</button>
+        </div>
+        <div class="ai-qa-review-filter-grid">
+          <label>
+            <span>From</span>
+            <input id="agentQaLeaderboardFrom" class="form-control" type="date" value="${escapeHtml(filters.from)}" />
+          </label>
+          <label>
+            <span>To</span>
+            <input id="agentQaLeaderboardTo" class="form-control" type="date" value="${escapeHtml(filters.to)}" />
+          </label>
+          <label>
+            <span>Agent</span>
+            <input id="agentQaLeaderboardAgent" class="form-control" type="search" value="${escapeHtml(filters.agent)}" placeholder="email or name" />
+          </label>
+          <div class="ai-qa-review-filter-actions">
+            <button id="agentQaLeaderboardFilterBtn" class="btn btn-primary" type="button">Filter</button>
+            <button id="agentQaLeaderboardResetBtn" class="btn btn-outline-secondary" type="button">Reset</button>
+          </div>
+        </div>
+      </div>
+      <div class="table-shell agent-qa-leaderboard-shell">
+        ${
+          stateSlice.loading
+            ? '<div class="empty-state">Loading leaderboard...</div>'
+            : stateSlice.error
+              ? `<div class="empty-state analytics-error">${escapeHtml(stateSlice.error)}</div>`
+              : rows.length
+                ? `<div class="table-responsive">
+                    <table class="table align-middle agent-qa-leaderboard-table">
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>Agent</th>
+                          <th>Score</th>
+                          <th>Rated</th>
+                          <th>Passed</th>
+                          <th>Failed</th>
+                          <th>Manual</th>
+                          <th>Not rateable</th>
+                          <th>Top tags</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${rows
+                          .map((row, index) => {
+                            const topTags = Object.entries(row.tags || {})
+                              .sort((left, right) => right[1] - left[1])
+                              .slice(0, 6)
+                              .map(([tag, count]) => `${tag} (${count})`);
+                            return `
+                              <tr>
+                                <td>${index + 1}</td>
+                                <td><strong>${escapeHtml(row.agent)}</strong><div class="subtle">${Number(row.reviews || 0)} review(s)</div></td>
+                                <td><span class="chip ${Number(row.score) >= 90 ? "chip-success" : Number(row.score) >= 75 ? "chip-warning" : "chip-danger"}">${row.score === null ? "-" : `${escapeHtml(row.score)}%`}</span></td>
+                                <td>${Number(row.rated || 0)}</td>
+                                <td>${Number(row.passed || 0)}</td>
+                                <td>${Number(row.failed || 0)}</td>
+                                <td>${Number(row.manual || 0)}</td>
+                                <td>${Number(row.notRateable || 0)}</td>
+                                <td>${escapeHtml(topTags.join(", ") || "-")}</td>
+                              </tr>
+                            `;
+                          })
+                          .join("")}
+                      </tbody>
+                    </table>
+                  </div>`
+                : '<div class="empty-state">No reviewed agent QA data yet.</div>'
+        }
       </div>
     </section>
   `;
@@ -3442,6 +5087,51 @@ function exportHelpdeskAnalyticsExcel() {
 
   downloadBlobFile(helpdeskAnalyticsExportFilename("xlsx"), xlsxWorkbookBlob(helpdeskAnalyticsWorkbookSheets()));
   setMessage(statusMessage, "HelpDesk analytics XLSX export downloaded.");
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(`${reader.result || ""}`.split(",")[1] || "");
+    reader.onerror = () => reject(reader.error || new Error("Failed to read report file."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function sendHelpdeskAnalyticsSlack() {
+  if (!state.helpdesk_analytics.data) {
+    setMessage(statusMessage, "Load HelpDesk analytics before sending to Slack.", "error");
+    return;
+  }
+  if (state.helpdesk_analytics.slackSending) return;
+
+  const metric = helpdeskAnalyticsMetricConfig();
+  const period = helpdeskAnalyticsPeriodLabel();
+  const filename = helpdeskAnalyticsExportFilename("xlsx");
+  const title = `HelpDesk analytics - ${metric.tabLabel} - ${period}`;
+
+  state.helpdesk_analytics.slackSending = true;
+  renderHelpdeskAnalytics();
+  setMessage(statusMessage, "Sending HelpDesk analytics to Slack...");
+
+  try {
+    const fileBase64 = await blobToBase64(xlsxWorkbookBlob(helpdeskAnalyticsWorkbookSheets()));
+    await api("/api/helpdesk/analytics-slack", {
+      method: "POST",
+      body: {
+        filename,
+        title,
+        initialComment: `${title} attached.`,
+        fileBase64,
+      },
+    });
+    setMessage(statusMessage, "HelpDesk analytics sent to Slack.", "success");
+  } catch (error) {
+    setMessage(statusMessage, error.message, "error");
+  } finally {
+    state.helpdesk_analytics.slackSending = false;
+    renderHelpdeskAnalytics();
+  }
 }
 
 function pdfSafeText(value) {
@@ -4968,6 +6658,7 @@ function renderHelpdeskAnalytics() {
     <button id="helpdeskAnalyticsApplyBtn" class="btn btn-primary" type="button">Filter</button>
     <button id="helpdeskAnalyticsPdfBtn" class="btn btn-outline-secondary" type="button" ${data ? "" : "disabled"}>Export PDF</button>
     <button id="helpdeskAnalyticsExcelBtn" class="btn btn-outline-secondary" type="button" ${data ? "" : "disabled"}>Export Excel</button>
+    <button id="helpdeskAnalyticsSlackBtn" class="btn btn-outline-secondary" type="button" ${data && !state.helpdesk_analytics.slackSending ? "" : "disabled"}>${state.helpdesk_analytics.slackSending ? "Sending..." : "Send to Slack"}</button>
     <button id="helpdeskAnalyticsResetBtn" class="btn btn-outline-secondary" type="button">Reset filters</button>
   `;
   filterBarContainer.appendChild(actionBar);
@@ -5014,6 +6705,9 @@ function renderHelpdeskAnalytics() {
   });
   document.getElementById("helpdeskAnalyticsExcelBtn")?.addEventListener("click", () => {
     exportHelpdeskAnalyticsExcel();
+  });
+  document.getElementById("helpdeskAnalyticsSlackBtn")?.addEventListener("click", () => {
+    sendHelpdeskAnalyticsSlack();
   });
   document.getElementById("helpdeskAnalyticsResetBtn")?.addEventListener("click", () => {
     resetHelpdeskAnalyticsFilters();
@@ -6097,11 +7791,15 @@ async function mergeHelpdeskTodayTickets(parentTicketId, childTicketIds) {
 
 function currentSectionTitle() {
   const titles = {
+    "qa-dashboard": "QA Manager Dashboard",
     "livechat-users": "LiveChat Users",
     "livechat-groups": "LiveChat Groups",
     "create-livechat-user": "Create LiveChat User",
     "livechat-analytics": "LiveChat Analytics",
-    "livechat-ai-qa-tagging": "LiveChat AI_QA_Tagging",
+    "livechat-ai-qa-tagging": "Chats pre-AI-analysis",
+    "livechat-ai-qa-review": "Manual AI auto-tag review",
+    "livechat-agent-qa-review": "Manual AI QA Review",
+    "livechat-agent-qa-leaderboard": "AI QA leaderboard",
     "helpdesk-users": "HelpDesk Users",
     "helpdesk-groups": "HelpDesk Groups",
     "create-helpdesk-user": "Create HelpDesk User",
@@ -6442,6 +8140,8 @@ function renderModal() {
 
 function renderApp() {
   const filterBar = document.getElementById("filterBar");
+  ensureAllowedSection();
+  syncSidebarAccess();
   pageTitle.textContent = currentSectionTitle();
   if (state.section !== "helpdesk-tickets") {
     stopHelpdeskTicketsRealtime();
@@ -6450,10 +8150,18 @@ function renderApp() {
     stopHelpdeskWorkflowsRealtime();
   }
   document.querySelectorAll(".sidebar-link").forEach((button) => {
-    button.classList.toggle("active", button.dataset.section === state.section);
+    const section = button.dataset.section;
+    const active =
+      section === state.section ||
+      (section === "livechat-ai-qa-tagging" &&
+        ["livechat-ai-qa-review", "livechat-agent-qa-review", "livechat-agent-qa-leaderboard"].includes(state.section));
+    button.classList.toggle("active", active);
   });
 
-  if (state.section === "livechat-users") {
+  if (state.section === "qa-dashboard") {
+    appContent.innerHTML = renderQaDashboard();
+    filterBar.classList.add("d-none");
+  } else if (state.section === "livechat-users") {
     appContent.innerHTML = renderLiveChatUsers();
     filterBar.classList.add("d-none");
   } else if (state.section === "livechat-groups") {
@@ -6467,6 +8175,15 @@ function renderApp() {
     filterBar.classList.add("d-none");
   } else if (state.section === "livechat-ai-qa-tagging") {
     appContent.innerHTML = renderLivechatAiQaTagging();
+    filterBar.classList.add("d-none");
+  } else if (state.section === "livechat-ai-qa-review") {
+    appContent.innerHTML = renderLivechatAiQaReview();
+    filterBar.classList.add("d-none");
+  } else if (state.section === "livechat-agent-qa-review") {
+    appContent.innerHTML = renderLivechatAgentQaReview();
+    filterBar.classList.add("d-none");
+  } else if (state.section === "livechat-agent-qa-leaderboard") {
+    appContent.innerHTML = renderAgentQaLeaderboard();
     filterBar.classList.add("d-none");
   } else if (state.section === "helpdesk-analytics") {
     filterBar.classList.add("d-none");
@@ -6502,12 +8219,48 @@ function renderApp() {
   }
 
   if (
+    state.section === "qa-dashboard" &&
+    !state.qaDashboard.loading &&
+    !state.qaDashboard.loaded &&
+    !state.qaDashboard.error
+  ) {
+    fetchQaDashboard();
+  }
+
+  if (
     state.section === "livechat-ai-qa-tagging" &&
     !state.livechatAiQa.loading &&
     !state.livechatAiQa.loaded &&
     !state.livechatAiQa.error
   ) {
     fetchLivechatAiQaTagging();
+  }
+
+  if (
+    state.section === "livechat-ai-qa-review" &&
+    !state.livechatAiQaReview.loading &&
+    !state.livechatAiQaReview.loaded &&
+    !state.livechatAiQaReview.error
+  ) {
+    fetchLivechatAiQaReviews();
+  }
+
+  if (
+    state.section === "livechat-agent-qa-review" &&
+    !state.livechatAgentQaReview.loading &&
+    !state.livechatAgentQaReview.loaded &&
+    !state.livechatAgentQaReview.error
+  ) {
+    fetchLivechatAgentQaReviews();
+  }
+
+  if (
+    state.section === "livechat-agent-qa-leaderboard" &&
+    !state.livechatAgentQaLeaderboard.loading &&
+    !state.livechatAgentQaLeaderboard.loaded &&
+    !state.livechatAgentQaLeaderboard.error
+  ) {
+    fetchLivechatAgentQaLeaderboard();
   }
 
   if (
@@ -6560,13 +8313,22 @@ function renderApp() {
 
 async function refreshData() {
   setMessage(statusMessage, "Refreshing...");
+  const canLoadAdminData = canManageAdmins();
+  const canLoadManagementData = isAdminRole();
 
-  const [livechatResult, helpdeskResult, adminUsersResult, logsResult, workflowsResult, helpdeskAnalyticsWebhookStatsResult] = await Promise.allSettled([
+  const [
+    livechatResult,
+    helpdeskResult,
+    adminUsersResult,
+    logsResult,
+    workflowsResult,
+    helpdeskAnalyticsWebhookStatsResult,
+  ] = await Promise.allSettled([
     api("/api/livechat/dashboard"),
     api("/api/helpdesk/dashboard"),
-    api("/api/admin-users"),
-    api("/api/logs"),
-    api("/api/helpdesk/workflows"),
+    canLoadAdminData ? api("/api/admin-users") : Promise.resolve({ adminUsers: [] }),
+    canLoadAdminData ? api("/api/logs") : Promise.resolve({ logs: [], warning: "" }),
+    canLoadManagementData ? api("/api/helpdesk/workflows") : Promise.resolve({ workflows: [], webhookStats: state.helpdeskWorkflows.webhookStats }),
     api("/api/helpdesk/analytics-webhooks"),
   ]);
 
@@ -6595,9 +8357,9 @@ async function refreshData() {
   const warnings = [
     livechatResult.status !== "fulfilled" ? `LiveChat: ${livechatResult.reason.message}` : "",
     helpdeskResult.status !== "fulfilled" ? `HelpDesk: ${helpdeskResult.reason.message}` : "",
-    adminUsersResult.status !== "fulfilled" ? `Admin users: ${adminUsersResult.reason.message}` : "",
+    canLoadAdminData && adminUsersResult.status !== "fulfilled" ? `Admin users: ${adminUsersResult.reason.message}` : "",
     state.logsWarning,
-    workflowsResult.status !== "fulfilled" ? `Workflows: ${workflowsResult.reason.message}` : "",
+    canLoadManagementData && workflowsResult.status !== "fulfilled" ? `Workflows: ${workflowsResult.reason.message}` : "",
     helpdeskAnalyticsWebhookStatsResult.status !== "fulfilled"
       ? `HelpDesk analytics webhooks: ${helpdeskAnalyticsWebhookStatsResult.reason.message}`
       : "",
@@ -6782,13 +8544,9 @@ function rerenderPreservingInput(inputId) {
 }
 
 function bindAppEvents() {
-  if (accountSelect) {
-    accountSelect.value = normalizeAccountId(state.accountId);
-    accountSelect.onchange = () => switchAccount(accountSelect.value);
-  }
-
   document.querySelectorAll(".sidebar-link").forEach((button) => {
     button.onclick = () => {
+      if (!canAccessSection(button.dataset.section)) return;
       state.section = button.dataset.section;
       renderApp();
     };
@@ -6942,6 +8700,101 @@ function bindAppEvents() {
       }
       renderApp();
     };
+  });
+  bindClick("aiQaReviewFilterBtn", () => {
+    syncLivechatAiQaReviewFiltersFromDom();
+    fetchLivechatAiQaReviews();
+  });
+  bindClick("aiQaReviewResetBtn", () => {
+    resetLivechatAiQaReviewFilters();
+    fetchLivechatAiQaReviews();
+  });
+  bindClick("aiQaReviewsReloadBtn", () => {
+    fetchLivechatAiQaReviews({ keepSelection: true });
+  });
+  bindClick("aiQaReviewsProcessBtn", () => {
+    processLivechatAiQaReviews({ selected: false, force: false });
+  });
+  bindClick("aiQaApproveBtn", () => {
+    approveLivechatAiQaReview();
+  });
+  bindClick("aiQaCorrectBtn", () => {
+    correctLivechatAiQaReview();
+  });
+  bindClick("aiQaRetryBtn", () => {
+    processLivechatAiQaReviews({ selected: true, force: true });
+  });
+  document.querySelectorAll('input[name="aiQaFinalTag"]').forEach((input) => {
+    input.onchange = refreshAiQaFeedbackVisibility;
+  });
+  document.querySelectorAll("[data-ai-qa-review-open]").forEach((button) => {
+    button.onclick = () => {
+      fetchLivechatAiQaReviewDetail(button.dataset.aiQaReviewOpen);
+    };
+  });
+  document.querySelectorAll("[data-ai-qa-review-page]").forEach((button) => {
+    button.onclick = () => {
+      const direction = button.dataset.aiQaReviewPage;
+      const totalPages = Math.max(1, Math.ceil((state.livechatAiQaReview.total || 0) / state.livechatAiQaReview.pageSize));
+      state.livechatAiQaReview.page =
+        direction === "next"
+          ? Math.min(totalPages, state.livechatAiQaReview.page + 1)
+          : Math.max(1, state.livechatAiQaReview.page - 1);
+      fetchLivechatAiQaReviews();
+    };
+  });
+  bindClick("agentQaReviewFilterBtn", () => {
+    syncLivechatAgentQaReviewFiltersFromDom();
+    fetchLivechatAgentQaReviews();
+  });
+  bindClick("agentQaReviewResetBtn", () => {
+    resetLivechatAgentQaReviewFilters();
+    fetchLivechatAgentQaReviews();
+  });
+  bindClick("agentQaReviewsReloadBtn", () => {
+    fetchLivechatAgentQaReviews({ keepSelection: true });
+  });
+  bindClick("agentQaReviewsProcessBtn", () => {
+    processLivechatAgentQaReviews({ selected: false, force: false });
+  });
+  bindClick("agentQaApproveBtn", () => {
+    approveLivechatAgentQaReview();
+  });
+  bindClick("agentQaCorrectBtn", () => {
+    correctLivechatAgentQaReview();
+  });
+  bindClick("agentQaRetryBtn", () => {
+    processLivechatAgentQaReviews({ selected: true, force: true });
+  });
+  document.querySelectorAll('select[name="agentQaFinalTag"]').forEach((select) => {
+    select.onchange = refreshAgentQaFeedbackVisibility;
+  });
+  document.querySelectorAll("[data-agent-qa-review-open]").forEach((button) => {
+    button.onclick = () => {
+      fetchLivechatAgentQaReviewDetail(button.dataset.agentQaReviewOpen);
+    };
+  });
+  document.querySelectorAll("[data-agent-qa-review-page]").forEach((button) => {
+    button.onclick = () => {
+      const direction = button.dataset.agentQaReviewPage;
+      const totalPages = Math.max(1, Math.ceil((state.livechatAgentQaReview.total || 0) / state.livechatAgentQaReview.pageSize));
+      state.livechatAgentQaReview.page =
+        direction === "next"
+          ? Math.min(totalPages, state.livechatAgentQaReview.page + 1)
+          : Math.max(1, state.livechatAgentQaReview.page - 1);
+      fetchLivechatAgentQaReviews();
+    };
+  });
+  bindClick("agentQaLeaderboardFilterBtn", () => {
+    syncAgentQaLeaderboardFiltersFromDom();
+    fetchLivechatAgentQaLeaderboard();
+  });
+  bindClick("agentQaLeaderboardResetBtn", () => {
+    state.livechatAgentQaLeaderboard.filters = { from: "", to: "", agent: "" };
+    fetchLivechatAgentQaLeaderboard();
+  });
+  bindClick("agentQaLeaderboardReloadBtn", () => {
+    fetchLivechatAgentQaLeaderboard();
   });
   document.querySelectorAll("[data-livechat-group-filter]").forEach((button) => {
     button.onclick = () => {
@@ -7357,16 +9210,16 @@ function bindAppEvents() {
     document.querySelectorAll('input[name="create-helpdesk-team"]').forEach((input) => (input.checked = false));
   });
 
-  bindClick("generateAdminPasswordBtn", () => {
-    state.generatedAdminPassword = generatePassword();
-    renderApp();
+  bindClick("copyAdminInviteBtn", async () => {
+    if (!state.lastAdminInvite?.inviteLink) return;
+    await navigator.clipboard.writeText(state.lastAdminInvite.inviteLink);
+    setMessage(statusMessage, "Invitation link copied.", "success");
   });
 
-  bindClick("copyAdminCredentialsBtn", async () => {
-    const username = document.getElementById("adminUsername")?.value || "";
-    const password = document.getElementById("adminPassword")?.value || "";
-    await navigator.clipboard.writeText(buildCopyCredentialsText(username, password));
-    setMessage(statusMessage, "Credentials copied.", "success");
+  document.getElementById("adminUserRole")?.addEventListener("change", (event) => {
+    const role = event.target.value;
+    document.getElementById("adminAccessLevel").value = role === "qa_manager" ? "qa_manager" : "full";
+    document.querySelectorAll(".admin-permission-row").forEach((row) => row.classList.toggle("d-none", role === "qa_manager"));
   });
 
   bindClick("clearHelpdeskAnalyticsCacheBtn", async () => {
@@ -7386,13 +9239,18 @@ function bindAppEvents() {
         method: "POST",
         body: {
           username: document.getElementById("adminUsername").value.trim(),
-          password: document.getElementById("adminPassword").value,
+          firstName: document.getElementById("adminFirstName")?.value.trim() || "",
+          lastName: document.getElementById("adminLastName")?.value.trim() || "",
+          inviteEmail: document.getElementById("adminInviteEmail")?.value.trim() || "",
+          userRole: document.getElementById("adminUserRole")?.value || "qa_manager",
+          accessLevel: document.getElementById("adminAccessLevel")?.value || "",
           canManageUsers: document.getElementById("adminCanManageUsers")?.checked || false,
           canManageAdmins: document.getElementById("adminCanManageAdmins")?.checked || false,
         },
+      }).then((result) => {
+        state.lastAdminInvite = result.invite || null;
       });
-      state.generatedAdminPassword = document.getElementById("adminPassword").value;
-    }, "Admin user created.");
+    }, "Invitation created.");
   });
   document.querySelectorAll("[data-admin-permission]").forEach((input) => {
     input.onchange = async () => {
@@ -7405,6 +9263,11 @@ function bindAppEvents() {
           body: {
             action: "update_permissions",
             username,
+            userRole: user.user_role || "admin",
+            accessLevel: user.access_level || "",
+            firstName: user.first_name || "",
+            lastName: user.last_name || "",
+            inviteEmail: user.invite_email || "",
             canManageUsers:
               input.dataset.adminPermission === "canManageUsers"
                 ? input.checked
@@ -7675,10 +9538,40 @@ document.addEventListener("click", async (event) => {
 
 loginForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  setMessage(loginMessage, "Signing in...");
+  setMessage(loginMessage, state.inviteSetup ? "Setting up account..." : "Signing in...");
 
   try {
     const formData = new FormData(loginForm);
+    if (state.inviteSetup) {
+      const result = await api("/api/auth/invite-setup", {
+        method: "POST",
+        body: {
+          token: state.inviteSetup.token,
+          username: `${formData.get("username") || ""}`.trim(),
+          password: `${formData.get("inviteNewPassword") || ""}`,
+          otp: `${formData.get("inviteOtp") || ""}`,
+          setupSecret: `${formData.get("setupSecret") || state.inviteSetup.setupSecret || ""}`,
+        },
+      });
+      if (!result.ok && result.requiresInviteSetup) {
+        state.inviteSetup = {
+          ...state.inviteSetup,
+          username: `${formData.get("username") || ""}`.trim(),
+          setupSecret: result.setupSecret || "",
+          otpauthUri: result.otpauthUri || "",
+        };
+        renderLoginChallenge();
+        setMessage(loginMessage, result.message || "Continue account setup.", "info");
+        return;
+      }
+      state.inviteSetup = null;
+      window.history.replaceState({}, document.title, window.location.pathname);
+      setMessage(loginMessage, "Account is ready. Sign in with your new password.", "success");
+      loginForm.reset();
+      renderLoginChallenge();
+      return;
+    }
+
     const result = await api("/api/auth/login", {
       method: "POST",
       body: {

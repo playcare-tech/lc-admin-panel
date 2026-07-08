@@ -7,6 +7,9 @@ pages_build_output_dir = "."
 LIVECHAT_API_VERSION = "v3.6"
 HELPDESK_ANALYTICS_TZ_OFFSET = "-120"
 
+[ai]
+binding = "AI"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "live_chat_admin"

@@ -47,12 +47,21 @@
       <aside class="sidebar">
         <div class="sidebar-brand">Playcare CS Admin Panel</div>
         <div class="sidebar-group">
+          <div class="sidebar-label">Home</div>
+          <button class="sidebar-link" data-section="qa-dashboard">QA dashboard</button>
+        </div>
+        <div class="sidebar-group">
           <div class="sidebar-label">LiveChat</div>
           <button class="sidebar-link active" data-section="livechat-users">Users</button>
           <button class="sidebar-link" data-section="livechat-groups">Groups</button>
           <button class="sidebar-link" data-section="create-livechat-user">Create user</button>
           <button class="sidebar-link" data-section="livechat-analytics">Analytics</button>
-          <button class="sidebar-link" data-section="livechat-ai-qa-tagging">AI_QA_Tagging</button>
+          <button class="sidebar-link" data-section="livechat-ai-qa-tagging">Chats pre-AI-analysis</button>
+          <div class="sidebar-submenu">
+            <button class="sidebar-link sidebar-sublink" data-section="livechat-ai-qa-review">Manual AI auto-tag review</button>
+            <button class="sidebar-link sidebar-sublink" data-section="livechat-agent-qa-review">Manual AI QA Review</button>
+            <button class="sidebar-link sidebar-sublink" data-section="livechat-agent-qa-leaderboard">AI QA leaderboard</button>
+          </div>
         </div>
         <div class="sidebar-group">
           <div class="sidebar-label">HelpDesk</div>
@@ -79,13 +88,6 @@
             <div id="statusMessage" class="status-line mt-1" aria-live="polite"></div>
           </div>
           <div class="topbar-actions">
-            <label class="account-switcher">
-              <span>Account</span>
-              <select id="accountSelect" class="form-select form-select-sm">
-                <option value="default">Playcare</option>
-                <option value="playtraffpartners">playtraffpartners</option>
-              </select>
-            </label>
             <span id="sessionBadge" class="session-badge"></span>
             <button id="refreshBtn" class="btn btn-sm btn-outline-secondary">Refresh</button>
             <button id="logoutBtn" class="btn btn-sm btn-outline-secondary">Logout</button>

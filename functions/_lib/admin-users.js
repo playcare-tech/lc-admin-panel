@@ -1,5 +1,5 @@
 const CREATE_ADMIN_USERS_SQL =
-  "CREATE TABLE IF NOT EXISTS admin_users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT, totp_secret TEXT, totp_enabled INTEGER NOT NULL DEFAULT 0, totp_setup_required INTEGER NOT NULL DEFAULT 1, password_reset_required INTEGER NOT NULL DEFAULT 0, totp_reset_at TEXT, totp_reset_by TEXT, totp_failed_attempts INTEGER NOT NULL DEFAULT 0, totp_first_failed_at TEXT, totp_locked_until TEXT, can_manage_users INTEGER NOT NULL DEFAULT 0, can_manage_admins INTEGER NOT NULL DEFAULT 0, disabled_at TEXT, disabled_by TEXT)";
+  "CREATE TABLE IF NOT EXISTS admin_users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT, totp_secret TEXT, totp_enabled INTEGER NOT NULL DEFAULT 0, totp_setup_required INTEGER NOT NULL DEFAULT 1, password_reset_required INTEGER NOT NULL DEFAULT 0, totp_reset_at TEXT, totp_reset_by TEXT, totp_failed_attempts INTEGER NOT NULL DEFAULT 0, totp_first_failed_at TEXT, totp_locked_until TEXT, can_manage_users INTEGER NOT NULL DEFAULT 0, can_manage_admins INTEGER NOT NULL DEFAULT 0, user_role TEXT NOT NULL DEFAULT 'admin', access_level TEXT NOT NULL DEFAULT 'full', first_name TEXT, last_name TEXT, invite_email TEXT, invite_token_hash TEXT, invite_expires_at TEXT, invite_accepted_at TEXT, disabled_at TEXT, disabled_by TEXT)";
 
 const CREATE_ADMIN_USERS_INDEX_SQL =
   "CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users (username)";
@@ -24,6 +24,7 @@ const TOTP_RATE_LIMIT_MAX_ATTEMPTS = 5;
 const TOTP_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const TOTP_RATE_LIMIT_LOCK_MS = 15 * 60 * 1000;
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function bytesToBase64(bytes) {
   let binary = "";
@@ -126,6 +127,11 @@ async function hashPassword(password, salt) {
 
 async function hashRateLimitIdentifier(value) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return bytesToBase64Url(new Uint8Array(digest));
+}
+
+async function hashInviteToken(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${value || ""}`));
   return bytesToBase64Url(new Uint8Array(digest));
 }
 
@@ -242,11 +248,21 @@ export async function ensureAdminUsersTable(db) {
   await ensureColumn(db, columns, "totp_locked_until", "TEXT");
   const addedCanManageUsers = await ensureColumn(db, columns, "can_manage_users", "INTEGER NOT NULL DEFAULT 0");
   const addedCanManageAdmins = await ensureColumn(db, columns, "can_manage_admins", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn(db, columns, "user_role", "TEXT NOT NULL DEFAULT 'admin'");
+  await ensureColumn(db, columns, "access_level", "TEXT NOT NULL DEFAULT 'full'");
+  await ensureColumn(db, columns, "first_name", "TEXT");
+  await ensureColumn(db, columns, "last_name", "TEXT");
+  await ensureColumn(db, columns, "invite_email", "TEXT");
+  await ensureColumn(db, columns, "invite_token_hash", "TEXT");
+  await ensureColumn(db, columns, "invite_expires_at", "TEXT");
+  await ensureColumn(db, columns, "invite_accepted_at", "TEXT");
   await ensureColumn(db, columns, "disabled_at", "TEXT");
   await ensureColumn(db, columns, "disabled_by", "TEXT");
   if (addedCanManageUsers || addedCanManageAdmins) {
     await db.prepare("UPDATE admin_users SET can_manage_users = 1, can_manage_admins = 1").run();
   }
+  await db.prepare("UPDATE admin_users SET user_role = 'admin' WHERE user_role IS NULL OR user_role = ''").run();
+  await db.prepare("UPDATE admin_users SET access_level = 'full' WHERE access_level IS NULL OR access_level = ''").run();
 }
 
 export async function listAdminUsers(env) {
@@ -254,6 +270,7 @@ export async function listAdminUsers(env) {
   const { results } = await env.DB.prepare(
     `
       SELECT id, username, created_at, created_by, totp_enabled, totp_setup_required, password_reset_required, totp_reset_at, totp_reset_by, totp_failed_attempts, totp_first_failed_at, totp_locked_until, can_manage_users, can_manage_admins, disabled_at, disabled_by
+        , user_role, access_level, first_name, last_name, invite_email, invite_expires_at, invite_accepted_at
       FROM admin_users
       ORDER BY username ASC
     `,
@@ -267,6 +284,7 @@ export async function findAdminUserByUsername(env, username) {
   const result = await env.DB.prepare(
     `
       SELECT id, username, password_salt, password_hash, created_at, created_by, totp_secret, totp_enabled, totp_setup_required, password_reset_required, totp_reset_at, totp_reset_by, totp_failed_attempts, totp_first_failed_at, totp_locked_until, can_manage_users, can_manage_admins, disabled_at, disabled_by
+        , user_role, access_level, first_name, last_name, invite_email, invite_token_hash, invite_expires_at, invite_accepted_at
       FROM admin_users
       WHERE username = ?
       LIMIT 1
@@ -278,9 +296,27 @@ export async function findAdminUserByUsername(env, username) {
   return result || null;
 }
 
-export async function createAdminUser(env, { username, password, createdBy, canManageUsers = false, canManageAdmins = false }) {
+export async function createAdminUser(env, {
+  username,
+  password,
+  createdBy,
+  canManageUsers = false,
+  canManageAdmins = false,
+  userRole = "admin",
+  accessLevel = "",
+  firstName = "",
+  lastName = "",
+  inviteEmail = "",
+  inviteOrigin = "",
+} = {}) {
   await ensureAdminUsersTable(env.DB);
-  validateAdminPassword(password);
+  const normalizedRole = userRole === "qa_manager" ? "qa_manager" : "admin";
+  const normalizedAccessLevel = accessLevel || (normalizedRole === "qa_manager" ? "qa_manager" : "full");
+  const inviteToken = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+  const inviteTokenHash = await hashInviteToken(inviteToken);
+  const inviteExpiresAt = new Date(Date.now() + INVITE_TTL_MS).toISOString();
+  const initialPassword = password || generateTemporaryPassword();
+  validateAdminPassword(initialPassword);
 
   const existing = await findAdminUserByUsername(env, username);
   if (existing) {
@@ -288,16 +324,39 @@ export async function createAdminUser(env, { username, password, createdBy, canM
   }
 
   const salt = createSalt();
-  const hash = await hashPassword(password, salt);
+  const hash = await hashPassword(initialPassword, salt);
 
   await env.DB.prepare(
     `
-      INSERT INTO admin_users (username, password_salt, password_hash, created_at, created_by, password_reset_required, totp_setup_required, can_manage_users, can_manage_admins)
-      VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)
+      INSERT INTO admin_users (
+        username, password_salt, password_hash, created_at, created_by, password_reset_required, totp_setup_required,
+        can_manage_users, can_manage_admins, user_role, access_level, first_name, last_name, invite_email,
+        invite_token_hash, invite_expires_at
+      )
+      VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
   )
-    .bind(username, salt, hash, new Date().toISOString(), createdBy || null, canManageUsers ? 1 : 0, canManageAdmins ? 1 : 0)
+    .bind(
+      username,
+      salt,
+      hash,
+      new Date().toISOString(),
+      createdBy || null,
+      canManageUsers ? 1 : 0,
+      canManageAdmins ? 1 : 0,
+      normalizedRole,
+      normalizedAccessLevel,
+      firstName || null,
+      lastName || null,
+      inviteEmail || null,
+      inviteTokenHash,
+      inviteExpiresAt,
+    )
     .run();
+
+  const origin = `${inviteOrigin || ""}`.replace(/\/+$/g, "");
+  const inviteLink = `${origin || ""}/?invite=${encodeURIComponent(inviteToken)}&username=${encodeURIComponent(username)}`;
+  return { username, inviteToken, inviteLink, inviteExpiresAt };
 }
 
 export async function verifyAdminCredentials(env, username, password, preloadedUser) {
@@ -401,10 +460,41 @@ export async function clearAdminLoginRateLimit(env, request, username) {
 }
 
 export function adminPermissions(user) {
+  const role = user?.user_role === "qa_manager" ? "qa_manager" : "admin";
+  const qaPermissions = {
+    canViewQaDashboard: true,
+    canViewLivechatAiQaTagging: true,
+    canReviewLivechatAiAutoTags: true,
+    canReviewLivechatAgentQa: true,
+    canViewLivechatAgentQaLeaderboard: true,
+    canViewHelpdeskAnalytics: true,
+  };
+  if (role === "qa_manager") {
+    return {
+      role,
+      accessLevel: user?.access_level || "qa_manager",
+      canManageUsers: false,
+      canManageAdmins: false,
+      ...qaPermissions,
+    };
+  }
   return {
+    role,
+    accessLevel: user?.access_level || "full",
     canManageUsers: Boolean(user?.can_manage_users),
     canManageAdmins: Boolean(user?.can_manage_admins),
+    canViewQaDashboard: true,
+    canViewLivechatAiQaTagging: true,
+    canReviewLivechatAiAutoTags: true,
+    canReviewLivechatAgentQa: true,
+    canViewLivechatAgentQaLeaderboard: true,
+    canViewHelpdeskAnalytics: true,
   };
+}
+
+function generateTemporaryPassword() {
+  const token = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(18)));
+  return `Temp-${token}!A1a`;
 }
 
 export function generateTotpSecret() {
@@ -581,18 +671,92 @@ export async function resetAdminTotp(env, username, resetBy) {
     .run();
 }
 
-export async function updateAdminPermissions(env, username, { canManageUsers = false, canManageAdmins = false } = {}) {
+export async function updateAdminPermissions(env, username, {
+  canManageUsers = false,
+  canManageAdmins = false,
+  userRole = "admin",
+  accessLevel = "",
+  firstName = "",
+  lastName = "",
+  inviteEmail = "",
+} = {}) {
   await ensureAdminUsersTable(env.DB);
+  const normalizedRole = userRole === "qa_manager" ? "qa_manager" : "admin";
+  const normalizedAccessLevel = accessLevel || (normalizedRole === "qa_manager" ? "qa_manager" : "full");
   const result = await env.DB.prepare(
     `
       UPDATE admin_users
-      SET can_manage_users = ?, can_manage_admins = ?
+      SET can_manage_users = ?,
+          can_manage_admins = ?,
+          user_role = ?,
+          access_level = ?,
+          first_name = ?,
+          last_name = ?,
+          invite_email = ?
       WHERE username = ?
     `,
   )
-    .bind(canManageUsers ? 1 : 0, canManageAdmins ? 1 : 0, username)
+    .bind(
+      normalizedRole === "qa_manager" ? 0 : canManageUsers ? 1 : 0,
+      normalizedRole === "qa_manager" ? 0 : canManageAdmins ? 1 : 0,
+      normalizedRole,
+      normalizedAccessLevel,
+      firstName || null,
+      lastName || null,
+      inviteEmail || null,
+      username,
+    )
     .run();
   if (!result.meta?.changes) throw new Error("Admin user was not found.");
+}
+
+export async function setupInvitedAdminUser(env, { token, username, password, setupSecret, otp } = {}) {
+  await ensureAdminUsersTable(env.DB);
+  validateAdminPassword(password);
+  const user = await findValidAdminInvite(env, { token, username });
+  if (!(await verifyTotpCode(setupSecret, otp))) throw new Error("Invalid 2FA setup code.");
+
+  const salt = createSalt();
+  const hash = await hashPassword(password, salt);
+  await env.DB.prepare(
+    `
+      UPDATE admin_users
+      SET password_salt = ?,
+          password_hash = ?,
+          password_reset_required = 0,
+          totp_secret = ?,
+          totp_enabled = 1,
+          totp_setup_required = 0,
+          invite_accepted_at = ?,
+          invite_token_hash = NULL,
+          totp_failed_attempts = 0,
+          totp_first_failed_at = NULL,
+          totp_locked_until = NULL
+      WHERE username = ?
+    `,
+  )
+    .bind(salt, hash, setupSecret, new Date().toISOString(), user.username)
+    .run();
+  return { ok: true, username: user.username };
+}
+
+export async function findValidAdminInvite(env, { token, username } = {}) {
+  await ensureAdminUsersTable(env.DB);
+  const tokenHash = await hashInviteToken(token);
+  const user = await env.DB.prepare(
+    `
+      SELECT username, invite_expires_at, invite_accepted_at
+      FROM admin_users
+      WHERE username = ? AND invite_token_hash = ?
+      LIMIT 1
+    `,
+  )
+    .bind(username, tokenHash)
+    .first();
+  if (!user) throw new Error("Invitation link is invalid.");
+  if (user.invite_accepted_at) throw new Error("Invitation link was already used.");
+  if (!user.invite_expires_at || Date.parse(user.invite_expires_at) < Date.now()) throw new Error("Invitation link expired.");
+  return user;
 }
 
 export async function setAdminDisabled(env, username, disabled, actor) {

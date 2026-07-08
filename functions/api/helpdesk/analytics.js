@@ -1,4 +1,4 @@
-import { requireAuth } from "../../_lib/auth.js";
+import { requirePermission } from "../../_lib/auth.js";
 import { accountIndexName, accountTableName, withAccountContext } from "../../_lib/accounts.js";
 import { helpDeskAnalyticsAgentEmail } from "../../_lib/helpdesk-analytics-agents.js";
 import { errorResponse, json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
@@ -861,7 +861,7 @@ function rowsToResponse(rows, from, to, agentDirectory, cache = {}, detailRows =
 export async function onRequest(context) {
   if (context.request.method !== "GET") return methodNotAllowed(["GET"]);
 
-  const auth = await requireAuth(context);
+  const auth = await requirePermission(context, "canViewHelpdeskAnalytics");
   if (auth.error) return auth.error;
   context = withAccountContext(context);
 

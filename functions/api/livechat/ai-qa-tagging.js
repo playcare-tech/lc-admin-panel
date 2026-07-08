@@ -1,5 +1,5 @@
 import { withAccountContext } from "../../_lib/accounts.js";
-import { requireAuth } from "../../_lib/auth.js";
+import { requirePermission } from "../../_lib/auth.js";
 import { json, methodNotAllowed, serverErrorResponse } from "../../_lib/http.js";
 import { listLivechatAiQaChats } from "../../_lib/livechat-ai-qa-tagging.js";
 
@@ -14,7 +14,7 @@ export async function onRequest(context) {
     return methodNotAllowed(["GET"]);
   }
 
-  const auth = await requireAuth(context);
+  const auth = await requirePermission(context, "canViewLivechatAiQaTagging");
   if (auth.error) {
     return auth.error;
   }

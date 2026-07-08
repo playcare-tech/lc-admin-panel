@@ -34,6 +34,7 @@ export async function onRequest(context) {
     if (auth.error) {
       return auth.error;
     }
+    if (!auth.session.permissions?.canManageAdmins) return errorResponse("Forbidden.", 403);
 
     try {
       return json({
@@ -81,6 +82,11 @@ export async function onRequest(context) {
         await updateAdminPermissions(context.env, username, {
           canManageUsers: Boolean(body.canManageUsers),
           canManageAdmins: Boolean(body.canManageAdmins),
+          userRole: body.userRole || body.user_role || "admin",
+          accessLevel: body.accessLevel || body.access_level || "",
+          firstName: `${body.firstName || body.first_name || ""}`.trim(),
+          lastName: `${body.lastName || body.last_name || ""}`.trim(),
+          inviteEmail: `${body.inviteEmail || body.invite_email || ""}`.trim(),
         });
 
         await writeLogSafely(context.env, {
@@ -147,17 +153,24 @@ export async function onRequest(context) {
       const body = await readJson(context.request);
       const username = `${body.username || ""}`.trim();
       const password = `${body.password || ""}`;
+      const userRole = `${body.userRole || ""}` === "qa_manager" ? "qa_manager" : "admin";
 
-      if (!username || !password) {
-        return errorResponse("Username and password are required.", 400);
+      if (!username) {
+        return errorResponse("Username is required.", 400);
       }
 
-      await createAdminUser(context.env, {
+      const invite = await createAdminUser(context.env, {
         username,
-        password,
+        password: password || "",
         createdBy: auth.session.user,
-        canManageUsers: Boolean(body.canManageUsers),
-        canManageAdmins: Boolean(body.canManageAdmins),
+        canManageUsers: userRole === "admin" && Boolean(body.canManageUsers),
+        canManageAdmins: userRole === "admin" && Boolean(body.canManageAdmins),
+        userRole,
+        accessLevel: `${body.accessLevel || ""}`.trim(),
+        firstName: `${body.firstName || ""}`.trim(),
+        lastName: `${body.lastName || ""}`.trim(),
+        inviteEmail: `${body.inviteEmail || ""}`.trim(),
+        inviteOrigin: new URL(context.request.url).origin,
       });
 
       await writeLogSafely(context.env, {
@@ -169,7 +182,7 @@ export async function onRequest(context) {
         details: `Created admin user ${username}.`,
       });
 
-      return json({ ok: true });
+      return json({ ok: true, invite });
     } catch (error) {
       return adminErrorResponse(error, "Failed to create admin user.");
     }

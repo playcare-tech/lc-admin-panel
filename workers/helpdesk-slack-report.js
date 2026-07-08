@@ -162,6 +162,7 @@ const DEFAULT_INCLUDED_AGENT_NAMES = [
   "Anastasiya Leonchikova",
   "Nikita Tsyganov",
   "Gurgen Abelyan",
+  "Mikhail G",
   "Sofia Kalinovskaya",
   "Viktoria Zaitsava",
   "Oswald",
@@ -169,7 +170,7 @@ const DEFAULT_INCLUDED_AGENT_NAMES = [
   "Freya",
   "Rachel",
 ];
-const DEFAULT_EXCLUDED_EMAIL_DOMAINS = ["playtraffpartners.com"];
+const DEFAULT_EXCLUDED_EMAIL_DOMAINS = [];
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -278,6 +279,31 @@ function isExcludedReportAgent(env, row) {
 
 function normalizeAgentValue(value) {
   return `${value || ""}`.trim().toLowerCase();
+}
+
+function defaultAgentNameFromEmail(email) {
+  const localPart = String(email || "").split("@")[0] || "";
+  const name = localPart
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+  return name || email;
+}
+
+function defaultIncludedReportAgents() {
+  const excludedEmails = new Set(DEFAULT_EXCLUDED_AGENT_EMAILS.map(normalizeAgentValue));
+  const agents = new Map();
+  for (const email of DEFAULT_INCLUDED_AGENT_EMAILS) {
+    const normalizedEmail = normalizeAgentValue(email);
+    if (!normalizedEmail || excludedEmails.has(normalizedEmail)) continue;
+    agents.set(normalizedEmail, {
+      agentId: `default:${normalizedEmail}`,
+      name: defaultAgentNameFromEmail(normalizedEmail),
+      email: normalizedEmail,
+    });
+  }
+  return [...agents.values()];
 }
 
 function isDefaultHelpDeskAnalyticsAgent(row) {
@@ -419,6 +445,33 @@ function buildMetricReport(env, config, fromDate, toDate, dailyRows, detailRows)
       eventKey: String(detail.event_key || ""),
       points: 1,
     });
+  }
+
+  const existingEmails = new Set(
+    [...agentsById.values()]
+      .map((agent) => normalizeAgentValue(agent.email))
+      .filter(Boolean),
+  );
+  const existingNames = new Set(
+    [...agentsById.values()]
+      .map((agent) => normalizeAgentValue(agent.name))
+      .filter(Boolean),
+  );
+  for (const defaultAgent of defaultIncludedReportAgents()) {
+    const email = normalizeAgentValue(defaultAgent.email);
+    const name = normalizeAgentValue(defaultAgent.name);
+    if (existingEmails.has(email) || existingNames.has(name)) continue;
+    if (!isIncludedReportAgent(env, defaultAgent)) continue;
+    agentsById.set(defaultAgent.agentId, {
+      agentId: defaultAgent.agentId,
+      name: defaultAgent.name,
+      email: defaultAgent.email,
+      total: 0,
+      days: new Map(days.map((date) => [date, 0])),
+      details: [],
+    });
+    existingEmails.add(email);
+    existingNames.add(name);
   }
 
   for (const agent of agentsById.values()) {
