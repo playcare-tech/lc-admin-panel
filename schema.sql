@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS admin_users (
   first_name TEXT,
   last_name TEXT,
   invite_email TEXT,
+  invite_slack_user_id TEXT,
   invite_token_hash TEXT,
   invite_expires_at TEXT,
   invite_accepted_at TEXT,

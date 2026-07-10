@@ -1,5 +1,5 @@
 const CREATE_ADMIN_USERS_SQL =
-  "CREATE TABLE IF NOT EXISTS admin_users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT, totp_secret TEXT, totp_enabled INTEGER NOT NULL DEFAULT 0, totp_setup_required INTEGER NOT NULL DEFAULT 1, password_reset_required INTEGER NOT NULL DEFAULT 0, totp_reset_at TEXT, totp_reset_by TEXT, totp_failed_attempts INTEGER NOT NULL DEFAULT 0, totp_first_failed_at TEXT, totp_locked_until TEXT, can_manage_users INTEGER NOT NULL DEFAULT 0, can_manage_admins INTEGER NOT NULL DEFAULT 0, user_role TEXT NOT NULL DEFAULT 'admin', access_level TEXT NOT NULL DEFAULT 'full', first_name TEXT, last_name TEXT, invite_email TEXT, invite_token_hash TEXT, invite_expires_at TEXT, invite_accepted_at TEXT, disabled_at TEXT, disabled_by TEXT)";
+  "CREATE TABLE IF NOT EXISTS admin_users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT, totp_secret TEXT, totp_enabled INTEGER NOT NULL DEFAULT 0, totp_setup_required INTEGER NOT NULL DEFAULT 1, password_reset_required INTEGER NOT NULL DEFAULT 0, totp_reset_at TEXT, totp_reset_by TEXT, totp_failed_attempts INTEGER NOT NULL DEFAULT 0, totp_first_failed_at TEXT, totp_locked_until TEXT, can_manage_users INTEGER NOT NULL DEFAULT 0, can_manage_admins INTEGER NOT NULL DEFAULT 0, user_role TEXT NOT NULL DEFAULT 'admin', access_level TEXT NOT NULL DEFAULT 'full', first_name TEXT, last_name TEXT, invite_email TEXT, invite_slack_user_id TEXT, invite_token_hash TEXT, invite_expires_at TEXT, invite_accepted_at TEXT, disabled_at TEXT, disabled_by TEXT)";
 
 const CREATE_ADMIN_USERS_INDEX_SQL =
   "CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users (username)";
@@ -253,6 +253,7 @@ export async function ensureAdminUsersTable(db) {
   await ensureColumn(db, columns, "first_name", "TEXT");
   await ensureColumn(db, columns, "last_name", "TEXT");
   await ensureColumn(db, columns, "invite_email", "TEXT");
+  await ensureColumn(db, columns, "invite_slack_user_id", "TEXT");
   await ensureColumn(db, columns, "invite_token_hash", "TEXT");
   await ensureColumn(db, columns, "invite_expires_at", "TEXT");
   await ensureColumn(db, columns, "invite_accepted_at", "TEXT");
@@ -270,7 +271,7 @@ export async function listAdminUsers(env) {
   const { results } = await env.DB.prepare(
     `
       SELECT id, username, created_at, created_by, totp_enabled, totp_setup_required, password_reset_required, totp_reset_at, totp_reset_by, totp_failed_attempts, totp_first_failed_at, totp_locked_until, can_manage_users, can_manage_admins, disabled_at, disabled_by
-        , user_role, access_level, first_name, last_name, invite_email, invite_expires_at, invite_accepted_at
+        , user_role, access_level, first_name, last_name, invite_email, invite_slack_user_id, invite_expires_at, invite_accepted_at
       FROM admin_users
       ORDER BY username ASC
     `,
@@ -284,7 +285,7 @@ export async function findAdminUserByUsername(env, username) {
   const result = await env.DB.prepare(
     `
       SELECT id, username, password_salt, password_hash, created_at, created_by, totp_secret, totp_enabled, totp_setup_required, password_reset_required, totp_reset_at, totp_reset_by, totp_failed_attempts, totp_first_failed_at, totp_locked_until, can_manage_users, can_manage_admins, disabled_at, disabled_by
-        , user_role, access_level, first_name, last_name, invite_email, invite_token_hash, invite_expires_at, invite_accepted_at
+        , user_role, access_level, first_name, last_name, invite_email, invite_slack_user_id, invite_token_hash, invite_expires_at, invite_accepted_at
       FROM admin_users
       WHERE username = ?
       LIMIT 1
@@ -307,6 +308,7 @@ export async function createAdminUser(env, {
   firstName = "",
   lastName = "",
   inviteEmail = "",
+  inviteSlackUserId = "",
   inviteOrigin = "",
 } = {}) {
   await ensureAdminUsersTable(env.DB);
@@ -330,10 +332,10 @@ export async function createAdminUser(env, {
     `
       INSERT INTO admin_users (
         username, password_salt, password_hash, created_at, created_by, password_reset_required, totp_setup_required,
-        can_manage_users, can_manage_admins, user_role, access_level, first_name, last_name, invite_email,
+        can_manage_users, can_manage_admins, user_role, access_level, first_name, last_name, invite_email, invite_slack_user_id,
         invite_token_hash, invite_expires_at
       )
-      VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
   )
     .bind(
@@ -349,6 +351,7 @@ export async function createAdminUser(env, {
       firstName || null,
       lastName || null,
       inviteEmail || null,
+      inviteSlackUserId || null,
       inviteTokenHash,
       inviteExpiresAt,
     )

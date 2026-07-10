@@ -874,6 +874,38 @@ body {
   width: min(100%, 720px);
 }
 
+.admin-invite-modal {
+  width: min(100%, 620px);
+}
+
+.invite-stepper {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 22px;
+}
+
+.invite-stepper span {
+  border-bottom: 3px solid var(--line);
+  color: var(--muted);
+  padding: 0 2px 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.invite-stepper span.active {
+  border-color: var(--accent-2);
+  color: var(--text);
+}
+
+.invite-summary {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
 .priority-bucket-list {
   display: grid;
   gap: 10px;

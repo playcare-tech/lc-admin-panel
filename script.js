@@ -422,6 +422,7 @@ const state = {
   livechatPriorityDialog: null,
   generatedAdminPassword: "",
   lastAdminInvite: null,
+  adminInviteWizard: null,
   qaDashboard: {
     loading: false,
     loaded: false,
@@ -1897,7 +1898,7 @@ function renderCreateUserForm(type) {
 
 function renderAdminUsers() {
   const inviteText = state.lastAdminInvite
-    ? `Invite link: ${state.lastAdminInvite.inviteLink}\nUsername: ${state.lastAdminInvite.username}\nEmail: ${state.lastAdminInvite.email?.sent ? "sent" : inviteEmailStatusLabel(state.lastAdminInvite.email)}\nExpires: ${state.lastAdminInvite.inviteExpiresAt}`
+    ? `Invite link: ${state.lastAdminInvite.inviteLink}\nUsername: ${state.lastAdminInvite.username}\nSlack: ${state.lastAdminInvite.slack?.sent ? "sent" : inviteEmailStatusLabel(state.lastAdminInvite.slack)}\nExpires: ${state.lastAdminInvite.inviteExpiresAt}`
     : "";
 
   return `
@@ -1909,48 +1910,9 @@ function renderAdminUsers() {
     ])}
     <div class="section-grid admin-users-grid">
       <div class="card-shell">
-        <div class="section-title">Add user</div>
-        <form id="createAdminUserForm" class="row g-2">
-          <div class="col-md-6">
-            <input id="adminFirstName" class="form-control" type="text" placeholder="First name" />
-          </div>
-          <div class="col-md-6">
-            <input id="adminLastName" class="form-control" type="text" placeholder="Last name" />
-          </div>
-          <div class="col-12">
-            <input id="adminUsername" class="form-control" type="text" placeholder="Username" required />
-          </div>
-          <div class="col-12">
-            <input id="adminInviteEmail" class="form-control" type="email" placeholder="Invitation email" required />
-          </div>
-          <div class="col-md-6">
-            <select id="adminUserRole" class="form-select">
-              <option value="qa_manager" selected>QA manager</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-          <div class="col-md-6">
-            <select id="adminAccessLevel" class="form-select">
-              <option value="qa_manager" selected>QA manager access</option>
-              <option value="full">Full admin access</option>
-            </select>
-          </div>
-          <div class="col-12 admin-permission-row d-none">
-            <label class="analytics-check-option">
-              <input id="adminCanManageUsers" class="form-check-input" type="checkbox" />
-              <span><strong>Can delete/deactivate users</strong><small>Allows LiveChat suspend and HelpDesk delete actions</small></span>
-            </label>
-          </div>
-          <div class="col-12 admin-permission-row d-none">
-            <label class="analytics-check-option">
-              <input id="adminCanManageAdmins" class="form-check-input" type="checkbox" />
-              <span><strong>Can manage admin accounts</strong><small>Allows permission changes and 2FA resets for others</small></span>
-            </label>
-          </div>
-          <div class="col-12 d-grid">
-            <button type="submit" class="btn btn-primary">Create invitation</button>
-          </div>
-        </form>
+        <div class="section-title">Invite a new user</div>
+        <p class="subtle mb-3">A short guided setup will collect their details, role, and permissions. Username and invitation email will automatically use their email address.</p>
+        <button id="openAdminInviteWizardBtn" type="button" class="btn btn-primary">Invite new user</button>
         <div class="credentials-box mt-3">${escapeHtml(inviteText || "The personal registration link will appear here after creation.")}</div>
         ${state.lastAdminInvite ? '<button type="button" id="copyAdminInviteBtn" class="btn btn-outline-secondary mt-2">Copy invitation link</button>' : ""}
       </div>
@@ -1973,6 +1935,7 @@ function renderAdminUsers() {
                             <td>
                               <strong>${escapeHtml([user.first_name, user.last_name].filter(Boolean).join(" ") || user.username)}</strong>
                               <div class="subtle">${escapeHtml(user.invite_email || user.username)}</div>
+                              ${user.invite_slack_user_id ? `<div class="subtle">Slack: ${escapeHtml(user.invite_slack_user_id)}</div>` : ""}
                             </td>
                             <td>${escapeHtml(user.user_role === "qa_manager" ? "QA manager" : "Admin")}</td>
                             <td>${user.disabled_at ? '<span class="chip last">Disabled</span>' : '<span class="chip primary">Active</span>'}</td>
@@ -2017,6 +1980,9 @@ function inviteEmailStatusLabel(email = {}) {
   if (email.sent) return "sent";
   if (email.reason === "missing_email_provider") return "not sent - email provider is not configured";
   if (email.reason === "missing_email") return "not sent - missing email";
+  if (email.reason === "missing_slack_provider") return "not sent - Slack bot token is not configured";
+  if (email.reason === "missing_slack_user_id") return "not sent - missing Slack user ID";
+  if (email.reason === "send_failed") return `not sent - ${email.error || "Slack delivery failed"}`;
   return "not sent";
 }
 
@@ -7979,6 +7945,43 @@ function renderLiveChatPriorityDialog() {
 }
 
 function renderModal() {
+  if (state.adminInviteWizard) {
+    const wizard = state.adminInviteWizard;
+    const step = wizard.step || 1;
+    const roleIsAdmin = wizard.userRole === "admin";
+    modalRoot.innerHTML = `
+      <div class="modal-overlay">
+        <div class="modal-card admin-invite-modal">
+          <div class="modal-head">
+            <div><div class="modal-title">Invite new user</div><div class="subtle">Step ${step} of 3</div></div>
+            <button id="closeAdminInviteWizardBtn" class="btn btn-sm btn-outline-secondary" type="button">Close</button>
+          </div>
+          <div class="invite-stepper"><span class="${step >= 1 ? "active" : ""}">Details</span><span class="${step >= 2 ? "active" : ""}">Role</span><span class="${step >= 3 ? "active" : ""}">Permissions</span></div>
+          <form id="adminInviteWizardForm">
+            ${step === 1 ? `
+              <div class="row g-3">
+                <div class="col-md-6"><label class="form-label" for="adminFirstName">Name</label><input id="adminFirstName" class="form-control" value="${escapeHtml(wizard.firstName)}" required /></div>
+                <div class="col-md-6"><label class="form-label" for="adminLastName">Surname</label><input id="adminLastName" class="form-control" value="${escapeHtml(wizard.lastName)}" required /></div>
+                <div class="col-12"><label class="form-label" for="adminInviteEmail">Email</label><input id="adminInviteEmail" class="form-control" type="email" value="${escapeHtml(wizard.email)}" required /><div class="form-text">This email will also be used as the username and invitation email.</div></div>
+                <div class="col-12"><label class="form-label" for="adminInviteSlackUserId">Invitation Slack user ID</label><input id="adminInviteSlackUserId" class="form-control" value="${escapeHtml(wizard.inviteSlackUserId)}" placeholder="U012ABCDEF" required /><div class="form-text">The private registration link will be sent to this Slack user.</div></div>
+              </div>` : step === 2 ? `
+              <label class="form-label" for="adminUserRole">Role</label>
+              <select id="adminUserRole" class="form-select"><option value="qa_manager" ${roleIsAdmin ? "" : "selected"}>QA manager</option><option value="admin" ${roleIsAdmin ? "selected" : ""}>Admin</option></select>
+              <div class="form-text mt-2">QA managers receive QA access. Admins can be granted additional management permissions in the next step.</div>` : `
+              <div class="invite-summary"><strong>${escapeHtml(`${wizard.firstName} ${wizard.lastName}`.trim())}</strong><span>${escapeHtml(wizard.email)}</span><span>${roleIsAdmin ? "Admin" : "QA manager"} · Slack ${escapeHtml(wizard.inviteSlackUserId)}</span></div>
+              ${roleIsAdmin ? `<div class="d-grid gap-2 mt-3">
+                <label class="analytics-check-option"><input id="adminCanManageUsers" class="form-check-input" type="checkbox" ${wizard.canManageUsers ? "checked" : ""} /><span><strong>Can delete/deactivate users</strong><small>Allows LiveChat suspend and HelpDesk delete actions</small></span></label>
+                <label class="analytics-check-option"><input id="adminCanManageAdmins" class="form-check-input" type="checkbox" ${wizard.canManageAdmins ? "checked" : ""} /><span><strong>Can manage admin accounts</strong><small>Allows permission changes and 2FA resets for others</small></span></label>
+              </div>` : `<p class="subtle mt-3 mb-0">QA manager permissions are applied automatically.</p>`}`}
+            <div class="action-row mt-4">
+              ${step > 1 ? '<button id="adminInviteBackBtn" class="btn btn-outline-secondary" type="button">Back</button>' : ""}
+              <button class="btn btn-primary" type="submit">${step === 3 ? "Create & send Slack invite" : "Continue"}</button>
+            </div>
+          </form>
+        </div>
+      </div>`;
+    return;
+  }
   const priorityDialogMarkup = renderLiveChatPriorityDialog();
   if (!state.modalOpen || !state.modalAgent) {
     modalRoot.innerHTML = priorityDialogMarkup;
@@ -9319,10 +9322,28 @@ function bindAppEvents() {
     setMessage(statusMessage, "Invitation link copied.", "success");
   });
 
-  document.getElementById("adminUserRole")?.addEventListener("change", (event) => {
-    const role = event.target.value;
-    document.getElementById("adminAccessLevel").value = role === "qa_manager" ? "qa_manager" : "full";
-    document.querySelectorAll(".admin-permission-row").forEach((row) => row.classList.toggle("d-none", role === "qa_manager"));
+  bindClick("openAdminInviteWizardBtn", () => {
+    state.adminInviteWizard = {
+      step: 1,
+      firstName: "",
+      lastName: "",
+      email: "",
+      inviteSlackUserId: "",
+      userRole: "qa_manager",
+      canManageUsers: false,
+      canManageAdmins: false,
+    };
+    renderModal();
+    bindAppEvents();
+  });
+  bindClick("closeAdminInviteWizardBtn", () => {
+    state.adminInviteWizard = null;
+    renderModal();
+  });
+  bindClick("adminInviteBackBtn", () => {
+    state.adminInviteWizard.step -= 1;
+    renderModal();
+    bindAppEvents();
   });
 
   bindClick("clearHelpdeskAnalyticsCacheBtn", async () => {
@@ -9335,25 +9356,50 @@ function bindAppEvents() {
     }, "HelpDesk analytics cache cleared.");
   });
 
-  document.getElementById("createAdminUserForm")?.addEventListener("submit", async (event) => {
+  document.getElementById("adminInviteWizardForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
+    const wizard = state.adminInviteWizard;
+    if (!wizard) return;
+    if (wizard.step === 1) {
+      wizard.firstName = document.getElementById("adminFirstName").value.trim();
+      wizard.lastName = document.getElementById("adminLastName").value.trim();
+      wizard.email = document.getElementById("adminInviteEmail").value.trim();
+      wizard.inviteSlackUserId = document.getElementById("adminInviteSlackUserId").value.trim();
+      wizard.step = 2;
+      renderModal();
+      bindAppEvents();
+      return;
+    }
+    if (wizard.step === 2) {
+      wizard.userRole = document.getElementById("adminUserRole").value;
+      wizard.canManageUsers = wizard.userRole === "admin" && wizard.canManageUsers;
+      wizard.canManageAdmins = wizard.userRole === "admin" && wizard.canManageAdmins;
+      wizard.step = 3;
+      renderModal();
+      bindAppEvents();
+      return;
+    }
+    wizard.canManageUsers = document.getElementById("adminCanManageUsers")?.checked || false;
+    wizard.canManageAdmins = document.getElementById("adminCanManageAdmins")?.checked || false;
     await withBusyState(async () => {
       await api("/api/admin-users", {
         method: "POST",
         body: {
-          username: document.getElementById("adminUsername").value.trim(),
-          firstName: document.getElementById("adminFirstName")?.value.trim() || "",
-          lastName: document.getElementById("adminLastName")?.value.trim() || "",
-          inviteEmail: document.getElementById("adminInviteEmail")?.value.trim() || "",
-          userRole: document.getElementById("adminUserRole")?.value || "qa_manager",
-          accessLevel: document.getElementById("adminAccessLevel")?.value || "",
-          canManageUsers: document.getElementById("adminCanManageUsers")?.checked || false,
-          canManageAdmins: document.getElementById("adminCanManageAdmins")?.checked || false,
+          username: wizard.email,
+          firstName: wizard.firstName,
+          lastName: wizard.lastName,
+          inviteEmail: wizard.email,
+          inviteSlackUserId: wizard.inviteSlackUserId,
+          userRole: wizard.userRole,
+          accessLevel: wizard.userRole === "qa_manager" ? "qa_manager" : "full",
+          canManageUsers: wizard.canManageUsers,
+          canManageAdmins: wizard.canManageAdmins,
         },
       }).then((result) => {
         state.lastAdminInvite = result.invite || null;
+        state.adminInviteWizard = null;
       });
-    }, "Invitation created.");
+    }, "Invitation created. Check the Slack delivery status below.");
   });
   document.querySelectorAll("[data-admin-permission]").forEach((input) => {
     input.onchange = async () => {

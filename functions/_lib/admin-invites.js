@@ -84,3 +84,31 @@ export async function sendAdminInviteEmail(env, invite) {
 
   return { sent: true };
 }
+
+export async function sendAdminInviteSlack(env, invite) {
+  const slackUserId = `${invite.inviteSlackUserId || ""}`.trim();
+  if (!slackUserId) return { sent: false, reason: "missing_slack_user_id" };
+
+  const token = `${env.SLACK_BOT_TOKEN || ""}`.trim().replace(/^Bearer\s+/i, "");
+  if (!token) return { sent: false, reason: "missing_slack_provider" };
+
+  const response = await fetch("https://slack.com/api/chat.postMessage", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json; charset=utf-8",
+    },
+    body: JSON.stringify({
+      channel: slackUserId,
+      text: inviteEmailText(invite),
+      unfurl_links: false,
+      unfurl_media: false,
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.ok) {
+    throw new Error(`Failed to send invitation in Slack: ${payload.error || response.status}.`);
+  }
+
+  return { sent: true };
+}

@@ -6,7 +6,7 @@ import {
   setAdminDisabled,
   updateAdminPermissions,
 } from "../_lib/admin-users.js";
-import { sendAdminInviteEmail } from "../_lib/admin-invites.js";
+import { sendAdminInviteSlack } from "../_lib/admin-invites.js";
 import { requireAuth } from "../_lib/auth.js";
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../_lib/http.js";
 import { writeLogSafely } from "../_lib/logs.js";
@@ -152,13 +152,16 @@ export async function onRequest(context) {
 
     try {
       const body = await readJson(context.request);
-      const username = `${body.username || ""}`.trim();
+      const inviteEmail = `${body.inviteEmail || body.username || ""}`.trim().toLowerCase();
+      const username = inviteEmail;
+      const inviteSlackUserId = `${body.inviteSlackUserId || ""}`.trim();
       const password = `${body.password || ""}`;
       const userRole = `${body.userRole || ""}` === "qa_manager" ? "qa_manager" : "admin";
 
       if (!username) {
-        return errorResponse("Username is required.", 400);
+        return errorResponse("Email is required.", 400);
       }
+      if (!inviteSlackUserId) return errorResponse("Invitation Slack user ID is required.", 400);
 
       const invite = await createAdminUser(context.env, {
         username,
@@ -170,14 +173,16 @@ export async function onRequest(context) {
         accessLevel: `${body.accessLevel || ""}`.trim(),
         firstName: `${body.firstName || ""}`.trim(),
         lastName: `${body.lastName || ""}`.trim(),
-        inviteEmail: `${body.inviteEmail || ""}`.trim(),
+        inviteEmail,
+        inviteSlackUserId,
         inviteOrigin: new URL(context.request.url).origin,
       });
-      let inviteEmail = { sent: false, reason: "not_attempted" };
+      let inviteSlack = { sent: false, reason: "not_attempted" };
       try {
-        inviteEmail = await sendAdminInviteEmail(context.env, {
+        inviteSlack = await sendAdminInviteSlack(context.env, {
           ...invite,
-          inviteEmail: `${body.inviteEmail || ""}`.trim(),
+          inviteEmail,
+          inviteSlackUserId,
           firstName: `${body.firstName || ""}`.trim(),
           lastName: `${body.lastName || ""}`.trim(),
         });
@@ -185,12 +190,12 @@ export async function onRequest(context) {
         await writeLogSafely(context.env, {
           actor: auth.session.user,
           area: "admin",
-          action: "send_admin_invite_email",
+          action: "send_admin_invite_slack",
           target: username,
           status: "error",
-          details: error.message || "Failed to send admin invitation email.",
+          details: error.message || "Failed to send admin invitation in Slack.",
         });
-        throw error;
+        inviteSlack = { sent: false, reason: "send_failed", error: error.message || "Slack delivery failed." };
       }
 
       await writeLogSafely(context.env, {
@@ -202,7 +207,7 @@ export async function onRequest(context) {
         details: `Created admin user ${username}.`,
       });
 
-      return json({ ok: true, invite: { ...invite, email: inviteEmail } });
+      return json({ ok: true, invite: { ...invite, slack: inviteSlack } });
     } catch (error) {
       return adminErrorResponse(error, "Failed to create admin user.");
     }
