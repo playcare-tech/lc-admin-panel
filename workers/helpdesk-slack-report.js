@@ -61,6 +61,7 @@ const DEFAULT_INCLUDED_AGENT_EMAILS = [
   "yuri.p@playcare.tech",
   "marina.g@playcare.tech",
   "ivo.k@playcare.tech",
+  "hanna.k@playcare.tech",
 ];
 const DEFAULT_EXCLUDED_AGENT_EMAILS = ["daryia.spirydovich@boomerang-partners.com"];
 const DEFAULT_INCLUDED_AGENT_NAMES = [
