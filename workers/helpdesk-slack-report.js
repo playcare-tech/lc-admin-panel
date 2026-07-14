@@ -743,41 +743,67 @@ function displayDateTime(value, timeZone) {
   }).format(date);
 }
 
-function metricSummaryRows(report) {
-  return [
-    [report.title],
-    [`Period: ${displayDate(report.fromDate)} - ${displayDate(report.toDate)}`],
-    [],
-    ["Rank", "Agent name", "Email", report.countHeader, ...report.days],
-    ["", "Account summary", "", report.total, ...report.timeline.map((day) => day.count)],
-    ...report.rows.map((row) => [row.rank, row.name, row.email || "-", row.total, ...row.dayCounts]),
-  ];
+function combinedAgentSummaryRows(reports) {
+  const publicReplies = reports.find((report) => report.metric === "public_replies");
+  const internalComments = reports.find((report) => report.metric === "comments");
+  const agents = new Map();
+
+  const mergeReport = (report, field) => {
+    for (const row of report?.rows || []) {
+      const normalizedEmail = normalizeAgentValue(row.email);
+      const normalizedName = normalizeAgentValue(row.name);
+      const key = row.agentId ? `id:${row.agentId}` : normalizedEmail ? `email:${normalizedEmail}` : `name:${normalizedName}`;
+      const current = agents.get(key) || {
+        agentId: row.agentId || "",
+        name: row.name || row.agentId || "Unknown agent",
+        email: row.email || "",
+        publicReplies: 0,
+        internalComments: 0,
+      };
+      current.agentId ||= row.agentId || "";
+      current.name ||= row.name || row.agentId || "Unknown agent";
+      current.email ||= row.email || "";
+      current[field] += Number(row.total || 0);
+      agents.set(key, current);
+    }
+  };
+
+  mergeReport(publicReplies, "publicReplies");
+  mergeReport(internalComments, "internalComments");
+
+  const rows = [...agents.values()].sort(
+    (left, right) =>
+      right.publicReplies - left.publicReplies ||
+      right.internalComments - left.internalComments ||
+      left.name.localeCompare(right.name) ||
+      left.email.localeCompare(right.email),
+  );
+
+  return {
+    publicRepliesTotal: rows.reduce((sum, row) => sum + row.publicReplies, 0),
+    internalCommentsTotal: rows.reduce((sum, row) => sum + row.internalComments, 0),
+    rows: rows.map((row, index) => [index + 1, row.name, row.email || row.agentId || "-", row.publicReplies, row.internalComments]),
+  };
 }
 
 function reportWorkbookSheets(reports, { title, periodLabel, timeZone }) {
   const usedNames = new Set();
+  const summary = combinedAgentSummaryRows(reports);
   const sheets = [
     {
       name: uniqueXlsxSheetName("Summary", usedNames),
-      widths: [28, 22, 16, 16],
+      widths: [8, 28, 38, 18, 20],
       rows: [
         [title],
         [`Period: ${periodLabel}`],
         [`Generated: ${displayDateTime(new Date().toISOString(), timeZone)}`],
         [],
-        ["Metric", "Total", "Active agents", "Details tabs"],
-        ...reports.map((report) => [report.sheetName, report.total, report.activeAgents, report.rows.length]),
+        ["Rank", "Agent name", "Email", "Public Replies", "Internal Comments"],
+        ["", "Account summary", "", summary.publicRepliesTotal, summary.internalCommentsTotal],
+        ...summary.rows,
       ],
     },
   ];
-
-  for (const report of reports) {
-    sheets.push({
-      name: uniqueXlsxSheetName(report.sheetName, usedNames),
-      widths: [8, 28, 38, 18, ...report.days.map(() => 12)],
-      rows: metricSummaryRows(report),
-    });
-  }
 
   for (const report of reports) {
     for (const agent of report.rows) {
