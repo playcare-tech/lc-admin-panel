@@ -2816,27 +2816,38 @@ async function applyLivechatAgentQaFinalTags(env, review, tags) {
   const applied = [];
   const skipped = [];
   const markedSystem = [];
+  const failed = [];
   for (const tag of visibleAgentQaTags(tags)) {
-    if (localTags.has(tag)) {
-      if (!systemTags.has(tag)) {
-        await applyLocalSystemThreadTag(env, review.chat_id, review.thread_id, tag);
-        systemTags.add(tag);
-        markedSystem.push(tag);
+    try {
+      if (localTags.has(tag)) {
+        if (!systemTags.has(tag)) {
+          await applyLocalSystemThreadTag(env, review.chat_id, review.thread_id, tag);
+          systemTags.add(tag);
+          markedSystem.push(tag);
+        }
+        skipped.push({ tag, reason: "already_present", systemTagged: true });
+        continue;
       }
-      skipped.push({ tag, reason: "already_present", systemTagged: true });
-      continue;
+      await livechatAgentChatRequest(env, "tag_thread", {
+        chat_id: review.chat_id,
+        thread_id: review.thread_id,
+        tag,
+      });
+      await applyLocalSystemThreadTag(env, review.chat_id, review.thread_id, tag);
+      localTags.add(tag);
+      systemTags.add(tag);
+      applied.push(tag);
+    } catch (error) {
+      failed.push({
+        tag,
+        reason: "livechat_tag_failed",
+        error: truncate(error.message || "Failed to apply tag to LiveChat.", 500),
+        status: error.status || null,
+        payload: error.payload || null,
+      });
     }
-    await livechatAgentChatRequest(env, "tag_thread", {
-      chat_id: review.chat_id,
-      thread_id: review.thread_id,
-      tag,
-    });
-    await applyLocalSystemThreadTag(env, review.chat_id, review.thread_id, tag);
-    localTags.add(tag);
-    systemTags.add(tag);
-    applied.push(tag);
   }
-  return { applied, skipped, markedSystem, systemTags: [...systemTags] };
+  return { applied, skipped, markedSystem, failed, systemTags: [...systemTags] };
 }
 
 async function insertAgentQaFeedback(env, review, checks, feedback, finalTags, reviewer) {
@@ -2928,7 +2939,13 @@ export async function decideLivechatAgentQaReview(env, reviewId, decision = {}) 
 
   const reviewer = text(decision.reviewer || "qa");
   const applyToLiveChat = decision.applyToLiveChat !== false && decision.apply_to_livechat !== false;
-  let applyResult = { applied: [], skipped: [], markedSystem: [], systemTags: parseJson(review.system_tags_json, []) };
+  let applyResult = {
+    applied: [],
+    skipped: [],
+    markedSystem: [],
+    failed: [],
+    systemTags: parseJson(review.system_tags_json, []),
+  };
   if (applyToLiveChat) {
     applyResult = await applyLivechatAgentQaFinalTags(env, review, finalTags);
   }

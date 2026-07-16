@@ -3883,7 +3883,7 @@ async function approveLivechatAgentQaReview() {
   state.livechatAgentQaReview.actionError = null;
   renderApp();
   try {
-    await api(`/api/livechat/ai-agent-qa-reviews/${encodeURIComponent(detail.id)}`, {
+    const response = await api(`/api/livechat/ai-agent-qa-reviews/${encodeURIComponent(detail.id)}`, {
       method: "PATCH",
       body: {
         action: "approve",
@@ -3897,7 +3897,14 @@ async function approveLivechatAgentQaReview() {
       await fetchLivechatAgentQaReviews({ keepSelection: true });
     }
     await fetchLivechatAgentQaLeaderboard();
-    setMessage(statusMessage, "Agent QA approved and sent to LiveChat.", "success");
+    const failedTags = response.applyResult?.failed?.map((item) => item.tag).filter(Boolean) || [];
+    setMessage(
+      statusMessage,
+      failedTags.length
+        ? `Agent QA approved. Failed to apply in LiveChat: ${failedTags.join(", ")}.`
+        : "Agent QA approved and sent to LiveChat.",
+      failedTags.length ? "error" : "success",
+    );
   } catch (error) {
     state.livechatAgentQaReview.actionError = error.message;
     setMessage(statusMessage, error.message, "error");
@@ -3924,7 +3931,7 @@ async function correctLivechatAgentQaReview() {
   state.livechatAgentQaReview.actionError = null;
   renderApp();
   try {
-    await api(`/api/livechat/ai-agent-qa-reviews/${encodeURIComponent(detail.id)}`, {
+    const response = await api(`/api/livechat/ai-agent-qa-reviews/${encodeURIComponent(detail.id)}`, {
       method: "PATCH",
       body: {
         action: "correct",
@@ -3937,7 +3944,14 @@ async function correctLivechatAgentQaReview() {
       await fetchLivechatAgentQaReviews({ keepSelection: true });
     }
     await fetchLivechatAgentQaLeaderboard();
-    setMessage(statusMessage, "Corrected agent QA saved and sent to LiveChat.", "success");
+    const failedTags = response.applyResult?.failed?.map((item) => item.tag).filter(Boolean) || [];
+    setMessage(
+      statusMessage,
+      failedTags.length
+        ? `Corrected agent QA saved. Failed to apply in LiveChat: ${failedTags.join(", ")}.`
+        : "Corrected agent QA saved and sent to LiveChat.",
+      failedTags.length ? "error" : "success",
+    );
   } catch (error) {
     state.livechatAgentQaReview.actionError = error.message;
     setMessage(statusMessage, error.message, "error");
