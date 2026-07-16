@@ -486,6 +486,7 @@ const state = {
     pageSize: 25,
     dirty: false,
     filters: {
+      scope: "mine",
       status: "pending_review",
       aiStatus: "",
       chatId: "",
@@ -506,6 +507,7 @@ const state = {
     pageSize: 25,
     dirty: false,
     filters: {
+      scope: "mine",
       status: "pending_review",
       aiStatus: "",
       agent: "",
@@ -2863,6 +2865,7 @@ function aiQaReviewQueryParams() {
 
 function syncLivechatAiQaReviewFiltersFromDom() {
   const filters = state.livechatAiQaReview.filters;
+  filters.scope = document.getElementById("aiQaReviewScope")?.value || "mine";
   filters.status = document.getElementById("aiQaReviewStatus")?.value || "";
   filters.aiStatus = document.getElementById("aiQaReviewAiStatus")?.value || "";
   filters.chatId = document.getElementById("aiQaReviewChatId")?.value.trim() || "";
@@ -2871,6 +2874,7 @@ function syncLivechatAiQaReviewFiltersFromDom() {
 
 function resetLivechatAiQaReviewFilters() {
   state.livechatAiQaReview.filters = {
+    scope: "mine",
     status: "pending_review",
     aiStatus: "",
     chatId: "",
@@ -3142,6 +3146,13 @@ function renderAiQaReviewFilters() {
         </div>
       </div>
       <div class="ai-qa-review-filter-grid">
+        ${isAdminRole() ? `<label>
+          <span>View</span>
+          <select id="aiQaReviewScope" class="form-select">
+            <option value="mine" ${filters.scope === "mine" ? "selected" : ""}>My queue</option>
+            <option value="all" ${filters.scope === "all" ? "selected" : ""}>All reviews</option>
+          </select>
+        </label>` : ""}
         <label>
           <span>Status</span>
           <select id="aiQaReviewStatus" class="form-select">
@@ -3552,11 +3563,13 @@ function agentQaReviewQueryParams() {
     agent: filters.agent,
     tag: filters.tag,
     chatId: filters.chatId,
+    scope: filters.scope || "mine",
   });
 }
 
 function syncLivechatAgentQaReviewFiltersFromDom() {
   const filters = state.livechatAgentQaReview.filters;
+  filters.scope = document.getElementById("agentQaReviewScope")?.value || "mine";
   filters.status = document.getElementById("agentQaReviewStatus")?.value || "";
   filters.aiStatus = document.getElementById("agentQaReviewAiStatus")?.value || "";
   filters.agent = document.getElementById("agentQaReviewAgent")?.value.trim() || "";
@@ -3567,6 +3580,7 @@ function syncLivechatAgentQaReviewFiltersFromDom() {
 
 function resetLivechatAgentQaReviewFilters() {
   state.livechatAgentQaReview.filters = {
+    scope: "mine",
     status: "pending_review",
     aiStatus: "",
     agent: "",
@@ -3820,6 +3834,13 @@ function renderAgentQaReviewFilters() {
         </div>
       </div>
       <div class="ai-qa-review-filter-grid agent-qa-filter-grid">
+        ${isAdminRole() ? `<label>
+          <span>View</span>
+          <select id="agentQaReviewScope" class="form-select">
+            <option value="mine" ${filters.scope === "mine" ? "selected" : ""}>My queue</option>
+            <option value="all" ${filters.scope === "all" ? "selected" : ""}>All reviews</option>
+          </select>
+        </label>` : ""}
         <label>
           <span>Status</span>
           <select id="agentQaReviewStatus" class="form-select">
