@@ -6,6 +6,7 @@ pages_build_output_dir = "."
 [vars]
 LIVECHAT_API_VERSION = "v3.6"
 HELPDESK_ANALYTICS_TZ_OFFSET = "-120"
+AI_QA_DAILY_NEURON_LIMIT = "17000"
 
 [ai]
 binding = "AI"

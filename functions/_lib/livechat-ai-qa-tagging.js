@@ -21,7 +21,7 @@ const AI_QA_PRIMARY_MODEL = "@cf/ibm-granite/granite-4.0-h-micro";
 const AI_QA_FALLBACK_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 const AI_QA_PROMPT_VERSION = "manual-qa-tags-v2";
 const AI_QA_TAXONOMY_VERSION = "2026-07-05-v1";
-const AI_QA_DEFAULT_DAILY_NEURON_LIMIT = 8500;
+const AI_QA_DEFAULT_DAILY_NEURON_LIMIT = 17000;
 const AI_QA_MAX_TRANSCRIPT_EVENTS = 160;
 const AI_QA_MAX_TRANSCRIPT_CHARS = 24000;
 const AI_QA_OUTPUT_TOKEN_BUDGET = 900;
@@ -600,7 +600,7 @@ async function ensureLivechatAiQaReviewTables(env, tables = livechatAiQaTables(e
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS ${tables.usageDaily} (
       usage_date TEXT PRIMARY KEY,
-      neuron_limit INTEGER NOT NULL DEFAULT 8500,
+      neuron_limit INTEGER NOT NULL DEFAULT 17000,
       requests_count INTEGER NOT NULL DEFAULT 0,
       skipped_count INTEGER NOT NULL DEFAULT 0,
       failed_count INTEGER NOT NULL DEFAULT 0,

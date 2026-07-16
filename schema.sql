@@ -274,7 +274,7 @@ CREATE INDEX IF NOT EXISTS idx_livechat_ai_qa_knowledge_base_status ON livechat_
 
 CREATE TABLE IF NOT EXISTS livechat_ai_qa_usage_daily (
   usage_date TEXT PRIMARY KEY,
-  neuron_limit INTEGER NOT NULL DEFAULT 8500,
+  neuron_limit INTEGER NOT NULL DEFAULT 17000,
   requests_count INTEGER NOT NULL DEFAULT 0,
   skipped_count INTEGER NOT NULL DEFAULT 0,
   failed_count INTEGER NOT NULL DEFAULT 0,
