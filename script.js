@@ -2533,6 +2533,18 @@ function livechatAiQaDateTime(value) {
   return `${localDateValue(date)} ${time}`;
 }
 
+function livechatArchiveUrl(threadId, chatId = "") {
+  const query = `${threadId || chatId || ""}`.trim();
+  return query ? `https://my.livechatinc.com/archives/?q=${encodeURIComponent(query)}` : "";
+}
+
+function renderLivechatChatLink(chatId, threadId, className = "") {
+  const label = chatId || threadId || "-";
+  const url = livechatArchiveUrl(threadId, chatId);
+  if (!url) return escapeHtml(label);
+  return `<a class="livechat-chat-link ${escapeHtml(className)}" data-livechat-chat-link href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="Open chat in LiveChat">${escapeHtml(label)}</a>`;
+}
+
 function livechatAiQaMetricLabel(value, fallback = "-") {
   return value || fallback;
 }
@@ -2721,7 +2733,7 @@ function renderLivechatAiQaTimeline(row) {
   }
   return `
     <div class="analytics-ticket-detail">
-      <div class="analytics-ticket-detail-title">Timeline · ${escapeHtml(row.chatId)} / ${escapeHtml(row.threadId)}</div>
+      <div class="analytics-ticket-detail-title">Timeline · ${renderLivechatChatLink(row.chatId, row.threadId)} / ${escapeHtml(row.threadId)}</div>
       <div class="livechat-ai-qa-timeline">
         ${row.events
           .map(
@@ -2784,7 +2796,7 @@ function renderLivechatAiQaRows() {
             </div>
             <div class="livechat-ai-qa-cell livechat-ai-qa-chat">
               <span class="livechat-ai-qa-label">Chat</span>
-              <strong>${escapeHtml(row.chatId)}</strong>
+              <strong>${renderLivechatChatLink(row.chatId, row.threadId)}</strong>
               <span>${escapeHtml(row.threadId)}</span>
             </div>
             <div class="livechat-ai-qa-cell livechat-ai-qa-agent">
@@ -3323,16 +3335,16 @@ function renderAiQaReviewQueue() {
                     .map((row) => {
                       const selected = row.id === state.livechatAiQaReview.selectedId;
                       return `
-                        <button class="ai-qa-review-list-item ${selected ? "active" : ""}" type="button" data-ai-qa-review-open="${escapeHtml(row.id)}">
+                        <div class="ai-qa-review-list-item ${selected ? "active" : ""}" role="button" tabindex="0" data-ai-qa-review-open="${escapeHtml(row.id)}">
                           <span class="ai-qa-review-list-top">
-                            <strong>${escapeHtml(row.chatId)}</strong>
+                            <strong>${renderLivechatChatLink(row.chatId, row.threadId)}</strong>
                             ${aiQaReviewStatusChip(row.status, row.aiStatus)}
                           </span>
                           <span class="subtle">Agent QA: ${escapeHtml(row.agentQaStatus)} · ${escapeHtml(row.agentQaAiStatus)}</span>
                           <span class="subtle">${escapeHtml(livechatAiQaDateTime(row.deactivatedAt || row.updatedAt))}</span>
                           <span class="ai-qa-review-list-tags">${aiQaReviewTagChips(row.suggestedTags, "No suggestions")}</span>
                           ${row.aiError ? `<span class="ai-qa-review-error">${escapeHtml(row.aiError)}</span>` : ""}
-                        </button>
+                        </div>
                       `;
                     })
                     .join("")}
@@ -3356,7 +3368,7 @@ function renderAiQaReviewTranscript(detail) {
       <div class="ai-qa-review-thread-head">
         <div>
           <div class="section-title">Chat transcript</div>
-          <div class="subtle">${escapeHtml(detail.chatId)} / ${escapeHtml(detail.threadId)}</div>
+          <div class="subtle">${renderLivechatChatLink(detail.chatId, detail.threadId)} / ${escapeHtml(detail.threadId)}</div>
         </div>
         <div class="chip-list">
           ${aiQaReviewStatusChip(detail.status, detail.aiStatus)}
@@ -4025,16 +4037,16 @@ function renderAgentQaReviewQueue() {
                     .map((row) => {
                       const selected = row.id === state.livechatAgentQaReview.selectedId;
                       return `
-                        <button class="ai-qa-review-list-item ${selected ? "active" : ""}" type="button" data-agent-qa-review-open="${escapeHtml(row.id)}">
+                        <div class="ai-qa-review-list-item ${selected ? "active" : ""}" role="button" tabindex="0" data-agent-qa-review-open="${escapeHtml(row.id)}">
                           <span class="ai-qa-review-list-top">
-                            <strong>${escapeHtml(row.chatId)}</strong>
+                            <strong>${renderLivechatChatLink(row.chatId, row.threadId)}</strong>
                             ${aiQaReviewStatusChip(row.status, row.aiStatus)}
                           </span>
                           <span class="subtle">${escapeHtml(row.agentLabel || "No agent")}</span>
                           <span class="subtle">${escapeHtml(livechatAiQaDateTime(row.updatedAt || row.createdAt))}</span>
                           <span class="ai-qa-review-list-tags">${aiQaReviewTagChips(row.checkTags, "No checks")}</span>
                           ${row.aiError ? `<span class="ai-qa-review-error">${escapeHtml(row.aiError)}</span>` : ""}
-                        </button>
+                        </div>
                       `;
                     })
                     .join("")}
@@ -4058,7 +4070,7 @@ function renderAgentQaReviewTranscript(detail) {
       <div class="ai-qa-review-thread-head">
         <div>
           <div class="section-title">Chat transcript</div>
-          <div class="subtle">${escapeHtml(detail.chatId)} / ${escapeHtml(detail.threadId)}</div>
+          <div class="subtle">${renderLivechatChatLink(detail.chatId, detail.threadId)} / ${escapeHtml(detail.threadId)}</div>
         </div>
         <div class="chip-list">
           ${aiQaReviewStatusChip(detail.status, detail.aiStatus)}
@@ -4529,7 +4541,7 @@ function renderLivechatAiQaPreReviewAnalytics() {
               "Latest correction comments",
               ["Time", "Type", "Chat", "AI → final", "Reviewer", "Comment"],
               data?.recentComments || [],
-              (row) => `<tr><td>${escapeHtml(livechatAiQaDateTime(row.createdAt))}</td><td>${aiQaAnalyticsTypeLabel(row.type)}</td><td><strong>${escapeHtml(row.chatId)}</strong><div class="subtle">${escapeHtml(row.threadId)}</div></td><td>${escapeHtml([row.aiTag || row.tag, row.finalTag].filter(Boolean).join(" → ") || row.feedbackType)}</td><td>${escapeHtml(row.reviewer)}</td><td class="ai-qa-comment-cell">${escapeHtml(row.comment)}</td></tr>`,
+              (row) => `<tr><td>${escapeHtml(livechatAiQaDateTime(row.createdAt))}</td><td>${aiQaAnalyticsTypeLabel(row.type)}</td><td><strong>${renderLivechatChatLink(row.chatId, row.threadId)}</strong><div class="subtle">${escapeHtml(row.threadId)}</div></td><td>${escapeHtml([row.aiTag || row.tag, row.finalTag].filter(Boolean).join(" → ") || row.feedbackType)}</td><td>${escapeHtml(row.reviewer)}</td><td class="ai-qa-comment-cell">${escapeHtml(row.comment)}</td></tr>`,
               "No correction comments for this period.",
             )}
           `
@@ -9299,6 +9311,12 @@ function bindAppEvents() {
     button.onclick = () => {
       fetchLivechatAiQaReviewDetail(button.dataset.aiQaReviewOpen);
     };
+    button.onkeydown = (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        fetchLivechatAiQaReviewDetail(button.dataset.aiQaReviewOpen);
+      }
+    };
   });
   document.querySelectorAll("[data-ai-qa-review-page]").forEach((button) => {
     button.onclick = () => {
@@ -9353,6 +9371,12 @@ function bindAppEvents() {
     button.onclick = () => {
       fetchLivechatAgentQaReviewDetail(button.dataset.agentQaReviewOpen);
     };
+    button.onkeydown = (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        fetchLivechatAgentQaReviewDetail(button.dataset.agentQaReviewOpen);
+      }
+    };
   });
   document.querySelectorAll("[data-agent-qa-review-page]").forEach((button) => {
     button.onclick = () => {
@@ -9391,6 +9415,10 @@ function bindAppEvents() {
   });
   bindClick("aiQaPreAnalyticsReloadBtn", () => {
     fetchLivechatAiQaPreReviewAnalytics();
+  });
+  document.querySelectorAll("[data-livechat-chat-link]").forEach((link) => {
+    link.onclick = (event) => event.stopPropagation();
+    link.onkeydown = (event) => event.stopPropagation();
   });
   document.querySelectorAll("[data-livechat-group-filter]").forEach((button) => {
     button.onclick = () => {
