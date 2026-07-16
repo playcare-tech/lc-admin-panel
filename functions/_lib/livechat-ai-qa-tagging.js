@@ -1577,12 +1577,17 @@ export async function listLivechatAiQaReviews(env, filters = {}) {
   const where = [];
   const binds = [];
   if (filters.status) {
-    where.push("r.status = ?");
-    binds.push(filters.status);
+    if (filters.status === "pending_review") {
+      where.push("(r.status = 'pending_review' OR aq.status = 'pending_review')");
+    } else if (filters.status === "approved") {
+      where.push("r.status = 'approved' AND (aq.id IS NULL OR aq.status = 'approved')");
+    } else if (filters.status === "corrected") {
+      where.push("r.status <> 'pending_review' AND (aq.id IS NULL OR aq.status <> 'pending_review') AND (r.status = 'corrected' OR aq.status = 'corrected')");
+    }
   }
   if (filters.aiStatus) {
-    where.push("r.ai_status = ?");
-    binds.push(filters.aiStatus);
+    where.push("(r.ai_status = ? OR aq.ai_status = ?)");
+    binds.push(filters.aiStatus, filters.aiStatus);
   }
   if (filters.chatId) {
     where.push("(r.chat_id LIKE ? OR r.thread_id LIKE ?)");
@@ -1597,12 +1602,16 @@ export async function listLivechatAiQaReviews(env, filters = {}) {
   const page = Math.max(Number(filters.page) || 1, 1);
   const offset = (page - 1) * pageSize;
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-  const countRow = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${tables.reviews} r ${whereSql}`)
+  const joinSql = `LEFT JOIN ${tables.agentQaReviews} aq ON aq.chat_id = r.chat_id AND aq.thread_id = r.thread_id`;
+  const countRow = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${tables.reviews} r ${joinSql} ${whereSql}`)
     .bind(...binds)
     .first();
   const rows = await env.DB.prepare(`
-    SELECT r.*, c.agent_label, c.deactivated_at, c.last_event_at, c.customer_language, c.system_tags_json
+    SELECT r.*, c.agent_label, c.deactivated_at, c.last_event_at, c.customer_language, c.system_tags_json,
+           aq.id AS agent_qa_review_id, aq.status AS agent_qa_status, aq.ai_status AS agent_qa_ai_status,
+           aq.check_tags_json AS agent_qa_tags_json, aq.ai_error AS agent_qa_error
     FROM ${tables.reviews} r
+    ${joinSql}
     LEFT JOIN ${tables.chats} c ON c.chat_id = r.chat_id AND c.thread_id = r.thread_id
     ${whereSql}
     ORDER BY r.updated_at DESC, r.created_at DESC
@@ -1633,6 +1642,11 @@ export async function listLivechatAiQaReviews(env, filters = {}) {
       assignedTo: row.assigned_to || "",
       assignedAt: row.assigned_at || "",
       aiError: row.ai_error || "",
+      agentQaReviewId: row.agent_qa_review_id || "",
+      agentQaStatus: row.agent_qa_status || "missing",
+      agentQaAiStatus: row.agent_qa_ai_status || "missing",
+      agentQaTags: parseJson(row.agent_qa_tags_json, []),
+      agentQaError: row.agent_qa_error || "",
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     })),

@@ -1966,6 +1966,28 @@ body {
   min-width: 0;
 }
 
+.combined-ai-qa-decisions {
+  min-width: 0;
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+
+.combined-ai-qa-section {
+  min-width: 0;
+}
+
+.combined-ai-qa-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px 8px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.78rem;
+}
+
 .ai-qa-review-queue,
 .ai-qa-review-thread,
 .ai-qa-review-decision {

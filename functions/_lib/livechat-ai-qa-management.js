@@ -148,6 +148,41 @@ export async function saveLivechatAiQaQueueSetting(env, { username, reviewType, 
 export async function refillLivechatAiQaQueue(env, preloadedTables, username, reviewType, targetQueueSize) {
   const tables = preloadedTables || await ensureLivechatAiQaManagementTables(env);
   const table = reviewTable(tables, reviewType);
+  if (reviewType === "auto_tag") {
+    const current = await env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM ${tables.reviews} r
+      LEFT JOIN ${tables.agentQaReviews} aq ON aq.chat_id = r.chat_id AND aq.thread_id = r.thread_id
+      WHERE r.assigned_to = ? AND (r.status = 'pending_review' OR aq.status = 'pending_review')
+    `).bind(username).first();
+    const needed = Math.max(0, Number(targetQueueSize || 0) - Number(current?.count || 0));
+    if (!needed) return { assigned: 0 };
+    const { results } = await env.DB.prepare(`
+      SELECT r.id, r.chat_id, r.thread_id
+      FROM ${tables.reviews} r
+      LEFT JOIN ${tables.agentQaReviews} aq ON aq.chat_id = r.chat_id AND aq.thread_id = r.thread_id
+      WHERE (r.status = 'pending_review' OR aq.status = 'pending_review')
+        AND (r.assigned_to IS NULL OR r.assigned_to = '')
+      ORDER BY r.queued_at ASC, r.created_at ASC
+      LIMIT ?
+    `).bind(needed).all();
+    let assigned = 0;
+    for (const row of results || []) {
+      const now = new Date().toISOString();
+      const result = await env.DB.prepare(`
+        UPDATE ${tables.reviews} SET assigned_to = ?, assigned_at = ?, updated_at = ?
+        WHERE id = ? AND (assigned_to IS NULL OR assigned_to = '')
+      `).bind(username, now, now, row.id).run();
+      if (Number(result.meta?.changes || 0)) {
+        await env.DB.prepare(`
+          UPDATE ${tables.agentQaReviews} SET assigned_to = ?, assigned_at = ?, updated_at = ?
+          WHERE chat_id = ? AND thread_id = ?
+        `).bind(username, now, now, row.chat_id, row.thread_id).run();
+        assigned += 1;
+      }
+    }
+    return { assigned };
+  }
   const current = await env.DB.prepare(`
     SELECT COUNT(*) AS count FROM ${table}
     WHERE assigned_to = ? AND status = 'pending_review'
@@ -182,6 +217,13 @@ export async function releaseLivechatAiQaQueue(env, username, reviewType) {
       WHERE assigned_to = ? AND status = 'pending_review'
     `).bind(new Date().toISOString(), username).run();
     released += Number(result.meta?.changes || 0);
+    if (type === "auto_tag") {
+      await env.DB.prepare(`
+        UPDATE ${tables.agentQaReviews}
+        SET assigned_to = NULL, assigned_at = NULL, updated_at = ?
+        WHERE assigned_to = ? AND status = 'pending_review'
+      `).bind(new Date().toISOString(), username).run();
+    }
   }
   return { released };
 }
@@ -221,12 +263,20 @@ export async function getLivechatAiQaManagementOverview(env, { username, from, t
       await refillLivechatAiQaQueue(env, tables, username, type, setting.targetQueueSize);
     }
     const table = reviewTable(tables, type);
-    const row = await env.DB.prepare(`
-      SELECT
-        SUM(CASE WHEN assigned_to = ? AND status = 'pending_review' THEN 1 ELSE 0 END) AS assigned,
-        SUM(CASE WHEN (assigned_to IS NULL OR assigned_to = '') AND status = 'pending_review' THEN 1 ELSE 0 END) AS unassigned
-      FROM ${table}
-    `).bind(username).first();
+    const row = type === "auto_tag"
+      ? await env.DB.prepare(`
+          SELECT
+            SUM(CASE WHEN r.assigned_to = ? AND (r.status = 'pending_review' OR aq.status = 'pending_review') THEN 1 ELSE 0 END) AS assigned,
+            SUM(CASE WHEN (r.assigned_to IS NULL OR r.assigned_to = '') AND (r.status = 'pending_review' OR aq.status = 'pending_review') THEN 1 ELSE 0 END) AS unassigned
+          FROM ${tables.reviews} r
+          LEFT JOIN ${tables.agentQaReviews} aq ON aq.chat_id = r.chat_id AND aq.thread_id = r.thread_id
+        `).bind(username).first()
+      : await env.DB.prepare(`
+          SELECT
+            SUM(CASE WHEN assigned_to = ? AND status = 'pending_review' THEN 1 ELSE 0 END) AS assigned,
+            SUM(CASE WHEN (assigned_to IS NULL OR assigned_to = '') AND status = 'pending_review' THEN 1 ELSE 0 END) AS unassigned
+          FROM ${table}
+        `).bind(username).first();
     queue[type] = { assigned: Number(row?.assigned || 0), unassigned: Number(row?.unassigned || 0) };
   }
   const where = ["created_at >= ?", "created_at <= ?"];

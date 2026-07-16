@@ -2932,6 +2932,12 @@ async function fetchLivechatAiQaReviewDetail(reviewId, { silent = false } = {}) 
 
   try {
     state.livechatAiQaReview.detail = await api(`/api/livechat/ai-qa-reviews/${encodeURIComponent(reviewId)}`);
+    const row = state.livechatAiQaReview.rows.find((item) => item.id === reviewId);
+    state.livechatAgentQaReview.detail = row?.agentQaReviewId
+      ? await api(`/api/livechat/ai-agent-qa-reviews/${encodeURIComponent(row.agentQaReviewId)}`)
+      : null;
+    state.livechatAgentQaReview.selectedId = row?.agentQaReviewId || "";
+    state.livechatAgentQaReview.dirty = false;
   } catch (error) {
     state.livechatAiQaReview.actionError = error.message;
     state.livechatAiQaReview.detail = null;
@@ -3137,8 +3143,8 @@ function renderAiQaReviewFilters() {
     <div class="card-shell ai-qa-review-filter-shell">
       <div class="tickets-toolbar">
         <div>
-          <div class="section-title">Manual AI auto-tag review</div>
-          <div class="subtle">${Number(state.livechatAiQaReview.total || 0).toLocaleString()} review(s)</div>
+          <div class="section-title">Combined AI QA Review</div>
+          <div class="subtle">${Number(state.livechatAiQaReview.total || 0).toLocaleString()} chat(s) · Auto-tagging and Agent QA are reviewed separately</div>
         </div>
         <div class="analytics-actions">
           ${isAdminRole() ? `<button id="aiQaReviewsProcessBtn" class="btn btn-sm btn-outline-secondary" type="button" ${state.livechatAiQaReview.actionLoading ? "disabled" : ""}>Process pending</button>` : ""}
@@ -3243,8 +3249,7 @@ function renderLivechatAiQaManagement() {
       ${management.error ? `<div class="empty-state analytics-error">${escapeHtml(management.error)}</div>` : ""}
       ${management.loading && !data ? '<div class="empty-state">Loading queue settings...</div>' : `
         <div class="qa-queue-settings-grid">
-          ${settingRow("auto_tag", "Auto-tag review queue")}
-          ${settingRow("agent_qa", "Agent QA review queue")}
+          ${settingRow("auto_tag", "Combined AI QA queue")}
         </div>
         <div class="qa-stat-filter-row">
           <label><span>From</span><input id="qaManagementFrom" class="form-control" type="date" value="${escapeHtml(management.from)}" /></label>
@@ -3295,6 +3300,7 @@ function renderAiQaReviewQueue() {
                             <strong>${escapeHtml(row.chatId)}</strong>
                             ${aiQaReviewStatusChip(row.status, row.aiStatus)}
                           </span>
+                          <span class="subtle">Agent QA: ${escapeHtml(row.agentQaStatus)} · ${escapeHtml(row.agentQaAiStatus)}</span>
                           <span class="subtle">${escapeHtml(livechatAiQaDateTime(row.deactivatedAt || row.updatedAt))}</span>
                           <span class="ai-qa-review-list-tags">${aiQaReviewTagChips(row.suggestedTags, "No suggestions")}</span>
                           ${row.aiError ? `<span class="ai-qa-review-error">${escapeHtml(row.aiError)}</span>` : ""}
@@ -3540,6 +3546,7 @@ function renderAiQaReviewDecisionPanel(detail) {
 
 function renderLivechatAiQaReview() {
   const detail = state.livechatAiQaReview.detail;
+  const agentDetail = state.livechatAgentQaReview.detail;
   return `
     <section class="ai-qa-review-page">
       ${renderLivechatAiQaManagement()}
@@ -3547,7 +3554,18 @@ function renderLivechatAiQaReview() {
       <div class="ai-qa-review-workspace">
         ${renderAiQaReviewQueue()}
         ${renderAiQaReviewTranscript(detail)}
-        ${renderAiQaReviewDecisionPanel(detail)}
+        <div class="combined-ai-qa-decisions">
+          <div class="combined-ai-qa-section">
+            <div class="combined-ai-qa-title"><strong>1. AI auto-tagging</strong><span>${escapeHtml(detail?.status || "not loaded")}</span></div>
+            ${renderAiQaReviewDecisionPanel(detail)}
+          </div>
+          <div class="combined-ai-qa-section">
+            <div class="combined-ai-qa-title"><strong>2. Agent QA</strong><span>${escapeHtml(agentDetail?.status || "not available")}</span></div>
+            ${agentDetail
+              ? renderAgentQaReviewDecisionPanel(agentDetail)
+              : '<aside class="ai-qa-review-decision"><div class="empty-state">Agent QA review has not been created for this historical chat.</div></aside>'}
+          </div>
+        </div>
       </div>
     </section>
   `;
@@ -3771,7 +3789,11 @@ async function approveLivechatAgentQaReview() {
         applyToLiveChat: document.getElementById("agentQaApplyToLiveChat")?.checked !== false,
       },
     });
-    await fetchLivechatAgentQaReviews({ keepSelection: true });
+    if (state.section === "livechat-ai-qa-review") {
+      await fetchLivechatAiQaReviews({ keepSelection: true });
+    } else {
+      await fetchLivechatAgentQaReviews({ keepSelection: true });
+    }
     await fetchLivechatAgentQaLeaderboard();
     setMessage(statusMessage, "Agent QA approved and sent to LiveChat.", "success");
   } catch (error) {
@@ -3807,7 +3829,11 @@ async function correctLivechatAgentQaReview() {
         ...decision,
       },
     });
-    await fetchLivechatAgentQaReviews({ keepSelection: true });
+    if (state.section === "livechat-ai-qa-review") {
+      await fetchLivechatAiQaReviews({ keepSelection: true });
+    } else {
+      await fetchLivechatAgentQaReviews({ keepSelection: true });
+    }
     await fetchLivechatAgentQaLeaderboard();
     setMessage(statusMessage, "Corrected agent QA saved and sent to LiveChat.", "success");
   } catch (error) {
@@ -7990,7 +8016,7 @@ function currentSectionTitle() {
     "create-livechat-user": "Create LiveChat User",
     "livechat-analytics": "LiveChat Analytics",
     "livechat-ai-qa-tagging": "Chats pre-AI-analysis",
-    "livechat-ai-qa-review": "Manual AI auto-tag review",
+    "livechat-ai-qa-review": "Combined AI QA Review",
     "livechat-agent-qa-review": "Manual AI QA Review",
     "livechat-agent-qa-leaderboard": "AI QA leaderboard",
     "helpdesk-users": "HelpDesk Users",

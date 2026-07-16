@@ -3,6 +3,7 @@ import { requirePermission } from "../../../_lib/auth.js";
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../../_lib/http.js";
 import {
   decideLivechatAgentQaReview,
+  ensureLivechatAiQaTables,
   getLivechatAgentQaReview,
   processLivechatAgentQaReview,
 } from "../../../_lib/livechat-ai-qa-tagging.js";
@@ -22,11 +23,15 @@ export async function onRequest(context) {
     const id = context.params.id;
     const existingReview = await getLivechatAgentQaReview(context.env, id);
     if (!existingReview) return errorResponse("LiveChat agent QA review not found.", 404);
-    if (
-      auth.session.permissions?.role === "qa_manager" &&
-      existingReview.assignedTo !== auth.session.user
-    ) {
-      return errorResponse("This review is not assigned to your queue.", 403);
+    if (auth.session.permissions?.role === "qa_manager" && existingReview.assignedTo !== auth.session.user) {
+      const tables = await ensureLivechatAiQaTables(context.env);
+      const combinedAssignment = await context.env.DB.prepare(`
+        SELECT assigned_to FROM ${tables.reviews}
+        WHERE chat_id = ? AND thread_id = ?
+      `).bind(existingReview.chatId, existingReview.threadId).first();
+      if (combinedAssignment?.assigned_to !== auth.session.user) {
+        return errorResponse("This review is not assigned to your queue.", 403);
+      }
     }
     if (context.request.method === "GET") {
       return json(existingReview);
