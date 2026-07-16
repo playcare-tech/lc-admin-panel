@@ -1588,6 +1588,8 @@ export async function listLivechatAiQaReviews(env, filters = {}) {
   if (filters.aiStatus) {
     if (filters.aiStatus === "ready") {
       where.push("r.ai_status = 'completed' AND aq.ai_status = 'completed'");
+    } else if (filters.aiStatus === "missing_agent_qa") {
+      where.push("r.ai_status = 'completed' AND aq.id IS NULL");
     } else {
       where.push("(r.ai_status = ? OR aq.ai_status = ?)");
       binds.push(filters.aiStatus, filters.aiStatus);

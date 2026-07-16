@@ -2,9 +2,11 @@ import { withAccountContext } from "../../_lib/accounts.js";
 import { requirePermission } from "../../_lib/auth.js";
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../../_lib/http.js";
 import {
+  ensureLivechatAiQaTables,
   listLivechatAgentQaReviews,
   processLivechatAgentQaReview,
   processPendingLivechatAgentQaReviews,
+  queueLivechatAgentQaReviewForChat,
 } from "../../_lib/livechat-ai-qa-tagging.js";
 
 export async function onRequest(context) {
@@ -39,6 +41,29 @@ export async function onRequest(context) {
     }
 
     const body = await readJson(context.request);
+    if (body.action === "create_and_process") {
+      const chatId = `${body.chatId || ""}`.trim();
+      const threadId = `${body.threadId || ""}`.trim();
+      if (!chatId || !threadId) return errorResponse("Chat ID and thread ID are required.", 400);
+      const queued = await queueLivechatAgentQaReviewForChat(context.env, chatId, threadId);
+      if (!queued.reviewId) {
+        return errorResponse(`Agent QA review could not be created: ${queued.reason || "unknown error"}.`, 400);
+      }
+      const tables = await ensureLivechatAiQaTables(context.env);
+      await context.env.DB.prepare(`
+        UPDATE ${tables.agentQaReviews}
+        SET assigned_to = (SELECT assigned_to FROM ${tables.reviews} WHERE chat_id = ? AND thread_id = ?),
+            assigned_at = (SELECT assigned_at FROM ${tables.reviews} WHERE chat_id = ? AND thread_id = ?),
+            updated_at = ?
+        WHERE id = ?
+      `)
+        .bind(chatId, threadId, chatId, threadId, new Date().toISOString(), queued.reviewId)
+        .run();
+      const result = queued.aiStatus === "pending"
+        ? await processLivechatAgentQaReview(context.env, queued.reviewId, { force: true })
+        : { processed: false, reason: "deterministic_only" };
+      return json({ queued, result, reviewId: queued.reviewId });
+    }
     if (body.reviewId) {
       return json(await processLivechatAgentQaReview(context.env, body.reviewId, { force: Boolean(body.force) }));
     }

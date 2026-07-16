@@ -3177,6 +3177,7 @@ function renderAiQaReviewFilters() {
           <select id="aiQaReviewAiStatus" class="form-select">
             ${[
               ["ready", "Ready: both AI checks completed"],
+              ["missing_agent_qa", "Missing Agent QA"],
               ["", "Any AI status"],
               ["pending", "Pending in either section"],
               ["running", "Running in either section"],
@@ -3571,7 +3572,13 @@ function renderLivechatAiQaReview() {
             <div class="combined-ai-qa-title"><strong>2. Agent QA</strong><span>${escapeHtml(agentDetail?.status || "not available")}</span></div>
             ${agentDetail
               ? renderAgentQaReviewDecisionPanel(agentDetail)
-              : '<aside class="ai-qa-review-decision"><div class="empty-state">Agent QA review has not been created for this historical chat.</div></aside>'}
+              : `<aside class="ai-qa-review-decision">
+                  <div class="empty-state">Agent QA review has not been created for this historical chat.</div>
+                  ${state.livechatAgentQaReview.actionError ? `<div class="empty-state analytics-error">${escapeHtml(state.livechatAgentQaReview.actionError)}</div>` : ""}
+                  <button id="agentQaCreateAndRunBtn" class="btn btn-primary" type="button" ${state.livechatAgentQaReview.actionLoading ? "disabled" : ""}>
+                    ${state.livechatAgentQaReview.actionLoading ? "Running Agent QA..." : "Run Agent QA"}
+                  </button>
+                </aside>`}
           </div>
         </div>
       </div>
@@ -3715,6 +3722,38 @@ async function processLivechatAgentQaReviews({ selected = false, force = false }
       await fetchLivechatAgentQaReviews({ keepSelection: true });
     }
     setMessage(statusMessage, "Agent QA processing updated.", "success");
+  } catch (error) {
+    state.livechatAgentQaReview.actionError = error.message;
+    setMessage(statusMessage, error.message, "error");
+  } finally {
+    state.livechatAgentQaReview.actionLoading = false;
+    renderApp();
+  }
+}
+
+async function createAndProcessMissingAgentQaReview() {
+  const detail = state.livechatAiQaReview.detail;
+  if (!detail?.chatId || !detail?.threadId) return;
+  state.livechatAgentQaReview.actionLoading = true;
+  state.livechatAgentQaReview.actionError = null;
+  renderApp();
+  try {
+    const response = await api("/api/livechat/ai-agent-qa-reviews", {
+      method: "POST",
+      body: {
+        action: "create_and_process",
+        chatId: detail.chatId,
+        threadId: detail.threadId,
+      },
+    });
+    await fetchLivechatAiQaReviews({ keepSelection: true });
+    setMessage(
+      statusMessage,
+      response.result?.reason === "deterministic_only"
+        ? "Agent QA created from deterministic checks."
+        : "Agent QA analysis completed.",
+      "success",
+    );
   } catch (error) {
     state.livechatAgentQaReview.actionError = error.message;
     setMessage(statusMessage, error.message, "error");
@@ -9080,6 +9119,9 @@ function bindAppEvents() {
   });
   bindClick("agentQaRetryBtn", () => {
     processLivechatAgentQaReviews({ selected: true, force: true });
+  });
+  bindClick("agentQaCreateAndRunBtn", () => {
+    createAndProcessMissingAgentQaReview();
   });
   document.querySelectorAll('select[name="agentQaFinalTag"]').forEach((select) => {
     select.onchange = () => {
