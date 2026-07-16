@@ -23,6 +23,13 @@ function percent(value, total) {
   return total ? Math.round((Number(value || 0) / total) * 1000) / 10 : 0;
 }
 
+function confidencePercent(value) {
+  if (value === null || value === undefined || `${value}`.trim() === "") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || number > 100) return null;
+  return number <= 1 ? number * 100 : number;
+}
+
 function emptySummary(type) {
   return {
     type,
@@ -47,7 +54,7 @@ function finalizeSummary(summary) {
     exactMatchRate: percent(summary.exactMatches, summary.reviewed),
     correctionRate: percent(summary.corrected, summary.reviewed),
     averageConfidence: summary.confidenceCount
-      ? Math.round((summary.confidenceTotal / summary.confidenceCount) * 1000) / 10
+      ? Math.round((summary.confidenceTotal / summary.confidenceCount) * 10) / 10
       : null,
   };
 }
@@ -113,8 +120,9 @@ function analyzeReviews(autoRows, agentRows, reviewType) {
     summary.approved += row.status === "approved" ? 1 : 0;
     summary.corrected += row.status === "corrected" ? 1 : 0;
     summary.exactMatches += exact ? 1 : 0;
-    if (Number.isFinite(Number(row.ai_overall_confidence))) {
-      summary.confidenceTotal += Number(row.ai_overall_confidence) * 100;
+    const confidence = confidencePercent(row.ai_overall_confidence);
+    if (confidence !== null) {
+      summary.confidenceTotal += confidence;
       summary.confidenceCount += 1;
     }
 
