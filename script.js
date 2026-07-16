@@ -488,7 +488,7 @@ const state = {
     filters: {
       scope: "mine",
       status: "pending_review",
-      aiStatus: "",
+      aiStatus: "ready",
       chatId: "",
     },
   },
@@ -2876,7 +2876,7 @@ function resetLivechatAiQaReviewFilters() {
   state.livechatAiQaReview.filters = {
     scope: "mine",
     status: "pending_review",
-    aiStatus: "",
+    aiStatus: "ready",
     chatId: "",
   };
   state.livechatAiQaReview.page = 1;
@@ -3175,8 +3175,16 @@ function renderAiQaReviewFilters() {
         <label>
           <span>AI status</span>
           <select id="aiQaReviewAiStatus" class="form-select">
-            ${["", "pending", "running", "completed", "failed", "skipped"]
-              .map((value) => `<option value="${escapeHtml(value)}" ${filters.aiStatus === value ? "selected" : ""}>${escapeHtml(value || "Any")}</option>`)
+            ${[
+              ["ready", "Ready: both AI checks completed"],
+              ["", "Any AI status"],
+              ["pending", "Pending in either section"],
+              ["running", "Running in either section"],
+              ["completed", "Completed in either section"],
+              ["failed", "Failed in either section"],
+              ["skipped", "Skipped in either section"],
+            ]
+              .map(([value, label]) => `<option value="${escapeHtml(value)}" ${filters.aiStatus === value ? "selected" : ""}>${escapeHtml(label)}</option>`)
               .join("")}
           </select>
         </label>

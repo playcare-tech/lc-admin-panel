@@ -1586,8 +1586,12 @@ export async function listLivechatAiQaReviews(env, filters = {}) {
     }
   }
   if (filters.aiStatus) {
-    where.push("(r.ai_status = ? OR aq.ai_status = ?)");
-    binds.push(filters.aiStatus, filters.aiStatus);
+    if (filters.aiStatus === "ready") {
+      where.push("r.ai_status = 'completed' AND aq.ai_status = 'completed'");
+    } else {
+      where.push("(r.ai_status = ? OR aq.ai_status = ?)");
+      binds.push(filters.aiStatus, filters.aiStatus);
+    }
   }
   if (filters.chatId) {
     where.push("(r.chat_id LIKE ? OR r.thread_id LIKE ?)");
