@@ -30,6 +30,7 @@ export async function onRequest(context) {
           chatId: url.searchParams.get("chatId") || "",
           page: url.searchParams.get("page") || "1",
           pageSize: url.searchParams.get("pageSize") || "25",
+          assignedTo: auth.session.permissions?.role === "qa_manager" ? auth.session.user : "",
         }),
       );
     }

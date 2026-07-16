@@ -1882,6 +1882,46 @@ body {
   min-width: 0;
 }
 
+.qa-management-shell {
+  display: grid;
+  gap: 14px;
+}
+
+.qa-management-shell .tickets-toolbar > .form-select {
+  width: min(100%, 320px);
+}
+
+.qa-queue-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.qa-queue-setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px auto;
+  align-items: end;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.qa-queue-setting-row > label:not(.analytics-check-option),
+.qa-stat-filter-row label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.qa-stat-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+}
+
 .ai-qa-review-filter-shell {
   display: grid;
   gap: 12px;
@@ -2611,6 +2651,14 @@ body {
 }
 
 @media (max-width: 767.98px) {
+  .qa-queue-settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .qa-queue-setting-row {
+    grid-template-columns: 1fr;
+  }
+
   .stats-grid {
     grid-template-columns: 1fr;
   }

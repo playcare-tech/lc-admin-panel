@@ -617,6 +617,9 @@ async function ensureLivechatAiQaReviewTables(env, tables = livechatAiQaTables(e
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${tables.feedbackReviewIndex} ON ${tables.feedback}(review_id, created_at)`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${tables.knowledgeTagIndex} ON ${tables.knowledgeBase}(tag, status)`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${tables.knowledgeStatusIndex} ON ${tables.knowledgeBase}(status, updated_at)`).run();
+  await ensureLivechatAiQaColumn(env, tables.reviews, "assigned_to", "TEXT");
+  await ensureLivechatAiQaColumn(env, tables.reviews, "assigned_at", "TEXT");
+  await ensureLivechatAiQaColumn(env, tables.reviews, "completed_by", "TEXT");
 }
 
 async function ensureLivechatAgentQaTables(env, tables = livechatAiQaTables(env)) {
@@ -714,6 +717,9 @@ async function ensureLivechatAgentQaTables(env, tables = livechatAiQaTables(env)
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${tables.agentQaChecksTagIndex} ON ${tables.agentQaChecks}(selected_tag, result)`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${tables.agentQaFeedbackReviewIndex} ON ${tables.agentQaFeedback}(review_id, created_at)`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${tables.agentQaKnowledgeTagIndex} ON ${tables.agentQaKnowledgeBase}(rule_key, tag, status)`).run();
+  await ensureLivechatAiQaColumn(env, tables.agentQaReviews, "assigned_to", "TEXT");
+  await ensureLivechatAiQaColumn(env, tables.agentQaReviews, "assigned_at", "TEXT");
+  await ensureLivechatAiQaColumn(env, tables.agentQaReviews, "completed_by", "TEXT");
 }
 
 async function ensureLivechatAiQaColumn(env, table, column, definition) {
@@ -1255,6 +1261,8 @@ function reviewFromRows(reviewRow, suggestionRows = []) {
     reviewStartedAt: reviewRow.review_started_at || "",
     reviewedAt: reviewRow.reviewed_at || "",
     reviewer: reviewRow.reviewer || "",
+    assignedTo: reviewRow.assigned_to || "",
+    assignedAt: reviewRow.assigned_at || "",
     finalTags: parseJson(reviewRow.final_tags_json, []),
     decisionNote: reviewRow.decision_note || "",
     livechatTagsAppliedAt: reviewRow.livechat_tags_applied_at || "",
@@ -1342,6 +1350,8 @@ export async function queueLivechatAiQaReviewForChat(env, chatId, threadId) {
     )
     .run();
 
+  const management = await import("./livechat-ai-qa-management.js");
+  await management.refillAllEnabledLivechatAiQaQueues(env, "auto_tag");
   return { queued: true, reviewId, status: "pending_review", aiStatus: "pending" };
 }
 
@@ -1579,6 +1589,10 @@ export async function listLivechatAiQaReviews(env, filters = {}) {
     const value = `%${filters.chatId}%`;
     binds.push(value, value);
   }
+  if (filters.assignedTo) {
+    where.push("r.assigned_to = ?");
+    binds.push(filters.assignedTo);
+  }
   const pageSize = Math.min(Math.max(Number(filters.pageSize) || 25, 1), 100);
   const page = Math.max(Number(filters.page) || 1, 1);
   const offset = (page - 1) * pageSize;
@@ -1616,6 +1630,8 @@ export async function listLivechatAiQaReviews(env, filters = {}) {
       lastEventAt: row.last_event_at || "",
       reviewedAt: row.reviewed_at || "",
       reviewer: row.reviewer || "",
+      assignedTo: row.assigned_to || "",
+      assignedAt: row.assigned_at || "",
       aiError: row.ai_error || "",
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -1776,6 +1792,8 @@ async function insertAiQaFeedback(env, review, feedback, finalTags, reviewer) {
 
 export async function decideLivechatAiQaReview(env, reviewId, decision = {}) {
   const tables = await ensureLivechatAiQaTables(env);
+  const management = await import("./livechat-ai-qa-management.js");
+  await management.ensureLivechatAiQaManagementTables(env);
   const review = await env.DB.prepare(`SELECT * FROM ${tables.reviews} WHERE id = ?`).bind(reviewId).first();
   if (!review) return { decided: false, reason: "not_found" };
 
@@ -1789,6 +1807,9 @@ export async function decideLivechatAiQaReview(env, reviewId, decision = {}) {
   }
 
   const finalTags = normalizeReviewDecisionTags(decision.finalTags || decision.final_tags, isApprove ? suggestedTags : []);
+  if (isApprove && JSON.stringify([...finalTags].sort()) !== JSON.stringify([...suggestedTags].sort())) {
+    return { decided: false, reason: "changed_review_requires_correction" };
+  }
   const reviewer = text(decision.reviewer || "qa");
   const applyToLiveChat = decision.applyToLiveChat !== false && decision.apply_to_livechat !== false;
   let applyResult = { applied: [], skipped: [] };
@@ -1800,6 +1821,13 @@ export async function decideLivechatAiQaReview(env, reviewId, decision = {}) {
   }
 
   const now = nowIso();
+  const previousTags = parseJson(review.final_tags_json, []);
+  const previousStatus = review.status || "";
+  const historyAction = ["approved", "corrected"].includes(previousStatus)
+    ? "edited"
+    : isApprove
+      ? "approved"
+      : "corrected";
   await env.DB.prepare(`
     UPDATE ${tables.reviews}
     SET status = ?,
@@ -1808,6 +1836,7 @@ export async function decideLivechatAiQaReview(env, reviewId, decision = {}) {
         final_tags_json = ?,
         decision_note = ?,
         livechat_tags_applied_at = ?,
+        completed_by = ?,
         updated_at = ?
     WHERE id = ?
   `)
@@ -1818,10 +1847,25 @@ export async function decideLivechatAiQaReview(env, reviewId, decision = {}) {
       jsonText(finalTags),
       truncate(decision.note || decision.decisionNote, 1200),
       applyToLiveChat ? now : "",
+      reviewer,
       now,
       reviewId,
     )
     .run();
+  await management.recordLivechatAiQaDecisionHistory(env, {
+    reviewType: "auto_tag",
+    reviewId,
+    chatId: review.chat_id,
+    threadId: review.thread_id,
+    action: historyAction,
+    previousStatus,
+    newStatus: isApprove ? "approved" : "corrected",
+    previousResult: previousTags,
+    newResult: finalTags,
+    reviewer,
+    note: decision.note || decision.decisionNote,
+  });
+  await management.refillConfiguredLivechatAiQaQueue(env, review.assigned_to || reviewer, "auto_tag");
 
   return {
     decided: true,
@@ -2358,6 +2402,8 @@ function agentQaReviewFromRow(row, checks = []) {
     checks,
     reviewedAt: row.reviewed_at || "",
     reviewer: row.reviewer || "",
+    assignedTo: row.assigned_to || "",
+    assignedAt: row.assigned_at || "",
     finalTags: visibleAgentQaTags(parseJson(row.final_tags_json, [])),
     decisionNote: row.decision_note || "",
     livechatTagsAppliedAt: row.livechat_tags_applied_at || "",
@@ -2415,6 +2461,8 @@ export async function queueLivechatAgentQaReviewForChat(env, chatId, threadId) {
     )
     .run();
   await saveAgentQaChecks(env, reviewId, deterministicChecks);
+  const management = await import("./livechat-ai-qa-management.js");
+  await management.refillAllEnabledLivechatAiQaQueues(env, "agent_qa");
   return { queued: true, reviewId, status: "pending_review", aiStatus: enoughInteraction ? "pending" : "completed" };
 }
 
@@ -2625,6 +2673,10 @@ export async function listLivechatAgentQaReviews(env, filters = {}) {
     const value = `%${filters.chatId}%`;
     binds.push(value, value);
   }
+  if (filters.assignedTo) {
+    where.push("assigned_to = ?");
+    binds.push(filters.assignedTo);
+  }
   const pageSize = Math.min(Math.max(Number(filters.pageSize) || 25, 1), 100);
   const page = Math.max(Number(filters.page) || 1, 1);
   const offset = (page - 1) * pageSize;
@@ -2781,6 +2833,8 @@ async function insertAgentQaFeedback(env, review, checks, feedback, finalTags, r
 
 export async function decideLivechatAgentQaReview(env, reviewId, decision = {}) {
   const tables = await ensureLivechatAiQaTables(env);
+  const management = await import("./livechat-ai-qa-management.js");
+  await management.ensureLivechatAiQaManagementTables(env);
   const review = await env.DB.prepare(`SELECT * FROM ${tables.agentQaReviews} WHERE id = ?`).bind(reviewId).first();
   if (!review) return { decided: false, reason: "not_found" };
 
@@ -2800,6 +2854,9 @@ export async function decideLivechatAgentQaReview(env, reviewId, decision = {}) 
   if (!finalTags.length) {
     return { decided: false, reason: "missing_final_tags" };
   }
+  if (isApprove && JSON.stringify([...finalTags].sort()) !== JSON.stringify([...suggestedTags].sort())) {
+    return { decided: false, reason: "changed_review_requires_correction" };
+  }
 
   const reviewer = text(decision.reviewer || "qa");
   const applyToLiveChat = decision.applyToLiveChat !== false && decision.apply_to_livechat !== false;
@@ -2812,6 +2869,13 @@ export async function decideLivechatAgentQaReview(env, reviewId, decision = {}) 
   }
 
   const now = nowIso();
+  const previousTags = parseJson(review.final_tags_json, []);
+  const previousStatus = review.status || "";
+  const historyAction = ["approved", "corrected"].includes(previousStatus)
+    ? "edited"
+    : isApprove
+      ? "approved"
+      : "corrected";
   await env.DB.prepare(`
     UPDATE ${tables.agentQaReviews}
     SET status = ?,
@@ -2821,6 +2885,7 @@ export async function decideLivechatAgentQaReview(env, reviewId, decision = {}) 
         decision_note = ?,
         livechat_tags_applied_at = ?,
         system_tags_json = ?,
+        completed_by = ?,
         updated_at = ?
     WHERE id = ?
   `)
@@ -2832,10 +2897,25 @@ export async function decideLivechatAgentQaReview(env, reviewId, decision = {}) 
       truncate(decision.note || decision.decisionNote, 1200),
       applyToLiveChat ? now : "",
       jsonText(applyResult.systemTags || parseJson(review.system_tags_json, [])),
+      reviewer,
       now,
       reviewId,
     )
     .run();
+  await management.recordLivechatAiQaDecisionHistory(env, {
+    reviewType: "agent_qa",
+    reviewId,
+    chatId: review.chat_id,
+    threadId: review.thread_id,
+    action: historyAction,
+    previousStatus,
+    newStatus: isApprove ? "approved" : "corrected",
+    previousResult: previousTags,
+    newResult: finalTags,
+    reviewer,
+    note: decision.note || decision.decisionNote,
+  });
+  await management.refillConfiguredLivechatAiQaQueue(env, review.assigned_to || reviewer, "agent_qa");
 
   return {
     decided: true,

@@ -484,6 +484,7 @@ const state = {
     total: 0,
     page: 1,
     pageSize: 25,
+    dirty: false,
     filters: {
       status: "pending_review",
       aiStatus: "",
@@ -503,6 +504,7 @@ const state = {
     total: 0,
     page: 1,
     pageSize: 25,
+    dirty: false,
     filters: {
       status: "pending_review",
       aiStatus: "",
@@ -522,6 +524,15 @@ const state = {
       to: "",
       agent: "",
     },
+  },
+  livechatAiQaManagement: {
+    loading: false,
+    saving: false,
+    error: null,
+    data: null,
+    username: "",
+    from: "",
+    to: "",
   },
   helpdesk_analytics: {
     view: "report",
@@ -2912,6 +2923,7 @@ async function fetchLivechatAiQaReviewDetail(reviewId, { silent = false } = {}) 
   state.livechatAiQaReview.selectedId = reviewId;
   state.livechatAiQaReview.detailLoading = true;
   state.livechatAiQaReview.actionError = null;
+  state.livechatAiQaReview.dirty = false;
   if (!silent && state.section === "livechat-ai-qa-review") renderApp();
 
   try {
@@ -3125,7 +3137,7 @@ function renderAiQaReviewFilters() {
           <div class="subtle">${Number(state.livechatAiQaReview.total || 0).toLocaleString()} review(s)</div>
         </div>
         <div class="analytics-actions">
-          <button id="aiQaReviewsProcessBtn" class="btn btn-sm btn-outline-secondary" type="button" ${state.livechatAiQaReview.actionLoading ? "disabled" : ""}>Process pending</button>
+          ${isAdminRole() ? `<button id="aiQaReviewsProcessBtn" class="btn btn-sm btn-outline-secondary" type="button" ${state.livechatAiQaReview.actionLoading ? "disabled" : ""}>Process pending</button>` : ""}
           <button id="aiQaReviewsReloadBtn" class="btn btn-sm btn-outline-secondary" type="button">Reload</button>
         </div>
       </div>
@@ -3162,6 +3174,83 @@ function renderAiQaReviewFilters() {
       </div>
     </div>
   `;
+}
+
+function aiQaManagementDate(daysAgo = 0) {
+  const date = new Date();
+  date.setDate(date.getDate() - daysAgo);
+  return localDateValue(date);
+}
+
+async function fetchLivechatAiQaManagement() {
+  const management = state.livechatAiQaManagement;
+  management.loading = true;
+  management.error = null;
+  management.username ||= state.user || "";
+  management.from ||= aiQaManagementDate(30);
+  management.to ||= aiQaManagementDate(0);
+  try {
+    const params = new URLSearchParams({
+      username: management.username,
+      from: management.from,
+      to: management.to,
+      allUsers: isAdminRole() ? "1" : "0",
+    });
+    management.data = await api(`/api/livechat/ai-qa-management?${params.toString()}`);
+  } catch (error) {
+    management.error = error.message;
+  } finally {
+    management.loading = false;
+    if (["livechat-ai-qa-review", "livechat-agent-qa-review"].includes(state.section)) renderApp();
+  }
+}
+
+function renderLivechatAiQaManagement() {
+  const management = state.livechatAiQaManagement;
+  const data = management.data;
+  const settings = data?.settings || [];
+  const users = isAdminRole() ? (data?.users || [state.user]) : [state.user];
+  const settingRow = (type, label) => {
+    const setting = settings.find((item) => item.reviewType === type) || { enabled: false, targetQueueSize: 20 };
+    const queue = data?.queue?.[type] || { assigned: 0, unassigned: 0 };
+    return `
+      <div class="qa-queue-setting-row">
+        <label class="analytics-check-option">
+          <input class="form-check-input" type="checkbox" data-qa-queue-enabled="${type}" ${setting.enabled ? "checked" : ""} />
+          <span><strong>${label}</strong><small>${queue.assigned} assigned · ${queue.unassigned} unassigned</small></span>
+        </label>
+        <label><span>Queue size</span><input class="form-control" type="number" min="1" max="500" data-qa-queue-size="${type}" value="${setting.targetQueueSize}" ${isAdminRole() ? "" : "disabled"} /></label>
+        <button class="btn btn-sm btn-outline-secondary" type="button" data-qa-queue-save="${type}">Save</button>
+      </div>`;
+  };
+  return `
+    <div class="card-shell qa-management-shell">
+      <div class="tickets-toolbar">
+        <div><div class="section-title">Queue settings & review statistics</div><div class="subtle">Personal assignments and reviewer activity</div></div>
+        ${isAdminRole() ? `<select id="qaManagementUsername" class="form-select">${users.map((user) => `<option value="${escapeHtml(user)}" ${management.username === user ? "selected" : ""}>${escapeHtml(user)}</option>`).join("")}</select>` : ""}
+      </div>
+      ${management.error ? `<div class="empty-state analytics-error">${escapeHtml(management.error)}</div>` : ""}
+      ${management.loading && !data ? '<div class="empty-state">Loading queue settings...</div>' : `
+        <div class="qa-queue-settings-grid">
+          ${settingRow("auto_tag", "Auto-tag review queue")}
+          ${settingRow("agent_qa", "Agent QA review queue")}
+        </div>
+        <div class="qa-stat-filter-row">
+          <label><span>From</span><input id="qaManagementFrom" class="form-control" type="date" value="${escapeHtml(management.from)}" /></label>
+          <label><span>To</span><input id="qaManagementTo" class="form-control" type="date" value="${escapeHtml(management.to)}" /></label>
+          <button id="qaManagementFilterBtn" class="btn btn-outline-secondary" type="button">Filter statistics</button>
+          <button id="qaManagementReleaseBtn" class="btn btn-outline-danger" type="button">Release pending queue</button>
+        </div>
+        <div class="table-responsive mt-3">
+          <table class="table align-middle"><thead><tr><th>User</th><th>Approved</th><th>Corrected</th><th>Edited</th><th>Processed</th></tr></thead>
+          <tbody>${(data?.statistics || []).length ? data.statistics.map((row) => `<tr><td>${escapeHtml(row.reviewer)}</td><td>${row.approved}</td><td>${row.corrected}</td><td>${row.edited}</td><td><strong>${row.processed}</strong></td></tr>`).join("") : '<tr><td colspan="5" class="subtle">No review activity for this period.</td></tr>'}</tbody></table>
+        </div>
+        <details class="mt-2">
+          <summary>Daily breakdown</summary>
+          <div class="table-responsive mt-2"><table class="table align-middle"><thead><tr><th>Date</th><th>User</th><th>Approved</th><th>Corrected</th><th>Edited</th><th>Processed</th></tr></thead>
+          <tbody>${(data?.dailyStatistics || []).length ? data.dailyStatistics.map((row) => `<tr><td>${escapeHtml(row.date)}</td><td>${escapeHtml(row.reviewer)}</td><td>${row.approved}</td><td>${row.corrected}</td><td>${row.edited}</td><td><strong>${row.processed}</strong></td></tr>`).join("") : '<tr><td colspan="6" class="subtle">No daily activity.</td></tr>'}</tbody></table></div>
+        </details>`}
+    </div>`;
 }
 
 function renderAiQaReviewQueue() {
@@ -3306,7 +3395,7 @@ function renderAiQaFinalTagControls(detail) {
         const suggested = suggestedTags.has(tag);
         return `
           <label class="ai-qa-final-tag ${checked ? "selected" : ""} ${suggested ? "suggested" : ""}">
-            <input type="checkbox" name="aiQaFinalTag" value="${escapeHtml(tag)}" ${checked ? "checked" : ""} ${closed ? "disabled" : ""} />
+            <input type="checkbox" name="aiQaFinalTag" value="${escapeHtml(tag)}" ${checked ? "checked" : ""} />
             <span>${escapeHtml(tag)}</span>
           </label>
         `;
@@ -3334,7 +3423,7 @@ function renderAiQaFeedbackControls(detail) {
               <strong>${escapeHtml(tag)}</strong>
               <small data-ai-qa-feedback-state="${escapeHtml(tag)}">${suggested ? "AI suggested" : ""}${existing ? `${suggested ? " · " : ""}Existing` : ""}${suggested && selected ? " · kept" : ""}${!suggested && selected ? "Selected" : ""}</small>
             </span>
-            <textarea class="form-control" rows="2" data-ai-qa-feedback-tag="${escapeHtml(tag)}" placeholder="Correction comment for AI" ${closed ? "disabled" : ""}></textarea>
+            <textarea class="form-control" rows="2" data-ai-qa-feedback-tag="${escapeHtml(tag)}" placeholder="Correction comment for AI"></textarea>
           </label>
         `;
       }).join("")}
@@ -3371,6 +3460,15 @@ function refreshAiQaFeedbackVisibility() {
   });
 }
 
+function markAiQaReviewDirty(type) {
+  const isAgent = type === "agent";
+  const reviewState = isAgent ? state.livechatAgentQaReview : state.livechatAiQaReview;
+  reviewState.dirty = true;
+  const approve = document.getElementById(isAgent ? "agentQaApproveBtn" : "aiQaApproveBtn");
+  if (approve) approve.disabled = true;
+  document.getElementById(isAgent ? "agentQaDirtyHint" : "aiQaDirtyHint")?.classList.remove("d-none");
+}
+
 function renderAiQaReviewDecisionPanel(detail) {
   if (state.livechatAiQaReview.detailLoading) {
     return `<aside class="ai-qa-review-decision"><div class="empty-state">Loading AI suggestions...</div></aside>`;
@@ -3404,14 +3502,15 @@ function renderAiQaReviewDecisionPanel(detail) {
         ${renderAiQaFeedbackControls(detail)}
       </div>
       <label class="ai-qa-apply-toggle">
-        <input id="aiQaApplyToLiveChat" class="form-check-input" type="checkbox" ${closed ? "disabled" : "checked"} />
+        <input id="aiQaApplyToLiveChat" class="form-check-input" type="checkbox" checked />
         <span>Apply tags to LiveChat</span>
       </label>
-      <textarea id="aiQaDecisionNote" class="form-control" rows="2" placeholder="Review note" ${closed ? "disabled" : ""}>${escapeHtml(detail.decisionNote || "")}</textarea>
+      <textarea id="aiQaDecisionNote" class="form-control" rows="2" placeholder="Review note">${escapeHtml(detail.decisionNote || "")}</textarea>
+      <div id="aiQaDirtyHint" class="subtle ${state.livechatAiQaReview.dirty ? "" : "d-none"}">The review was changed and must be saved as corrected.</div>
       ${state.livechatAiQaReview.actionError ? `<div class="empty-state analytics-error">${escapeHtml(state.livechatAiQaReview.actionError)}</div>` : ""}
       <div class="ai-qa-review-actions">
-        <button id="aiQaApproveBtn" class="btn btn-primary" type="button" ${closed || state.livechatAiQaReview.actionLoading || detail.aiStatus !== "completed" ? "disabled" : ""}>Approve</button>
-        <button id="aiQaCorrectBtn" class="btn btn-outline-secondary" type="button" ${closed || state.livechatAiQaReview.actionLoading ? "disabled" : ""}>Correct & Apply</button>
+        <button id="aiQaApproveBtn" class="btn btn-primary" type="button" ${closed || state.livechatAiQaReview.dirty || state.livechatAiQaReview.actionLoading || detail.aiStatus !== "completed" ? "disabled" : ""}>Approve</button>
+        <button id="aiQaCorrectBtn" class="btn btn-outline-secondary" type="button" ${state.livechatAiQaReview.actionLoading ? "disabled" : ""}>${closed ? "Save changes" : "Correct & Apply"}</button>
         <button id="aiQaRetryBtn" class="btn btn-outline-secondary" type="button" ${state.livechatAiQaReview.actionLoading ? "disabled" : ""}>Retry AI</button>
       </div>
       ${
@@ -3432,6 +3531,7 @@ function renderLivechatAiQaReview() {
   const detail = state.livechatAiQaReview.detail;
   return `
     <section class="ai-qa-review-page">
+      ${renderLivechatAiQaManagement()}
       ${renderAiQaReviewFilters()}
       <div class="ai-qa-review-workspace">
         ${renderAiQaReviewQueue()}
@@ -3510,6 +3610,7 @@ async function fetchLivechatAgentQaReviewDetail(reviewId, { silent = false } = {
   state.livechatAgentQaReview.selectedId = reviewId;
   state.livechatAgentQaReview.detailLoading = true;
   state.livechatAgentQaReview.actionError = null;
+  state.livechatAgentQaReview.dirty = false;
   if (!silent && state.section === "livechat-agent-qa-review") renderApp();
   try {
     state.livechatAgentQaReview.detail = await api(`/api/livechat/ai-agent-qa-reviews/${encodeURIComponent(reviewId)}`);
@@ -3714,7 +3815,7 @@ function renderAgentQaReviewFilters() {
           <div class="subtle">${Number(state.livechatAgentQaReview.total || 0).toLocaleString()} review(s)</div>
         </div>
         <div class="analytics-actions">
-          <button id="agentQaReviewsProcessBtn" class="btn btn-sm btn-outline-secondary" type="button" ${state.livechatAgentQaReview.actionLoading ? "disabled" : ""}>Process pending</button>
+          ${isAdminRole() ? `<button id="agentQaReviewsProcessBtn" class="btn btn-sm btn-outline-secondary" type="button" ${state.livechatAgentQaReview.actionLoading ? "disabled" : ""}>Process pending</button>` : ""}
           <button id="agentQaReviewsReloadBtn" class="btn btn-sm btn-outline-secondary" type="button">Reload</button>
         </div>
       </div>
@@ -3893,7 +3994,7 @@ function renderAgentQaFinalTagControls(detail) {
               <strong>${escapeHtml(rule.rule)}</strong>
               <small>${escapeHtml(rule.title)}</small>
             </span>
-            <select class="form-select" name="agentQaFinalTag" data-rule="${escapeHtml(rule.rule)}" ${closed ? "disabled" : ""}>
+            <select class="form-select" name="agentQaFinalTag" data-rule="${escapeHtml(rule.rule)}">
               <option value="">Not applicable</option>
               ${rule.tags
                 .map((tag) => `<option value="${escapeHtml(tag)}" ${selected === tag ? "selected" : ""}>${escapeHtml(tag)}</option>`)
@@ -3922,7 +4023,7 @@ function renderAgentQaFeedbackControls(detail) {
               <strong>${escapeHtml(rule.rule)}</strong>
               <small data-agent-qa-feedback-state="${escapeHtml(rule.rule)}">${escapeHtml([check?.selectedTag ? `AI: ${check.selectedTag}` : "", selected ? "Selected" : ""].filter(Boolean).join(" · "))}</small>
             </span>
-            <textarea class="form-control" rows="2" data-agent-qa-feedback-rule="${escapeHtml(rule.rule)}" placeholder="Correction comment for AI" ${closed ? "disabled" : ""}></textarea>
+            <textarea class="form-control" rows="2" data-agent-qa-feedback-rule="${escapeHtml(rule.rule)}" placeholder="Correction comment for AI"></textarea>
           </label>
         `;
       }).join("")}
@@ -3979,14 +4080,15 @@ function renderAgentQaReviewDecisionPanel(detail) {
         ${renderAgentQaFeedbackControls(detail)}
       </div>
       <label class="ai-qa-apply-toggle">
-        <input id="agentQaApplyToLiveChat" class="form-check-input" type="checkbox" ${closed ? "disabled" : "checked"} />
+        <input id="agentQaApplyToLiveChat" class="form-check-input" type="checkbox" checked />
         <span>Apply tags to LiveChat</span>
       </label>
-      <textarea id="agentQaDecisionNote" class="form-control" rows="2" placeholder="Review note" ${closed ? "disabled" : ""}>${escapeHtml(detail.decisionNote || "")}</textarea>
+      <textarea id="agentQaDecisionNote" class="form-control" rows="2" placeholder="Review note">${escapeHtml(detail.decisionNote || "")}</textarea>
+      <div id="agentQaDirtyHint" class="subtle ${state.livechatAgentQaReview.dirty ? "" : "d-none"}">The review was changed and must be saved as corrected.</div>
       ${state.livechatAgentQaReview.actionError ? `<div class="empty-state analytics-error">${escapeHtml(state.livechatAgentQaReview.actionError)}</div>` : ""}
       <div class="ai-qa-review-actions">
-        <button id="agentQaApproveBtn" class="btn btn-primary" type="button" ${closed || state.livechatAgentQaReview.actionLoading || detail.aiStatus !== "completed" ? "disabled" : ""}>Approve</button>
-        <button id="agentQaCorrectBtn" class="btn btn-outline-secondary" type="button" ${closed || state.livechatAgentQaReview.actionLoading ? "disabled" : ""}>Correct & Apply</button>
+        <button id="agentQaApproveBtn" class="btn btn-primary" type="button" ${closed || state.livechatAgentQaReview.dirty || state.livechatAgentQaReview.actionLoading || detail.aiStatus !== "completed" ? "disabled" : ""}>Approve</button>
+        <button id="agentQaCorrectBtn" class="btn btn-outline-secondary" type="button" ${state.livechatAgentQaReview.actionLoading ? "disabled" : ""}>${closed ? "Save changes" : "Correct & Apply"}</button>
         <button id="agentQaRetryBtn" class="btn btn-outline-secondary" type="button" ${state.livechatAgentQaReview.actionLoading ? "disabled" : ""}>Retry AI</button>
       </div>
       ${
@@ -4007,6 +4109,7 @@ function renderLivechatAgentQaReview() {
   const detail = state.livechatAgentQaReview.detail;
   return `
     <section class="ai-qa-review-page">
+      ${renderLivechatAiQaManagement()}
       ${renderAgentQaReviewFilters()}
       <div class="ai-qa-review-workspace">
         ${renderAgentQaReviewQueue()}
@@ -8341,6 +8444,14 @@ function renderApp() {
   ) {
     fetchLivechatAiQaTagging();
   }
+  if (
+    ["livechat-ai-qa-review", "livechat-agent-qa-review"].includes(state.section) &&
+    !state.livechatAiQaManagement.loading &&
+    !state.livechatAiQaManagement.data &&
+    !state.livechatAiQaManagement.error
+  ) {
+    fetchLivechatAiQaManagement();
+  }
 
   if (
     state.section === "livechat-ai-qa-review" &&
@@ -8811,6 +8922,43 @@ function bindAppEvents() {
     syncLivechatAiQaReviewFiltersFromDom();
     fetchLivechatAiQaReviews();
   });
+  document.getElementById("qaManagementUsername")?.addEventListener("change", (event) => {
+    state.livechatAiQaManagement.username = event.target.value;
+    fetchLivechatAiQaManagement();
+  });
+  bindClick("qaManagementFilterBtn", () => {
+    state.livechatAiQaManagement.from = document.getElementById("qaManagementFrom")?.value || "";
+    state.livechatAiQaManagement.to = document.getElementById("qaManagementTo")?.value || "";
+    fetchLivechatAiQaManagement();
+  });
+  document.querySelectorAll("[data-qa-queue-save]").forEach((button) => {
+    button.onclick = async () => {
+      const reviewType = button.dataset.qaQueueSave;
+      const enabled = document.querySelector(`[data-qa-queue-enabled="${reviewType}"]`)?.checked || false;
+      const targetQueueSize = Number(document.querySelector(`[data-qa-queue-size="${reviewType}"]`)?.value || 20);
+      await withBusyState(async () => {
+        await api("/api/livechat/ai-qa-management", {
+          method: "PATCH",
+          body: { username: state.livechatAiQaManagement.username || state.user, reviewType, enabled, targetQueueSize },
+        });
+        await fetchLivechatAiQaManagement();
+        await Promise.all([
+          fetchLivechatAiQaReviews({ keepSelection: true }),
+          fetchLivechatAgentQaReviews({ keepSelection: true }),
+        ]);
+      }, "QA queue settings saved.");
+    };
+  });
+  bindClick("qaManagementReleaseBtn", async () => {
+    if (!window.confirm("Release all pending assigned reviews for this user?")) return;
+    await withBusyState(async () => {
+      await api("/api/livechat/ai-qa-management", {
+        method: "POST",
+        body: { action: "release", username: state.livechatAiQaManagement.username || state.user },
+      });
+      await fetchLivechatAiQaManagement();
+    }, "Pending QA queue released.");
+  });
   bindClick("aiQaReviewResetBtn", () => {
     resetLivechatAiQaReviewFilters();
     fetchLivechatAiQaReviews();
@@ -8831,7 +8979,13 @@ function bindAppEvents() {
     processLivechatAiQaReviews({ selected: true, force: true });
   });
   document.querySelectorAll('input[name="aiQaFinalTag"]').forEach((input) => {
-    input.onchange = refreshAiQaFeedbackVisibility;
+    input.onchange = () => {
+      refreshAiQaFeedbackVisibility();
+      markAiQaReviewDirty("auto");
+    };
+  });
+  document.querySelectorAll("[data-ai-qa-feedback-tag], #aiQaDecisionNote").forEach((input) => {
+    input.oninput = () => markAiQaReviewDirty("auto");
   });
   document.querySelectorAll("[data-ai-qa-review-open]").forEach((button) => {
     button.onclick = () => {
@@ -8873,7 +9027,13 @@ function bindAppEvents() {
     processLivechatAgentQaReviews({ selected: true, force: true });
   });
   document.querySelectorAll('select[name="agentQaFinalTag"]').forEach((select) => {
-    select.onchange = refreshAgentQaFeedbackVisibility;
+    select.onchange = () => {
+      refreshAgentQaFeedbackVisibility();
+      markAiQaReviewDirty("agent");
+    };
+  });
+  document.querySelectorAll("[data-agent-qa-feedback-rule], #agentQaDecisionNote").forEach((input) => {
+    input.oninput = () => markAiQaReviewDirty("agent");
   });
   document.querySelectorAll("[data-agent-qa-review-open]").forEach((button) => {
     button.onclick = () => {

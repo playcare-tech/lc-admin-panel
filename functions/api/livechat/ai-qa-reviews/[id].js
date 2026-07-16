@@ -20,10 +20,16 @@ export async function onRequest(context) {
 
   try {
     const id = context.params.id;
+    const existingReview = await getLivechatAiQaReview(context.env, id);
+    if (!existingReview) return errorResponse("AI QA review not found.", 404);
+    if (
+      auth.session.permissions?.role === "qa_manager" &&
+      existingReview.assignedTo !== auth.session.user
+    ) {
+      return errorResponse("This review is not assigned to your queue.", 403);
+    }
     if (context.request.method === "GET") {
-      const review = await getLivechatAiQaReview(context.env, id);
-      if (!review) return errorResponse("AI QA review not found.", 404);
-      return json(review);
+      return json(existingReview);
     }
 
     const body = await readJson(context.request);
@@ -37,6 +43,9 @@ export async function onRequest(context) {
     });
     if (!result.decided && result.reason === "not_found") {
       return errorResponse("AI QA review not found.", 404);
+    }
+    if (!result.decided && result.reason === "changed_review_requires_correction") {
+      return errorResponse("Changed reviews must be saved as corrected.", 400, { reason: result.reason });
     }
     if (!result.decided) {
       return errorResponse("Unsupported AI QA review decision.", 400, { reason: result.reason });

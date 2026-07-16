@@ -209,6 +209,9 @@ CREATE TABLE IF NOT EXISTS livechat_ai_qa_reviews (
   review_started_at TEXT,
   reviewed_at TEXT,
   reviewer TEXT,
+  assigned_to TEXT,
+  assigned_at TEXT,
+  completed_by TEXT,
   final_tags_json TEXT NOT NULL DEFAULT '[]',
   decision_note TEXT,
   livechat_tags_applied_at TEXT,
@@ -308,6 +311,9 @@ CREATE TABLE IF NOT EXISTS livechat_ai_agent_qa_reviews (
   ai_completed_at TEXT,
   reviewed_at TEXT,
   reviewer TEXT,
+  assigned_to TEXT,
+  assigned_at TEXT,
+  completed_by TEXT,
   final_tags_json TEXT NOT NULL DEFAULT '[]',
   decision_note TEXT,
   livechat_tags_applied_at TEXT,
@@ -319,6 +325,32 @@ CREATE TABLE IF NOT EXISTS livechat_ai_agent_qa_reviews (
 CREATE INDEX IF NOT EXISTS idx_livechat_ai_agent_qa_reviews_status ON livechat_ai_agent_qa_reviews(status, ai_status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_livechat_ai_agent_qa_reviews_chat ON livechat_ai_agent_qa_reviews(chat_id, thread_id);
 CREATE INDEX IF NOT EXISTS idx_livechat_ai_agent_qa_reviews_agent ON livechat_ai_agent_qa_reviews(agent_label, updated_at);
+
+CREATE TABLE IF NOT EXISTS livechat_ai_qa_queue_settings (
+  username TEXT NOT NULL,
+  review_type TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  target_queue_size INTEGER NOT NULL DEFAULT 20,
+  updated_by TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (username, review_type)
+);
+
+CREATE TABLE IF NOT EXISTS livechat_ai_qa_review_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  review_type TEXT NOT NULL,
+  review_id TEXT NOT NULL,
+  chat_id TEXT,
+  thread_id TEXT,
+  action TEXT NOT NULL,
+  previous_status TEXT,
+  new_status TEXT,
+  previous_result_json TEXT NOT NULL DEFAULT '[]',
+  new_result_json TEXT NOT NULL DEFAULT '[]',
+  reviewer TEXT NOT NULL,
+  note TEXT,
+  created_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS livechat_ai_agent_qa_checks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
