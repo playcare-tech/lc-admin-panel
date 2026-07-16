@@ -19,7 +19,7 @@ const FAST_FTR_TAG = "q12a";
 const SLOW_FTR_TAG = "q12b";
 const AI_QA_PRIMARY_MODEL = "@cf/ibm-granite/granite-4.0-h-micro";
 const AI_QA_FALLBACK_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
-const AI_QA_PROMPT_VERSION = "manual-qa-tags-v2";
+const AI_QA_PROMPT_VERSION = "manual-qa-tags-v3";
 const AI_QA_TAXONOMY_VERSION = "2026-07-05-v1";
 const AI_QA_DEFAULT_DAILY_NEURON_LIMIT = 17000;
 const AI_QA_MAX_TRANSCRIPT_EVENTS = 160;
@@ -27,7 +27,7 @@ const AI_QA_MAX_TRANSCRIPT_CHARS = 24000;
 const AI_QA_OUTPUT_TOKEN_BUDGET = 900;
 const AI_QA_KNOWLEDGE_CANDIDATE_LIMIT = 80;
 const AI_QA_PROMPT_KNOWLEDGE_LIMIT = 10;
-const AGENT_QA_PROMPT_VERSION = "manual-agent-qa-v2";
+const AGENT_QA_PROMPT_VERSION = "manual-agent-qa-v3";
 const AGENT_QA_RULES_VERSION = "2026-07-05-v1";
 const AGENT_QA_LOW_CONFIDENCE_THRESHOLD = 0.85;
 const AGENT_QA_OUTPUT_TOKEN_BUDGET = 1100;
@@ -1078,6 +1078,11 @@ function buildAiQaMessages(review) {
     "Choose zero or more tags from the allowed taxonomy. If nothing fits, use other.",
     "Use learnedQaGuidance as reviewer-provided correction memory. Apply it only when it is relevant to this transcript.",
     "The allowed taxonomy remains the source of valid tag names. Do not invent tags from learnedQaGuidance.",
+    "Read the full conversation and classify the customer's actual intent, not an isolated keyword or one message.",
+    "Bonus_request means the player directly asks to receive, credit, activate, restore, or reissue a bonus.",
+    "Bonus_info means the player asks only for bonus terms, eligibility, wagering requirements, or instructions.",
+    "bonus_problem means an expected bonus is missing, broken, incorrectly issued, cannot be activated, or requires technical or escalation handling.",
+    "Do not use other when any specific taxonomy tag fits. Never combine other with another content tag.",
     "Return JSON only. Do not include markdown.",
     "For every suggested tag include confidence from 0 to 1, a short why, and evidence from the transcript.",
     "Do not use q12a or q12b; those are FTR system tags and are unrelated to content QA.",
@@ -1194,6 +1199,10 @@ function normalizeAiQaResponse(payload) {
       evidence: [],
       existingTagsConsidered: [],
     });
+  }
+  if (suggestions.length > 1) {
+    const otherIndex = suggestions.findIndex((item) => item.tag === "other");
+    if (otherIndex >= 0) suggestions.splice(otherIndex, 1);
   }
 
   const averageConfidence =
@@ -1705,6 +1714,7 @@ export async function getLivechatAiQaReview(env, reviewId) {
 
 function normalizeReviewDecisionTags(tags, fallbackTags = []) {
   const normalized = unique((Array.isArray(tags) && tags.length ? tags : fallbackTags).map(canonicalAiQaTag).filter(Boolean));
+  if (normalized.length > 1) return normalized.filter((tag) => tag !== "other");
   return normalized.length ? normalized : ["other"];
 }
 
@@ -1841,7 +1851,10 @@ export async function decideLivechatAiQaReview(env, reviewId, decision = {}) {
   }
 
   const now = nowIso();
-  const previousTags = parseJson(review.final_tags_json, []);
+  const previousTags =
+    ["approved", "corrected"].includes(review.status)
+      ? parseJson(review.final_tags_json, [])
+      : suggestedTags;
   const previousStatus = review.status || "";
   const historyAction = ["approved", "corrected"].includes(previousStatus)
     ? "edited"
@@ -2125,6 +2138,8 @@ function buildAgentQaMessages(review) {
     "If a q1-q8 procedure is not relevant, omit that rule completely; never mark a non-applicable rule as passed or failed.",
     "Do not treat withdrawal wagering, payment processing, KYC, bonus, or account-policy questions as q7/q8 unless there is a clear website or game technical malfunction.",
     "q9, q10, and q11 are general communication checks. When there is any real communication between the customer and a human agent, checks must include q9, q10, and q11.",
+    "If no human agent participated, do not assess q1-q11. Agent communication scores are not applicable to chatbot-only or no-agent chats.",
+    "A q0x or q0l deterministic outcome is exclusive and must never be combined with q9, q10, q11, or any other agent performance tag.",
     "Use learnedQaGuidance as reviewer-provided correction memory. Apply it only when it is relevant to this transcript and rule.",
     "The listed rules remain the source of valid checks. Do not invent rules or tags from learnedQaGuidance.",
     "The checks field must be an array of check objects, not an object keyed by rule.",
@@ -2785,7 +2800,10 @@ export async function getLivechatAgentQaReview(env, reviewId) {
 
 function normalizeAgentQaDecisionTags(tags, fallbackTags = []) {
   const normalized = visibleAgentQaTags(Array.isArray(tags) && tags.length ? tags : fallbackTags);
-  return normalized.length ? normalized : visibleAgentQaTags(fallbackTags);
+  const result = normalized.length ? normalized : visibleAgentQaTags(fallbackTags);
+  if (result.includes("q0x")) return ["q0x"];
+  if (result.includes("q0l")) return ["q0l"];
+  return result;
 }
 
 async function applyLivechatAgentQaFinalTags(env, review, tags) {
@@ -2919,7 +2937,10 @@ export async function decideLivechatAgentQaReview(env, reviewId, decision = {}) 
   }
 
   const now = nowIso();
-  const previousTags = parseJson(review.final_tags_json, []);
+  const previousTags =
+    ["approved", "corrected"].includes(review.status)
+      ? parseJson(review.final_tags_json, [])
+      : suggestedTags;
   const previousStatus = review.status || "";
   const historyAction = ["approved", "corrected"].includes(previousStatus)
     ? "edited"

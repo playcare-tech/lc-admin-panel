@@ -527,6 +527,18 @@ const state = {
       agent: "",
     },
   },
+  livechatAiQaPreReviewAnalytics: {
+    loading: false,
+    loaded: false,
+    error: null,
+    data: null,
+    filters: {
+      from: "",
+      to: "",
+      reviewType: "all",
+      reviewer: "",
+    },
+  },
   livechatAiQaManagement: {
     loading: false,
     saving: false,
@@ -720,6 +732,10 @@ function resetAccountScopedState() {
   state.livechatAgentQaLeaderboard.reviewedCount = 0;
   state.livechatAgentQaLeaderboard.loaded = false;
   state.livechatAgentQaLeaderboard.error = null;
+  state.livechatAiQaPreReviewAnalytics.loading = false;
+  state.livechatAiQaPreReviewAnalytics.loaded = false;
+  state.livechatAiQaPreReviewAnalytics.error = null;
+  state.livechatAiQaPreReviewAnalytics.data = null;
   state.qaDashboard.loading = false;
   state.qaDashboard.loaded = false;
   state.qaDashboard.error = null;
@@ -820,6 +836,7 @@ const SECTION_PERMISSIONS = {
   "livechat-ai-qa-review": "canReviewLivechatAiAutoTags",
   "livechat-agent-qa-review": "canReviewLivechatAgentQa",
   "livechat-agent-qa-leaderboard": "canViewLivechatAgentQaLeaderboard",
+  "livechat-ai-qa-pre-review-analytics": "canViewLivechatAgentQaLeaderboard",
   "helpdesk-analytics": "canViewHelpdeskAnalytics",
   "admin-users": "canManageAdmins",
 };
@@ -850,6 +867,7 @@ function firstAllowedSection() {
     "livechat-ai-qa-review",
     "livechat-agent-qa-review",
     "livechat-agent-qa-leaderboard",
+    "livechat-ai-qa-pre-review-analytics",
     "helpdesk-analytics",
     "livechat-users",
   ].find(canAccessSection) || "qa-dashboard";
@@ -4357,6 +4375,165 @@ function renderAgentQaLeaderboard() {
                 : '<div class="empty-state">No reviewed agent QA data yet.</div>'
         }
       </div>
+    </section>
+  `;
+}
+
+function aiQaPreReviewAnalyticsQueryParams() {
+  const filters = state.livechatAiQaPreReviewAnalytics.filters;
+  return new URLSearchParams({
+    from: filters.from,
+    to: filters.to,
+    reviewType: filters.reviewType,
+    reviewer: filters.reviewer,
+  });
+}
+
+function syncAiQaPreReviewAnalyticsFiltersFromDom() {
+  const filters = state.livechatAiQaPreReviewAnalytics.filters;
+  filters.from = document.getElementById("aiQaPreAnalyticsFrom")?.value || "";
+  filters.to = document.getElementById("aiQaPreAnalyticsTo")?.value || "";
+  filters.reviewType = document.getElementById("aiQaPreAnalyticsType")?.value || "all";
+  filters.reviewer = document.getElementById("aiQaPreAnalyticsReviewer")?.value.trim() || "";
+}
+
+async function fetchLivechatAiQaPreReviewAnalytics() {
+  const analytics = state.livechatAiQaPreReviewAnalytics;
+  analytics.filters.from ||= aiQaManagementDate(30);
+  analytics.filters.to ||= aiQaManagementDate(0);
+  analytics.loading = true;
+  analytics.error = null;
+  if (state.section === "livechat-ai-qa-pre-review-analytics") renderApp();
+  try {
+    analytics.data = await api(`/api/livechat/ai-qa-pre-review-analytics?${aiQaPreReviewAnalyticsQueryParams().toString()}`);
+    analytics.loaded = true;
+  } catch (error) {
+    analytics.error = error.message;
+    analytics.data = null;
+    analytics.loaded = true;
+  } finally {
+    analytics.loading = false;
+    if (state.section === "livechat-ai-qa-pre-review-analytics") renderApp();
+  }
+}
+
+function aiQaAnalyticsTypeLabel(type) {
+  return type === "agent_qa" ? "Agent QA" : type === "auto_tag" ? "Auto-tag" : "All";
+}
+
+function renderAiQaPreReviewTable(title, headers, rows, rowRenderer, emptyText) {
+  return `
+    <div class="table-shell ai-qa-pre-analytics-table-shell">
+      <div class="section-title">${escapeHtml(title)}</div>
+      ${
+        rows.length
+          ? `<div class="table-responsive"><table class="table align-middle ai-qa-pre-analytics-table">
+              <thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead>
+              <tbody>${rows.map(rowRenderer).join("")}</tbody>
+            </table></div>`
+          : `<div class="empty-state">${escapeHtml(emptyText)}</div>`
+      }
+    </div>
+  `;
+}
+
+function renderLivechatAiQaPreReviewAnalytics() {
+  const analytics = state.livechatAiQaPreReviewAnalytics;
+  const filters = analytics.filters;
+  const data = analytics.data;
+  const overall = data?.overall || {};
+  const usage = data?.usageTotals || {};
+  const pipeline = data?.pipeline || [];
+  return `
+    <section class="ai-qa-review-page">
+      <div class="card-shell ai-qa-review-filter-shell">
+        <div class="tickets-toolbar">
+          <div>
+            <div class="section-title">Chats pre-AI QA Review</div>
+            <div class="subtle">Quality of the original AI result before a QA manager approves or corrects it</div>
+          </div>
+          <button id="aiQaPreAnalyticsReloadBtn" class="btn btn-sm btn-outline-secondary" type="button">Reload</button>
+        </div>
+        <div class="ai-qa-review-filter-grid">
+          <label><span>From</span><input id="aiQaPreAnalyticsFrom" class="form-control" type="date" value="${escapeHtml(filters.from)}" /></label>
+          <label><span>To</span><input id="aiQaPreAnalyticsTo" class="form-control" type="date" value="${escapeHtml(filters.to)}" /></label>
+          <label><span>Review type</span><select id="aiQaPreAnalyticsType" class="form-select">
+            ${[["all", "All"], ["auto_tag", "Auto-tag"], ["agent_qa", "Agent QA"]]
+              .map(([value, label]) => `<option value="${value}" ${filters.reviewType === value ? "selected" : ""}>${label}</option>`)
+              .join("")}
+          </select></label>
+          <label><span>Reviewer</span><input id="aiQaPreAnalyticsReviewer" class="form-control" type="search" value="${escapeHtml(filters.reviewer)}" placeholder="email" /></label>
+          <div class="ai-qa-review-filter-actions">
+            <button id="aiQaPreAnalyticsFilterBtn" class="btn btn-primary" type="button">Filter</button>
+            <button id="aiQaPreAnalyticsResetBtn" class="btn btn-outline-secondary" type="button">Last 30 days</button>
+          </div>
+        </div>
+      </div>
+      ${analytics.error ? `<div class="empty-state analytics-error">${escapeHtml(analytics.error)}</div>` : ""}
+      ${
+        analytics.loading && !data
+          ? '<div class="empty-state">Loading pre-AI QA analytics...</div>'
+          : `
+            <div class="stats-grid">
+              <div class="card-shell stats-card"><div class="stats-label">Reviewed results</div><div class="stats-value">${Number(overall.reviewed || 0).toLocaleString()}</div></div>
+              <div class="card-shell stats-card"><div class="stats-label">Exact AI matches</div><div class="stats-value">${Number(overall.exactMatchRate || 0).toFixed(1)}%</div></div>
+              <div class="card-shell stats-card"><div class="stats-label">Correction rate</div><div class="stats-value">${Number(overall.correctionRate || 0).toFixed(1)}%</div></div>
+              <div class="card-shell stats-card"><div class="stats-label">Learned guidance</div><div class="stats-value">${Number(data?.knowledge?.total || 0).toLocaleString()}</div><div class="subtle">${Number(data?.knowledge?.autoTag || 0)} auto-tag · ${Number(data?.knowledge?.agentQa || 0)} Agent QA</div></div>
+              <div class="card-shell stats-card"><div class="stats-label">AI requests</div><div class="stats-value">${Number(usage.requests || 0).toLocaleString()}</div></div>
+              <div class="card-shell stats-card"><div class="stats-label">Neuron usage</div><div class="stats-value">${Number(usage.utilization || 0).toFixed(1)}%</div><div class="subtle">${Math.round(Number(usage.actualNeurons || 0)).toLocaleString()} / ${Math.round(Number(usage.limit || 0)).toLocaleString()}</div></div>
+              <div class="card-shell stats-card"><div class="stats-label">AI failures</div><div class="stats-value">${Number(usage.failed || 0).toLocaleString()}</div></div>
+              <div class="card-shell stats-card"><div class="stats-label">Skipped by limit</div><div class="stats-value">${Number(usage.skipped || 0).toLocaleString()}</div></div>
+            </div>
+            ${renderAiQaPreReviewTable(
+              "Accuracy by review type",
+              ["Type", "Reviewed", "Approved", "Corrected", "Exact match", "Avg confidence"],
+              data?.types || [],
+              (row) => `<tr><td><strong>${aiQaAnalyticsTypeLabel(row.type)}</strong></td><td>${row.reviewed}</td><td>${row.approved}</td><td>${row.corrected}</td><td>${Number(row.exactMatchRate || 0).toFixed(1)}%</td><td>${row.averageConfidence === null ? "-" : `${Number(row.averageConfidence).toFixed(1)}%`}</td></tr>`,
+              "No reviewed chats for this period.",
+            )}
+            <div class="ai-qa-pre-analytics-grid">
+              ${renderAiQaPreReviewTable(
+                "Most frequent tag errors",
+                ["Type", "Tag", "Suggested", "Kept", "Wrong", "Missed", "Precision", "Recall"],
+                (data?.tags || []).slice(0, 25),
+                (row) => `<tr><td>${aiQaAnalyticsTypeLabel(row.type)}</td><td><strong>${escapeHtml(row.tag)}</strong></td><td>${row.suggested}</td><td>${row.kept}</td><td>${row.wrong}</td><td>${row.missed}</td><td>${Number(row.precision || 0).toFixed(1)}%</td><td>${Number(row.recall || 0).toFixed(1)}%</td></tr>`,
+                "No tag errors found.",
+              )}
+              ${renderAiQaPreReviewTable(
+                "AI → manager corrections",
+                ["Type", "AI result", "Manager result", "Count"],
+                (data?.confusions || []).slice(0, 25),
+                (row) => `<tr><td>${aiQaAnalyticsTypeLabel(row.type)}</td><td>${escapeHtml(row.fromTag)}</td><td><strong>${escapeHtml(row.toTag)}</strong></td><td>${row.count}</td></tr>`,
+                "No corrections found.",
+              )}
+            </div>
+            ${renderAiQaPreReviewTable(
+              "Daily accuracy",
+              ["Date", "Type", "Reviewed", "Exact matches", "Corrected", "Accuracy"],
+              (data?.daily || []).slice(0, 60),
+              (row) => `<tr><td>${escapeHtml(row.date)}</td><td>${aiQaAnalyticsTypeLabel(row.type)}</td><td>${row.reviewed}</td><td>${row.exactMatches}</td><td>${row.corrected}</td><td>${Number(row.exactMatchRate || 0).toFixed(1)}%</td></tr>`,
+              "No daily data.",
+            )}
+            ${renderAiQaPreReviewTable(
+              "Performance by model and prompt",
+              ["Type", "Model", "Prompt", "Reviewed", "Accuracy", "Correction rate"],
+              data?.versions || [],
+              (row) => `<tr><td>${aiQaAnalyticsTypeLabel(row.type)}</td><td>${escapeHtml(row.model)}</td><td>${escapeHtml(row.promptVersion)}</td><td>${row.reviewed}</td><td>${Number(row.exactMatchRate || 0).toFixed(1)}%</td><td>${Number(row.correctionRate || 0).toFixed(1)}%</td></tr>`,
+              "No model performance data.",
+            )}
+            <div class="card-shell">
+              <div class="section-title">AI pipeline</div>
+              <div class="chip-list">${pipeline.length ? pipeline.map((row) => `<span class="chip">${aiQaAnalyticsTypeLabel(row.type)} · ${escapeHtml(row.aiStatus)}: ${Number(row.count || 0).toLocaleString()}</span>`).join("") : '<span class="subtle">No pipeline data.</span>'}</div>
+            </div>
+            ${renderAiQaPreReviewTable(
+              "Latest correction comments",
+              ["Time", "Type", "Chat", "AI → final", "Reviewer", "Comment"],
+              data?.recentComments || [],
+              (row) => `<tr><td>${escapeHtml(livechatAiQaDateTime(row.createdAt))}</td><td>${aiQaAnalyticsTypeLabel(row.type)}</td><td><strong>${escapeHtml(row.chatId)}</strong><div class="subtle">${escapeHtml(row.threadId)}</div></td><td>${escapeHtml([row.aiTag || row.tag, row.finalTag].filter(Boolean).join(" → ") || row.feedbackType)}</td><td>${escapeHtml(row.reviewer)}</td><td class="ai-qa-comment-cell">${escapeHtml(row.comment)}</td></tr>`,
+              "No correction comments for this period.",
+            )}
+          `
+      }
     </section>
   `;
 }
@@ -8091,6 +8268,7 @@ function currentSectionTitle() {
     "livechat-ai-qa-review": "Combined AI QA Review",
     "livechat-agent-qa-review": "Manual AI QA Review",
     "livechat-agent-qa-leaderboard": "AI QA leaderboard",
+    "livechat-ai-qa-pre-review-analytics": "Chats pre-AI QA Review",
     "helpdesk-users": "HelpDesk Users",
     "helpdesk-groups": "HelpDesk Groups",
     "create-helpdesk-user": "Create HelpDesk User",
@@ -8482,7 +8660,7 @@ function renderApp() {
     const active =
       section === state.section ||
       (section === "livechat-ai-qa-tagging" &&
-        ["livechat-ai-qa-review", "livechat-agent-qa-review", "livechat-agent-qa-leaderboard"].includes(state.section));
+        ["livechat-ai-qa-review", "livechat-agent-qa-review", "livechat-agent-qa-leaderboard", "livechat-ai-qa-pre-review-analytics"].includes(state.section));
     button.classList.toggle("active", active);
   });
 
@@ -8512,6 +8690,9 @@ function renderApp() {
     filterBar.classList.add("d-none");
   } else if (state.section === "livechat-agent-qa-leaderboard") {
     appContent.innerHTML = renderAgentQaLeaderboard();
+    filterBar.classList.add("d-none");
+  } else if (state.section === "livechat-ai-qa-pre-review-analytics") {
+    appContent.innerHTML = renderLivechatAiQaPreReviewAnalytics();
     filterBar.classList.add("d-none");
   } else if (state.section === "helpdesk-analytics") {
     filterBar.classList.add("d-none");
@@ -8597,6 +8778,14 @@ function renderApp() {
     !state.livechatAgentQaLeaderboard.error
   ) {
     fetchLivechatAgentQaLeaderboard();
+  }
+  if (
+    state.section === "livechat-ai-qa-pre-review-analytics" &&
+    !state.livechatAiQaPreReviewAnalytics.loading &&
+    !state.livechatAiQaPreReviewAnalytics.loaded &&
+    !state.livechatAiQaPreReviewAnalytics.error
+  ) {
+    fetchLivechatAiQaPreReviewAnalytics();
   }
 
   if (
@@ -9186,6 +9375,22 @@ function bindAppEvents() {
   });
   bindClick("agentQaLeaderboardReloadBtn", () => {
     fetchLivechatAgentQaLeaderboard();
+  });
+  bindClick("aiQaPreAnalyticsFilterBtn", () => {
+    syncAiQaPreReviewAnalyticsFiltersFromDom();
+    fetchLivechatAiQaPreReviewAnalytics();
+  });
+  bindClick("aiQaPreAnalyticsResetBtn", () => {
+    state.livechatAiQaPreReviewAnalytics.filters = {
+      from: aiQaManagementDate(30),
+      to: aiQaManagementDate(0),
+      reviewType: "all",
+      reviewer: "",
+    };
+    fetchLivechatAiQaPreReviewAnalytics();
+  });
+  bindClick("aiQaPreAnalyticsReloadBtn", () => {
+    fetchLivechatAiQaPreReviewAnalytics();
   });
   document.querySelectorAll("[data-livechat-group-filter]").forEach((button) => {
     button.onclick = () => {

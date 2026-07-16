@@ -2345,6 +2345,25 @@ body {
   min-width: 860px;
 }
 
+.ai-qa-pre-analytics-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(340px, 0.85fr);
+  gap: 14px;
+}
+
+.ai-qa-pre-analytics-table-shell {
+  min-width: 0;
+}
+
+.ai-qa-pre-analytics-table {
+  min-width: 760px;
+}
+
+.ai-qa-comment-cell {
+  min-width: 320px;
+  white-space: normal;
+}
+
 .ai-qa-apply-toggle {
   display: flex;
   gap: 8px;
@@ -2606,6 +2625,10 @@ body {
 }
 
 @media (max-width: 1199.98px) {
+  .ai-qa-pre-analytics-grid {
+    grid-template-columns: 1fr;
+  }
+
   .app-layout {
     grid-template-columns: 1fr;
   }
