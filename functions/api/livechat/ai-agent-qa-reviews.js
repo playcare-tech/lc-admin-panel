@@ -4,6 +4,7 @@ import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } 
 import {
   ensureLivechatAiQaTables,
   listLivechatAgentQaReviews,
+  processMissingAgentQaForCompletedAutoTags,
   processLivechatAgentQaReview,
   processPendingLivechatAgentQaReviews,
   queueLivechatAgentQaReviewForChat,
@@ -41,6 +42,10 @@ export async function onRequest(context) {
     }
 
     const body = await readJson(context.request);
+    if (body.action === "process_missing_from_auto_tag") {
+      if (auth.session.permissions?.role !== "admin") return errorResponse("Admin access is required.", 403);
+      return json(await processMissingAgentQaForCompletedAutoTags(context.env, { limit: body.limit || 30 }));
+    }
     if (body.action === "create_and_process") {
       const chatId = `${body.chatId || ""}`.trim();
       const threadId = `${body.threadId || ""}`.trim();

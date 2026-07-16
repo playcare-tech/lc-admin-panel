@@ -3148,6 +3148,7 @@ function renderAiQaReviewFilters() {
         </div>
         <div class="analytics-actions">
           ${isAdminRole() ? `<button id="aiQaReviewsProcessBtn" class="btn btn-sm btn-outline-secondary" type="button" ${state.livechatAiQaReview.actionLoading ? "disabled" : ""}>Process pending</button>` : ""}
+          ${isAdminRole() ? `<button id="agentQaProcessMissing30Btn" class="btn btn-sm btn-outline-secondary" type="button" ${state.livechatAgentQaReview.actionLoading ? "disabled" : ""}>Run 30 missing Agent QA</button>` : ""}
           <button id="aiQaReviewsReloadBtn" class="btn btn-sm btn-outline-secondary" type="button">Reload</button>
         </div>
       </div>
@@ -3753,6 +3754,30 @@ async function createAndProcessMissingAgentQaReview() {
         ? "Agent QA created from deterministic checks."
         : "Agent QA analysis completed.",
       "success",
+    );
+  } catch (error) {
+    state.livechatAgentQaReview.actionError = error.message;
+    setMessage(statusMessage, error.message, "error");
+  } finally {
+    state.livechatAgentQaReview.actionLoading = false;
+    renderApp();
+  }
+}
+
+async function processThirtyMissingAgentQaReviews() {
+  state.livechatAgentQaReview.actionLoading = true;
+  state.livechatAgentQaReview.actionError = null;
+  renderApp();
+  try {
+    const response = await api("/api/livechat/ai-agent-qa-reviews", {
+      method: "POST",
+      body: { action: "process_missing_from_auto_tag", limit: 30 },
+    });
+    await fetchLivechatAiQaReviews({ keepSelection: true });
+    setMessage(
+      statusMessage,
+      `Agent QA batch finished: ${response.processed || 0} processed, ${response.queued || 0} queued.`,
+      response.processed ? "success" : "error",
     );
   } catch (error) {
     state.livechatAgentQaReview.actionError = error.message;
@@ -9122,6 +9147,9 @@ function bindAppEvents() {
   });
   bindClick("agentQaCreateAndRunBtn", () => {
     createAndProcessMissingAgentQaReview();
+  });
+  bindClick("agentQaProcessMissing30Btn", () => {
+    processThirtyMissingAgentQaReviews();
   });
   document.querySelectorAll('select[name="agentQaFinalTag"]').forEach((select) => {
     select.onchange = () => {

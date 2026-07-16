@@ -2667,6 +2667,36 @@ export async function processPendingLivechatAgentQaReviews(env, options = {}) {
   return { queuedMissing, processed: results.filter((item) => item.processed).length, results };
 }
 
+export async function processMissingAgentQaForCompletedAutoTags(env, options = {}) {
+  const tables = await ensureLivechatAiQaTables(env);
+  const limit = Math.min(Math.max(Number(options.limit) || 30, 1), 50);
+  const rows = await env.DB.prepare(`
+    SELECT a.chat_id, a.thread_id
+    FROM ${tables.reviews} a
+    LEFT JOIN ${tables.agentQaReviews} q
+      ON q.chat_id = a.chat_id AND q.thread_id = a.thread_id
+    WHERE a.ai_status = 'completed' AND q.id IS NULL
+    ORDER BY a.ai_completed_at ASC, a.created_at ASC
+    LIMIT ?
+  `).bind(limit).all();
+  const results = [];
+  for (const row of rows.results || []) {
+    const queued = await queueLivechatAgentQaReviewForChat(env, row.chat_id, row.thread_id);
+    const processed =
+      queued.reviewId && queued.aiStatus === "pending"
+        ? await processLivechatAgentQaReview(env, queued.reviewId)
+        : null;
+    results.push({ chatId: row.chat_id, threadId: row.thread_id, queued, processed });
+  }
+  return {
+    requested: limit,
+    selected: (rows.results || []).length,
+    queued: results.filter((item) => item.queued?.queued).length,
+    processed: results.filter((item) => item.processed?.processed).length,
+    results,
+  };
+}
+
 export async function listLivechatAgentQaReviews(env, filters = {}) {
   const tables = await ensureLivechatAiQaTables(env);
   const where = [];
