@@ -1,12 +1,13 @@
 import { errorResponse, json, methodNotAllowed, readJson, serverErrorResponse } from "../_lib/http.js";
-import { recordLivechatAiQaWebhook } from "../_lib/livechat-ai-qa-tagging.js";
+import {
+  processLivechatAgentQaReview,
+  processLivechatAiQaReview,
+  recordLivechatAiQaWebhook,
+  tagLivechatThreadByFtrForChat,
+} from "../_lib/livechat-ai-qa-tagging.js";
 
 function text(value) {
   return `${value ?? ""}`.trim();
-}
-
-function internalWorkerToken(env) {
-  return text(env.AI_QA_WORKER_TOKEN || env.HELPDESK_SYNC_TOKEN);
 }
 
 function shouldProcessReview(review) {
@@ -15,54 +16,49 @@ function shouldProcessReview(review) {
   return ["pending", "running", "failed", "skipped"].includes(review.aiStatus);
 }
 
-function kickoffAiQaWorker(context, body, result) {
-  if (body?.action !== "chat_deactivated") return;
-  const token = internalWorkerToken(context.env);
-  if (!token || typeof context.waitUntil !== "function") return;
+async function kickoffAiQaTasks(context, result) {
+  const hasWaitUntil = typeof context.waitUntil === "function";
 
   const tasks = [
-    {
-      kind: "ftr",
-      chatId: result.chatId,
-      threadId: result.threadId,
-    },
+    tagLivechatThreadByFtrForChat(context.env, result.chatId, result.threadId).catch((error) => {
+      console.error("Failed to tag LiveChat thread by FTR.", {
+        chatId: result.chatId,
+        threadId: result.threadId,
+        message: error.message,
+        status: error.status,
+        payload: error.payload,
+      });
+    }),
     shouldProcessReview(result.aiReview)
-      ? {
-          kind: "content",
-          reviewId: result.aiReview.reviewId,
-          chatId: result.chatId,
-          threadId: result.threadId,
-        }
+      ? processLivechatAiQaReview(context.env, result.aiReview.reviewId).catch((error) => {
+          console.error("Failed to process LiveChat AI QA review.", {
+            chatId: result.chatId,
+            threadId: result.threadId,
+            reviewId: result.aiReview.reviewId,
+            message: error.message,
+          });
+        })
       : null,
     shouldProcessReview(result.agentQaReview)
-      ? {
-          kind: "agent",
-          reviewId: result.agentQaReview.reviewId,
-          chatId: result.chatId,
-          threadId: result.threadId,
-        }
+      ? processLivechatAgentQaReview(context.env, result.agentQaReview.reviewId).catch((error) => {
+          console.error("Failed to process LiveChat agent QA review.", {
+            chatId: result.chatId,
+            threadId: result.threadId,
+            reviewId: result.agentQaReview.reviewId,
+            message: error.message,
+          });
+        })
       : null,
   ].filter(Boolean);
 
-  for (const taskBody of tasks) {
-    const url = new URL("/webhooks/livechat-ai-qa-worker", context.request.url);
-    const task = fetch(url.toString(), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(taskBody),
-    }).catch((error) => {
-      console.error("Failed to kick off LiveChat AI QA worker.", {
-        kind: taskBody.kind,
-        chatId: taskBody.chatId,
-        threadId: taskBody.threadId,
-        message: error.message,
-      });
-    });
-    context.waitUntil(task);
+  if (hasWaitUntil) {
+    for (const task of tasks) {
+      context.waitUntil(task);
+    }
+    return;
   }
+
+  await Promise.allSettled(tasks);
 }
 
 export async function onRequest(context) {
@@ -77,7 +73,9 @@ export async function onRequest(context) {
       processQueuedReviews: false,
       tagFtr: false,
     });
-    kickoffAiQaWorker(context, body, result);
+    if (body?.action === "chat_deactivated") {
+      await kickoffAiQaTasks(context, result);
+    }
     if (result.ignored) {
       return json({ ok: true, ...result });
     }
