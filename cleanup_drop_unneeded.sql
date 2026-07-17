@@ -33,3 +33,6 @@ DROP TABLE IF EXISTS helpdesk_analytics_reply_details_v3;
 DROP TABLE IF EXISTS helpdesk_webhook_events;
 DROP TABLE IF EXISTS helpdesk_workflow_run_stats;
 DROP TABLE IF EXISTS helpdesk_workflow_runs;
+DROP TABLE IF EXISTS livechat_translation_events;
+DROP TABLE IF EXISTS livechat_translation_chats;
+DROP TABLE IF EXISTS livechat_translation_settings;

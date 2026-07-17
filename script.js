@@ -548,6 +548,18 @@ const state = {
     from: "",
     to: "",
   },
+  livechatTranslation: {
+    loading: false,
+    saving: false,
+    testing: false,
+    loaded: false,
+    error: null,
+    data: null,
+    testText: "",
+    testSourceLang: "",
+    testTargetLang: "EN",
+    testResult: null,
+  },
   helpdesk_analytics: {
     view: "report",
     metric: HELPDESK_ANALYTICS_DEFAULT_METRIC,
@@ -736,6 +748,16 @@ function resetAccountScopedState() {
   state.livechatAiQaPreReviewAnalytics.loaded = false;
   state.livechatAiQaPreReviewAnalytics.error = null;
   state.livechatAiQaPreReviewAnalytics.data = null;
+  state.livechatTranslation.loading = false;
+  state.livechatTranslation.saving = false;
+  state.livechatTranslation.testing = false;
+  state.livechatTranslation.loaded = false;
+  state.livechatTranslation.error = null;
+  state.livechatTranslation.data = null;
+  state.livechatTranslation.testText = "";
+  state.livechatTranslation.testSourceLang = "";
+  state.livechatTranslation.testTargetLang = "EN";
+  state.livechatTranslation.testResult = null;
   state.qaDashboard.loading = false;
   state.qaDashboard.loaded = false;
   state.qaDashboard.error = null;
@@ -846,6 +868,7 @@ const ADMIN_ONLY_SECTIONS = new Set([
   "livechat-groups",
   "create-livechat-user",
   "livechat-analytics",
+  "livechat-translation",
   "helpdesk-users",
   "helpdesk-groups",
   "create-helpdesk-user",
@@ -868,6 +891,7 @@ function firstAllowedSection() {
     "livechat-agent-qa-review",
     "livechat-agent-qa-leaderboard",
     "livechat-ai-qa-pre-review-analytics",
+    "livechat-translation",
     "helpdesk-analytics",
     "livechat-users",
   ].find(canAccessSection) || "qa-dashboard";
@@ -3305,8 +3329,137 @@ function renderLivechatAiQaManagement() {
           <summary>Daily breakdown</summary>
           <div class="table-responsive mt-2"><table class="table align-middle"><thead><tr><th>Date</th><th>User</th><th>Approved</th><th>Corrected</th><th>Edited</th><th>Processed</th></tr></thead>
           <tbody>${(data?.dailyStatistics || []).length ? data.dailyStatistics.map((row) => `<tr><td>${escapeHtml(row.date)}</td><td>${escapeHtml(row.reviewer)}</td><td>${row.approved}</td><td>${row.corrected}</td><td>${row.edited}</td><td><strong>${row.processed}</strong></td></tr>`).join("") : '<tr><td colspan="6" class="subtle">No daily activity.</td></tr>'}</tbody></table></div>
-        </details>`}
+      </details>`}
     </div>`;
+}
+
+async function fetchLivechatTranslation() {
+  const translation = state.livechatTranslation;
+  translation.loading = true;
+  translation.error = null;
+  if (state.section === "livechat-translation") renderApp();
+  try {
+    translation.data = await api("/api/livechat/translation");
+    translation.loaded = true;
+  } catch (error) {
+    translation.error = error.message;
+    translation.data = null;
+    translation.loaded = true;
+  } finally {
+    translation.loading = false;
+    if (state.section === "livechat-translation") renderApp();
+  }
+}
+
+function renderLivechatTranslation() {
+  const translation = state.livechatTranslation;
+  const data = translation.data;
+  const settings = data?.settings || { enabled: false, groupId: "263" };
+  const stats = data?.stats || {};
+  const recent = data?.recent || [];
+  const webhookUrl = `${window.location.origin}/webhooks/livechat-translation`;
+  return `
+    <div class="card-shell qa-management-shell">
+      <div class="tickets-toolbar">
+        <div>
+          <div class="section-title">LiveChat translation</div>
+          <div class="subtle">Auto translate customer messages to English and agent replies to the customer language for group ${escapeHtml(settings.groupId || "263")}.</div>
+        </div>
+        <button id="livechatTranslationReloadBtn" class="btn btn-outline-secondary" type="button">Reload</button>
+      </div>
+
+      ${translation.error ? `<div class="empty-state analytics-error">${escapeHtml(translation.error)}</div>` : ""}
+
+      <div class="qa-queue-settings-grid">
+        <label class="analytics-check-option">
+          <input id="livechatTranslationEnabled" class="form-check-input" type="checkbox" ${settings.enabled ? "checked" : ""} />
+          <span><strong>Enable translation</strong><small>Only chats in the selected LiveChat group are processed.</small></span>
+        </label>
+        <label>
+          <span>LiveChat group ID</span>
+          <input id="livechatTranslationGroupId" class="form-control" type="text" value="${escapeHtml(settings.groupId || "263")}" />
+        </label>
+        <div>
+          <div class="subtle">Webhook URL</div>
+          <div class="code-block">${escapeHtml(webhookUrl)}</div>
+          <div class="subtle mt-2">If you set a webhook secret, append <code>?secret=YOUR_SECRET</code> and store the same value in <code>LIVECHAT_TRANSLATION_WEBHOOK_SECRET</code>.</div>
+        </div>
+      </div>
+
+      <div class="qa-queue-settings-grid mt-3">
+        <div class="analytics-check-option">
+          <span><strong>DeepL key</strong><small>${translation.testing ? "Testing now..." : "Set as Cloudflare secret <code>DEEPL_AUTH_KEY</code>."}</small></span>
+        </div>
+        <div class="analytics-check-option">
+          <span><strong>LiveChat auth</strong><small>Uses the existing <code>TEXT_BASIC_AUTH_B64</code> secret already in the project.</small></span>
+        </div>
+        <div class="analytics-check-option">
+          <span><strong>Optional bot author</strong><small>Set <code>LIVECHAT_TRANSLATION_BOT_ID</code> if you want translations to be posted as that bot.</small></span>
+        </div>
+      </div>
+
+      <div class="ai-qa-review-filter-row mt-3">
+        <label class="flex-grow-1">
+          <span>Test text</span>
+          <textarea id="livechatTranslationTestText" class="form-control" rows="4" placeholder="Paste a message to test translation">${escapeHtml(translation.testText || "")}</textarea>
+        </label>
+        <label>
+          <span>Source</span>
+          <input id="livechatTranslationTestSourceLang" class="form-control" type="text" value="${escapeHtml(translation.testSourceLang || "")}" placeholder="optional" />
+        </label>
+        <label>
+          <span>Target</span>
+          <input id="livechatTranslationTestTargetLang" class="form-control" type="text" value="${escapeHtml(translation.testTargetLang || "EN")}" />
+        </label>
+      </div>
+      <div class="d-flex gap-2 mt-2">
+        <button id="livechatTranslationSaveBtn" class="btn btn-primary" type="button" ${translation.saving ? "disabled" : ""}>Save settings</button>
+        <button id="livechatTranslationTestBtn" class="btn btn-outline-secondary" type="button" ${translation.testing ? "disabled" : ""}>Test DeepL</button>
+      </div>
+
+      ${translation.testResult ? `
+        <div class="mt-3">
+          <div class="subtle">Test result</div>
+          <div class="code-block">${escapeHtml(JSON.stringify(translation.testResult, null, 2))}</div>
+        </div>
+      ` : ""}
+
+      <div class="mt-4">
+        <div class="section-title">Activity</div>
+        <div class="subtle">Total: ${Number(stats.total || 0).toLocaleString()} · Inbound translated: ${Number(stats.inboundTranslated || 0).toLocaleString()} · Outbound translated: ${Number(stats.outboundTranslated || 0).toLocaleString()} · Skipped: ${Number(stats.skipped || 0).toLocaleString()} · Errors: ${Number(stats.errors || 0).toLocaleString()}</div>
+        <div class="subtle">Last seen: ${escapeHtml(stats.lastSeenAt ? livechatAiQaDateTime(stats.lastSeenAt) : "-")}</div>
+      </div>
+
+      <div class="table-responsive mt-3">
+        <table class="table align-middle">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Direction</th>
+              <th>Chat</th>
+              <th>Status</th>
+              <th>Source → Target</th>
+              <th>Text</th>
+              <th>Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${recent.length ? recent.map((row) => `
+              <tr>
+                <td>${escapeHtml(livechatAiQaDateTime(row.processedAt || row.createdAt))}</td>
+                <td>${escapeHtml(row.direction || "-")}</td>
+                <td>${renderLivechatChatLink(row.chatId, row.threadId)}</td>
+                <td>${escapeHtml(row.status || "-")}${row.skipReason ? `<div class="subtle">${escapeHtml(row.skipReason)}</div>` : ""}${row.error ? `<div class="analytics-error">${escapeHtml(row.error)}</div>` : ""}</td>
+                <td>${escapeHtml([row.sourceLang, row.targetLang].filter(Boolean).join(" → ") || "-")}</td>
+                <td class="ai-qa-comment-cell">${escapeHtml((row.sourceText || "").slice(0, 250))}</td>
+                <td class="ai-qa-comment-cell">${escapeHtml((row.translatedText || "").slice(0, 250))}${row.generatedEventId ? `<div class="subtle">sent ${escapeHtml(row.generatedEventId)}</div>` : ""}</td>
+              </tr>
+            `).join("") : '<tr><td colspan="7" class="subtle">No translation activity yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
 function renderAiQaReviewQueue() {
@@ -8291,6 +8444,7 @@ function currentSectionTitle() {
     "create-livechat-user": "Create LiveChat User",
     "livechat-analytics": "LiveChat Analytics",
     "livechat-ai-qa-tagging": "Chats pre-AI-analysis",
+    "livechat-translation": "LiveChat Translation",
     "livechat-ai-qa-review": "Combined AI QA Review",
     "livechat-agent-qa-review": "Manual AI QA Review",
     "livechat-agent-qa-leaderboard": "AI QA leaderboard",
@@ -8708,6 +8862,9 @@ function renderApp() {
   } else if (state.section === "livechat-ai-qa-tagging") {
     appContent.innerHTML = renderLivechatAiQaTagging();
     filterBar.classList.add("d-none");
+  } else if (state.section === "livechat-translation") {
+    appContent.innerHTML = renderLivechatTranslation();
+    filterBar.classList.add("d-none");
   } else if (state.section === "livechat-ai-qa-review") {
     appContent.innerHTML = renderLivechatAiQaReview();
     filterBar.classList.add("d-none");
@@ -8769,6 +8926,14 @@ function renderApp() {
     !state.livechatAiQa.error
   ) {
     fetchLivechatAiQaTagging();
+  }
+  if (
+    state.section === "livechat-translation" &&
+    !state.livechatTranslation.loading &&
+    !state.livechatTranslation.loaded &&
+    !state.livechatTranslation.error
+  ) {
+    fetchLivechatTranslation();
   }
   if (
     ["livechat-ai-qa-review", "livechat-agent-qa-review"].includes(state.section) &&
@@ -9105,7 +9270,15 @@ function bindAppEvents() {
 
   const bindSearch = (id, stateKey) => {
     document.getElementById(id)?.addEventListener("input", (event) => {
-      state[stateKey] = event.target.value;
+      const value = event.target.value;
+      if (stateKey.includes(".")) {
+        const [root, key] = stateKey.split(".");
+        if (state[root] && key) {
+          state[root][key] = value;
+        }
+      } else {
+        state[stateKey] = value;
+      }
       rerenderPreservingInput(id);
     });
   };
@@ -9117,6 +9290,9 @@ function bindAppEvents() {
   bindSearch("livechatCreateSearchInput", "livechatCreateSearch");
   bindSearch("helpdeskCreateSearchInput", "helpdeskCreateSearch");
   bindSearch("modalSearchInput", "modalSearch");
+  bindSearch("livechatTranslationTestText", "livechatTranslation.testText");
+  bindSearch("livechatTranslationTestSourceLang", "livechatTranslation.testSourceLang");
+  bindSearch("livechatTranslationTestTargetLang", "livechatTranslation.testTargetLang");
 
   document.getElementById("analyticsPreset")?.addEventListener("change", (event) => {
     state.analytics.filters.preset = event.target.value;
@@ -9292,6 +9468,51 @@ function bindAppEvents() {
       });
       await fetchLivechatAiQaManagement();
     }, "Pending QA queue released.");
+  });
+  bindClick("livechatTranslationReloadBtn", () => {
+    fetchLivechatTranslation();
+  });
+  bindClick("livechatTranslationSaveBtn", async () => {
+    const enabled = document.getElementById("livechatTranslationEnabled")?.checked || false;
+    const groupId = document.getElementById("livechatTranslationGroupId")?.value || "263";
+    state.livechatTranslation.saving = true;
+    renderApp();
+    try {
+      await api("/api/livechat/translation", {
+        method: "PATCH",
+        body: { enabled, groupId },
+      });
+      await fetchLivechatTranslation();
+    } catch (error) {
+      state.livechatTranslation.error = error.message;
+    } finally {
+      state.livechatTranslation.saving = false;
+      renderApp();
+    }
+  });
+  bindClick("livechatTranslationTestBtn", async () => {
+    const textValue = document.getElementById("livechatTranslationTestText")?.value || "";
+    const sourceLang = document.getElementById("livechatTranslationTestSourceLang")?.value || "";
+    const targetLang = document.getElementById("livechatTranslationTestTargetLang")?.value || "EN";
+    state.livechatTranslation.testing = true;
+    state.livechatTranslation.error = null;
+    renderApp();
+    try {
+      state.livechatTranslation.testResult = await api("/api/livechat/translation", {
+        method: "POST",
+        body: {
+          action: "test",
+          text: textValue,
+          sourceLang,
+          targetLang,
+        },
+      });
+    } catch (error) {
+      state.livechatTranslation.error = error.message;
+    } finally {
+      state.livechatTranslation.testing = false;
+      renderApp();
+    }
   });
   bindClick("aiQaReviewResetBtn", () => {
     resetLivechatAiQaReviewFilters();

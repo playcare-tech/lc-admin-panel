@@ -407,3 +407,50 @@ CREATE TABLE IF NOT EXISTS livechat_ai_agent_qa_knowledge_base (
 );
 
 CREATE INDEX IF NOT EXISTS idx_livechat_ai_agent_qa_knowledge_base_tag ON livechat_ai_agent_qa_knowledge_base(rule_key, tag, status);
+
+CREATE TABLE IF NOT EXISTS livechat_translation_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  group_id TEXT NOT NULL DEFAULT '263',
+  enabled INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS livechat_translation_chats (
+  chat_id TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  group_id TEXT NOT NULL DEFAULT '',
+  customer_language TEXT NOT NULL DEFAULT '',
+  last_customer_event_id TEXT NOT NULL DEFAULT '',
+  last_agent_event_id TEXT NOT NULL DEFAULT '',
+  last_customer_at TEXT NOT NULL DEFAULT '',
+  last_agent_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (chat_id, thread_id)
+);
+
+CREATE TABLE IF NOT EXISTS livechat_translation_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_key TEXT NOT NULL UNIQUE,
+  chat_id TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  group_id TEXT NOT NULL DEFAULT '',
+  event_id TEXT NOT NULL DEFAULT '',
+  author_type TEXT NOT NULL DEFAULT '',
+  direction TEXT NOT NULL DEFAULT '',
+  source_lang TEXT NOT NULL DEFAULT '',
+  target_lang TEXT NOT NULL DEFAULT '',
+  source_text TEXT NOT NULL DEFAULT '',
+  translated_text TEXT NOT NULL DEFAULT '',
+  generated_event_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  skip_reason TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  processed_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_livechat_translation_events_chat ON livechat_translation_events(chat_id, thread_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_livechat_translation_events_status ON livechat_translation_events(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_livechat_translation_events_generated ON livechat_translation_events(generated_event_id);

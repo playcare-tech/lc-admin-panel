@@ -207,12 +207,14 @@ export async function livechatReportsRequest(env, path, body = {}) {
   return payload;
 }
 
-export async function livechatAgentChatRequest(env, action, body = {}) {
+export async function livechatAgentChatRequest(env, action, body = {}, options = {}) {
+  const extraHeaders = options.headers || {};
   const response = await fetch(`${getAgentChatBaseUrl(env)}/${action}`, {
     method: "POST",
     headers: {
       Authorization: getAuthHeader(env),
       "Content-Type": "application/json",
+      ...extraHeaders,
     },
     body: JSON.stringify(body),
   });
