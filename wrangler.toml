@@ -6,10 +6,18 @@ pages_build_output_dir = "."
 [vars]
 LIVECHAT_API_VERSION = "v3.6"
 HELPDESK_ANALYTICS_TZ_OFFSET = "-120"
-AI_QA_DAILY_NEURON_LIMIT = "17000"
+AI_QA_DAILY_NEURON_LIMIT = "10000"
+AI_QA_CONTENT_MIN_SHARE = "0.4"
+AI_QA_AGENT_MIN_SHARE = "0.5"
+AI_QA_SHARED_SHARE = "0.1"
+CLOUDFLARE_ACCOUNT_ID = "f2bc3fa2b87e3a06268f4c194f0cb455"
 
 [ai]
 binding = "AI"
+
+[[queues.producers]]
+binding = "AI_QA_QUEUE"
+queue = "livechat-ai-qa-analysis"
 
 [[d1_databases]]
 binding = "DB"

@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Playcare — UI refresh preview</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-background"></div>
+    <section class="app-layout preview-layout" id="previewApp">
+      <aside class="sidebar">
+        <div class="sidebar-brand">
+          <span class="brand-symbol"><i class="bi bi-stars"></i></span>
+          <div><strong>Playcare</strong><small>Customer operations</small></div>
+        </div>
+        <div class="sidebar-scroll">
+          <div class="sidebar-group">
+            <div class="sidebar-label">Home</div>
+            <button class="sidebar-link active"><i class="bi bi-grid-1x2"></i><span>QA dashboard</span></button>
+          </div>
+          <div class="sidebar-group">
+            <div class="sidebar-label">LiveChat</div>
+            <button class="sidebar-link"><i class="bi bi-people"></i><span>Users</span></button>
+            <button class="sidebar-link"><i class="bi bi-bar-chart-line"></i><span>Analytics</span></button>
+            <button class="sidebar-link"><i class="bi bi-stars"></i><span>Chats pre-AI-analysis</span></button>
+            <div class="sidebar-submenu">
+              <button class="sidebar-link sidebar-sublink"><span>Combined AI QA Review</span></button>
+              <button class="sidebar-link sidebar-sublink"><span>AI QA leaderboard</span></button>
+            </div>
+          </div>
+          <div class="sidebar-group">
+            <div class="sidebar-label">HelpDesk</div>
+            <button class="sidebar-link"><i class="bi bi-inboxes"></i><span>Tickets</span></button>
+            <button class="sidebar-link"><i class="bi bi-diagram-3"></i><span>Workflows</span></button>
+          </div>
+        </div>
+        <div class="sidebar-foot"><span class="system-pulse"></span><span>Systems operational</span></div>
+      </aside>
+      <button class="sidebar-backdrop" id="previewBackdrop" type="button" aria-label="Close navigation"></button>
+      <main class="workspace">
+        <header class="workspace-topbar">
+          <div class="workspace-title-row">
+            <button class="btn btn-sm btn-outline-secondary sidebar-toggle" id="previewMenu" type="button"><i class="bi bi-layout-sidebar-inset"></i></button>
+            <div><div class="page-title">QA dashboard</div><div class="status-line mt-1">Sunday, 19 July · Live overview</div></div>
+          </div>
+          <div class="topbar-actions">
+            <span class="session-badge">igar.k@playcare.tech</span>
+            <button class="btn btn-sm btn-outline-secondary icon-action"><i class="bi bi-arrow-clockwise"></i><span>Refresh</span></button>
+            <button class="btn btn-sm btn-outline-secondary icon-action"><i class="bi bi-box-arrow-right"></i><span>Logout</span></button>
+          </div>
+        </header>
+        <div class="workspace-content">
+          <section class="preview-hero card-shell">
+            <div><span class="preview-eyebrow">Operations pulse</span><h1>Good morning, Igar</h1><p>Here is what needs your attention across support quality today.</p></div>
+            <button class="btn btn-primary"><i class="bi bi-stars me-2"></i>Open AI QA queue</button>
+          </section>
+          <section class="preview-kpis">
+            <article class="stats-card"><div class="preview-kpi-icon violet"><i class="bi bi-chat-square-check"></i></div><span>Reviewed today</span><strong>286</strong><small><i class="bi bi-arrow-up"></i> 12.4% vs yesterday</small></article>
+            <article class="stats-card"><div class="preview-kpi-icon blue"><i class="bi bi-bullseye"></i></div><span>Exact AI matches</span><strong>82.6%</strong><small>Target 80%</small></article>
+            <article class="stats-card"><div class="preview-kpi-icon green"><i class="bi bi-lightning-charge"></i></div><span>Neurons today</span><strong>6.84k</strong><small>68.4% of daily limit</small></article>
+            <article class="stats-card"><div class="preview-kpi-icon amber"><i class="bi bi-hourglass-split"></i></div><span>Waiting for QA</span><strong>41</strong><small>8 high priority</small></article>
+          </section>
+          <section class="preview-main-grid">
+            <article class="card-shell preview-chart-card">
+              <div class="preview-card-head"><div><span class="preview-eyebrow">Workers AI</span><h2>Usage today</h2></div><div class="preview-segment"><button class="active">24h</button><button>7d</button><button>30d</button></div></div>
+              <div class="preview-progress-copy"><span>6,840 / 10,000 neurons</span><strong>68.4%</strong></div>
+              <div class="preview-progress"><i style="width:68.4%"></i></div>
+              <div class="preview-bars" aria-label="30-minute neuron usage chart">
+                <i style="height:22%"></i><i style="height:35%"></i><i style="height:29%"></i><i style="height:48%"></i><i style="height:58%"></i><i style="height:42%"></i><i style="height:72%"></i><i style="height:88%"></i><i style="height:64%"></i><i style="height:76%"></i><i style="height:52%"></i><i style="height:45%"></i><i style="height:62%"></i><i style="height:70%"></i><i style="height:55%"></i><i style="height:81%"></i>
+              </div>
+              <div class="preview-axis"><span>00:00 UTC</span><span>30 minute intervals</span><span>Now</span></div>
+            </article>
+            <article class="card-shell preview-queue-card">
+              <div class="preview-card-head"><div><span class="preview-eyebrow">Live queue</span><h2>Needs attention</h2></div><button class="btn btn-sm btn-outline-secondary">View all</button></div>
+              <div class="preview-queue-list">
+                <button><span class="preview-avatar">AK</span><span><strong>Auto-tag mismatch</strong><small>Chat TI1F… · 2 min ago</small></span><em class="high">High</em></button>
+                <button><span class="preview-avatar blue">MS</span><span><strong>Agent QA review</strong><small>Chat TI2A… · 7 min ago</small></span><em>Normal</em></button>
+                <button><span class="preview-avatar green">JD</span><span><strong>Low confidence result</strong><small>Chat TI19… · 11 min ago</small></span><em>Normal</em></button>
+              </div>
+            </article>
+          </section>
+        </div>
+      </main>
+    </section>
+    <script>
+      const app = document.getElementById('previewApp');
+      const close = () => app.classList.add('sidebar-collapsed');
+      document.getElementById('previewMenu').onclick = () => app.classList.toggle('sidebar-collapsed');
+      document.getElementById('previewBackdrop').onclick = close;
+      if (matchMedia('(max-width: 1199.98px)').matches) close();
+    </script>
+  </body>
+</html>

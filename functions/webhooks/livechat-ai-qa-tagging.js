@@ -16,19 +16,21 @@ function shouldProcessReview(review) {
   return ["pending", "running", "failed", "skipped"].includes(review.aiStatus);
 }
 
-async function kickoffAiQaTasks(context, result) {
+async function kickoffAiQaTasks(context, result, options = {}) {
   const hasWaitUntil = typeof context.waitUntil === "function";
 
   const tasks = [
-    tagLivechatThreadByFtrForChat(context.env, result.chatId, result.threadId).catch((error) => {
-      console.error("Failed to tag LiveChat thread by FTR.", {
-        chatId: result.chatId,
-        threadId: result.threadId,
-        message: error.message,
-        status: error.status,
-        payload: error.payload,
-      });
-    }),
+    options.includeFtr === false
+      ? null
+      : tagLivechatThreadByFtrForChat(context.env, result.chatId, result.threadId).catch((error) => {
+          console.error("Failed to tag LiveChat thread by FTR.", {
+            chatId: result.chatId,
+            threadId: result.threadId,
+            message: error.message,
+            status: error.status,
+            payload: error.payload,
+          });
+        }),
     shouldProcessReview(result.aiReview)
       ? processLivechatAiQaReview(context.env, result.aiReview.reviewId).catch((error) => {
           console.error("Failed to process LiveChat AI QA review.", {
@@ -61,6 +63,38 @@ async function kickoffAiQaTasks(context, result) {
   await Promise.allSettled(tasks);
 }
 
+function aiQaQueueMessages(result) {
+  return [
+    shouldProcessReview(result.aiReview)
+      ? { body: { kind: "content", reviewId: result.aiReview.reviewId, chatId: result.chatId, threadId: result.threadId } }
+      : null,
+    shouldProcessReview(result.agentQaReview)
+      ? { body: { kind: "agent", reviewId: result.agentQaReview.reviewId, chatId: result.chatId, threadId: result.threadId } }
+      : null,
+  ].filter(Boolean);
+}
+
+async function dispatchAiQaTasks(context, result) {
+  await kickoffAiQaTasks(context, { ...result, aiReview: null, agentQaReview: null });
+  const messages = aiQaQueueMessages(result);
+  if (!messages.length) return { mode: "none", count: 0 };
+  if (typeof context.env.AI_QA_QUEUE?.sendBatch === "function") {
+    try {
+      await context.env.AI_QA_QUEUE.sendBatch(messages);
+      return { mode: "queue", count: messages.length };
+    } catch (error) {
+      console.error(JSON.stringify({
+        message: "Failed to publish LiveChat AI QA jobs; using waitUntil fallback.",
+        chatId: result.chatId,
+        threadId: result.threadId,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }
+  await kickoffAiQaTasks(context, result, { includeFtr: false });
+  return { mode: "waitUntil_fallback", count: messages.length };
+}
+
 export async function onRequest(context) {
   if (context.request.method !== "POST") {
     return methodNotAllowed(["POST"]);
@@ -74,7 +108,7 @@ export async function onRequest(context) {
       tagFtr: false,
     });
     if (body?.action === "chat_deactivated") {
-      await kickoffAiQaTasks(context, result);
+      result.processing = await dispatchAiQaTasks(context, result);
     }
     if (result.ignored) {
       return json({ ok: true, ...result });

@@ -87,13 +87,14 @@ const DEFAULT_HELPDESK_ANALYTICS_AGENT_EMAILS = [
   "aleksandr.b@playcare.tech",
   "ryhor.a@playcare.tech",
   "tamazi.m@playcare.tech",
-  "kiryl.ch@playcare.tech",
+  "kyril.ch@playcare.tech",
   "elijah.b@playcare.tech",
   "mikhail.g@playcare.tech",
   "aytun.m@playcare.tech",
   "yuri.p@playcare.tech",
   "marina.g@playcare.tech",
   "ivo.k@playcare.tech",
+  "hanna.k@playcare.tech",
 ];
 const EXCLUDED_DEFAULT_HELPDESK_ANALYTICS_AGENT_EMAILS = [
   "daryia.spirydovich@boomerang-partners.com",
@@ -245,6 +246,8 @@ const AI_QA_CONTENT_TAGS = [
   "account",
   "kyc",
   "bonus_problem",
+  "deposit_problem",
+  "deposit_info",
   "withdrawal_problem",
   "other",
   "rg_closure",
@@ -255,9 +258,9 @@ const AI_QA_CONTENT_TAGS = [
   "tech_issue",
   "truspilot",
   "refund",
-  "Loyalty bonus",
+  "loyalty_bonus",
   "Сashback",
-  "Promo bonus",
+  "promo_bonus",
 ];
 const AGENT_QA_RULES = [
   { rule: "q0x", title: "No human agent interaction", tags: ["q0x"] },
@@ -332,6 +335,7 @@ const state = {
   loginChallenge: null,
   inviteSetup: null,
   section: "livechat-users",
+  sidebarCollapsed: window.localStorage.getItem("mainSidebarCollapsed") === "1",
   livechat: { agents: [], groups: [] },
   helpdesk: { agents: [], teams: [] },
   adminUsers: [],
@@ -485,6 +489,7 @@ const state = {
     page: 1,
     pageSize: 25,
     dirty: false,
+    decisionPanel: "auto",
     filters: {
       scope: "mine",
       status: "pending_review",
@@ -532,6 +537,7 @@ const state = {
     loaded: false,
     error: null,
     data: null,
+    billingRange: "24h",
     filters: {
       from: "",
       to: "",
@@ -608,6 +614,11 @@ function accountRequestHeaders() {
 
 async function api(path, options = {}) {
   const method = (options.method || "GET").toUpperCase();
+  const timeoutMs = Number(options.timeoutMs || 0);
+  const controller = timeoutMs > 0 ? new AbortController() : null;
+  const timeoutId = controller
+    ? window.setTimeout(() => controller.abort(), timeoutMs)
+    : null;
   const headers = {
     ...accountRequestHeaders(),
     ...(options.body ? { "Content-Type": "application/json" } : {}),
@@ -617,11 +628,24 @@ async function api(path, options = {}) {
     headers["X-CSRF-Token"] = state.csrfToken;
   }
 
-  const response = await fetch(path, {
-    method,
-    headers,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      method,
+      headers,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller?.signal,
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s.`);
+    }
+    throw error;
+  } finally {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+  }
   const nextCsrfToken = response.headers.get("X-CSRF-Token");
   if (nextCsrfToken) {
     state.csrfToken = nextCsrfToken;
@@ -2049,16 +2073,50 @@ function renderQaDashboardList(rows, valueLabel, emptyLabel = "No data yet.") {
           )
           .join("")}
       </div>`
-    : `<div class="empty-state">${escapeHtml(emptyLabel)}</div>`;
+    : renderEmptyState(emptyLabel, "bi-bar-chart");
+}
+
+function renderLoadingState(label = "Loading…") {
+  return `<div class="ui-state ui-state-loading" role="status" aria-live="polite">
+    <span class="ui-state-spinner" aria-hidden="true"></span>
+    <div><strong>${escapeHtml(label)}</strong><span>Please wait while the latest data is prepared.</span></div>
+  </div>`;
+}
+
+function renderEmptyState(label, icon = "bi-inbox") {
+  return `<div class="ui-state ui-state-empty">
+    <span class="ui-state-icon"><i class="bi ${escapeHtml(icon)}"></i></span>
+    <div><strong>${escapeHtml(label)}</strong><span>New items will appear here automatically.</span></div>
+  </div>`;
+}
+
+function renderErrorState(label) {
+  return `<div class="ui-state ui-state-error" role="alert">
+    <span class="ui-state-icon"><i class="bi bi-exclamation-triangle"></i></span>
+    <div><strong>Something went wrong</strong><span>${escapeHtml(label)}</span></div>
+  </div>`;
 }
 
 function renderQaDashboard() {
   const data = state.qaDashboard.data;
-  if (state.qaDashboard.loading && !data) return '<div class="empty-state">Loading QA dashboard...</div>';
-  if (state.qaDashboard.error) return `<div class="empty-state analytics-error">${escapeHtml(state.qaDashboard.error)}</div>`;
-  if (!data) return '<div class="empty-state">QA dashboard is not loaded yet.</div>';
+  if (state.qaDashboard.loading && !data) return renderLoadingState("Loading QA dashboard");
+  if (state.qaDashboard.error) return renderErrorState(state.qaDashboard.error);
+  if (!data) return renderEmptyState("QA dashboard is not loaded yet", "bi-grid-1x2");
+
+  const totalPending = Number(data.pending?.agentQa || 0) + Number(data.pending?.autoTag || 0);
 
   return `
+    <section class="qa-dashboard-hero card-shell">
+      <div>
+        <span class="ui-eyebrow">Quality operations</span>
+        <h1>${totalPending ? `${totalPending.toLocaleString()} reviews need attention` : "Your QA queue is clear"}</h1>
+        <p>Prioritize AI corrections, monitor agent quality and keep the review pipeline moving.</p>
+      </div>
+      <div class="qa-dashboard-hero-actions">
+        <button id="qaDashboardOpenCombined" class="btn btn-primary" type="button"><i class="bi bi-stars"></i> Open combined QA</button>
+        <button id="qaDashboardReload" class="btn btn-outline-secondary" type="button"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+      </div>
+    </section>
     ${renderStats([
       { label: "QA pending", value: Number(data.pending?.agentQa || 0).toLocaleString(), meta: "Manual AI QA Review" },
       { label: "Auto-tag pending", value: Number(data.pending?.autoTag || 0).toLocaleString(), meta: "Manual AI auto-tag review" },
@@ -2066,20 +2124,20 @@ function renderQaDashboard() {
       { label: "Range", value: "7d", meta: `${data.range?.from || "-"} to ${data.range?.to || "-"}` },
     ])}
     <div class="section-grid qa-dashboard-grid">
-      <div class="card-shell">
-        <div class="section-title">Top 5 HelpDesk agents</div>
+      <div class="card-shell qa-dashboard-leader-card positive">
+        <div class="qa-dashboard-card-head"><div><span class="ui-eyebrow">HelpDesk</span><div class="section-title">Top performers</div></div><i class="bi bi-trophy"></i></div>
         ${renderQaDashboardList(data.helpdesk?.best || [], "handled")}
       </div>
-      <div class="card-shell">
-        <div class="section-title">Bottom 5 HelpDesk agents</div>
+      <div class="card-shell qa-dashboard-leader-card attention">
+        <div class="qa-dashboard-card-head"><div><span class="ui-eyebrow">HelpDesk</span><div class="section-title">Needs coaching</div></div><i class="bi bi-activity"></i></div>
         ${renderQaDashboardList(data.helpdesk?.worst || [], "handled")}
       </div>
-      <div class="card-shell">
-        <div class="section-title">Top 5 chat leaderboard</div>
+      <div class="card-shell qa-dashboard-leader-card positive">
+        <div class="qa-dashboard-card-head"><div><span class="ui-eyebrow">LiveChat</span><div class="section-title">Top performers</div></div><i class="bi bi-trophy"></i></div>
         ${renderQaDashboardList(data.livechat?.best || [], "score")}
       </div>
-      <div class="card-shell">
-        <div class="section-title">Bottom 5 chat leaderboard</div>
+      <div class="card-shell qa-dashboard-leader-card attention">
+        <div class="qa-dashboard-card-head"><div><span class="ui-eyebrow">LiveChat</span><div class="section-title">Needs coaching</div></div><i class="bi bi-activity"></i></div>
         ${renderQaDashboardList(data.livechat?.worst || [], "score")}
       </div>
     </div>
@@ -2149,15 +2207,14 @@ function renderLiveChatProfileCard(agent, currentMembershipMarkup) {
     : `<span>${escapeHtml(initials(agent.name || agent.email) || "LC")}</span>`;
 
   return `
-    <div class="card-shell">
-      <div class="section-title">Profile</div>
+    <aside class="card-shell livechat-agent-profile-panel">
       <div class="profile-card">
         <div class="profile-hero">
           <div class="profile-photo">${avatar}</div>
           <div>
-            <span class="chip">${escapeHtml(roleBadgeLabel(agent.role))}</span>
+            <span class="ui-eyebrow">Agent profile</span>
             <div class="profile-name">${escapeHtml(formatProfileValue(agent.name, agent.email))}</div>
-            <div class="subtle">${escapeHtml(formatProfileValue(agent.jobTitle, ""))}</div>
+            <div class="profile-identity-line"><span class="chip">${escapeHtml(roleBadgeLabel(agent.role))}</span>${agent.jobTitle ? `<span class="subtle">${escapeHtml(agent.jobTitle)}</span>` : ""}</div>
           </div>
         </div>
         <form id="livechatProfileForm" class="profile-form">
@@ -2190,14 +2247,14 @@ function renderLiveChatProfileCard(agent, currentMembershipMarkup) {
             <input id="livechatProfileAvatar" class="form-control" type="url" value="${escapeHtml(formatProfileValue(agent.avatar, ""))}" placeholder="https://..." />
           </div>
           <div class="profile-actions">
-            <button class="btn btn-primary" type="submit">Save profile</button>
-            ${canManageUsers() ? `<button id="suspendModalLiveChatBtn" class="btn btn-outline-danger" type="button" ${agent.suspended ? "disabled" : ""}>Suspend user</button>` : ""}
+            <button class="btn btn-primary" type="submit"><i class="bi bi-check2"></i> Save changes</button>
+            ${canManageUsers() ? `<button id="suspendModalLiveChatBtn" class="btn btn-outline-danger" type="button" ${agent.suspended ? "disabled" : ""}><i class="bi bi-person-slash"></i> Suspend user</button>` : ""}
           </div>
         </form>
       </div>
-      <div class="section-title mt-3">Current memberships</div>
-      ${currentMembershipMarkup}
-    </div>
+      <div class="profile-memberships-head"><div><div class="section-title">Current memberships</div><div class="subtle">${Number(agent.groups?.length || 0)} active groups</div></div></div>
+      <div class="profile-memberships-list">${currentMembershipMarkup}</div>
+    </aside>
   `;
 }
 
@@ -2534,12 +2591,12 @@ function livechatAiQaDateTime(value) {
 }
 
 function livechatArchiveUrl(threadId, chatId = "") {
-  const query = `${threadId || chatId || ""}`.trim();
-  return query ? `https://my.livechatinc.com/archives/?q=${encodeURIComponent(query)}` : "";
+  const archiveId = `${threadId || chatId || ""}`.trim();
+  return archiveId ? `https://my.livechatinc.com/archives/${encodeURIComponent(archiveId)}` : "";
 }
 
 function renderLivechatChatLink(chatId, threadId, className = "") {
-  const label = chatId || threadId || "-";
+  const label = threadId || chatId || "-";
   const url = livechatArchiveUrl(threadId, chatId);
   if (!url) return escapeHtml(label);
   return `<a class="livechat-chat-link ${escapeHtml(className)}" data-livechat-chat-link href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="Open chat in LiveChat">${escapeHtml(label)}</a>`;
@@ -2733,7 +2790,7 @@ function renderLivechatAiQaTimeline(row) {
   }
   return `
     <div class="analytics-ticket-detail">
-      <div class="analytics-ticket-detail-title">Timeline · ${renderLivechatChatLink(row.chatId, row.threadId)} / ${escapeHtml(row.threadId)}</div>
+      <div class="analytics-ticket-detail-title">Timeline · ${escapeHtml(row.chatId || "-")} / ${renderLivechatChatLink(row.chatId, row.threadId)}</div>
       <div class="livechat-ai-qa-timeline">
         ${row.events
           .map(
@@ -2914,13 +2971,22 @@ function resetLivechatAiQaReviewFilters() {
 
 function aiQaReviewSuggestedTags(detail = state.livechatAiQaReview.detail) {
   const suggestions = detail?.suggestions || [];
-  const tags = suggestions.map((item) => item.tag).filter(Boolean);
-  return tags.length ? tags : detail?.suggestedTags || [];
+  const tags = suggestions.map((item) => canonicalAiQaContentTag(item.tag)).filter(Boolean);
+  return tags.length ? tags : (detail?.suggestedTags || []).map(canonicalAiQaContentTag).filter(Boolean);
 }
 
 function aiQaReviewFinalTags(detail = state.livechatAiQaReview.detail) {
-  if (detail?.finalTags?.length) return detail.finalTags;
+  if (detail?.finalTags?.length) return detail.finalTags.map(canonicalAiQaContentTag).filter(Boolean);
   return aiQaReviewSuggestedTags(detail);
+}
+
+function canonicalAiQaContentTag(value) {
+  const tag = `${value || ""}`.trim();
+  const aliases = {
+    "promo bonus": "promo_bonus",
+    "loyalty bonus": "loyalty_bonus",
+  };
+  return aliases[tag.toLowerCase()] || tag;
 }
 
 function aiQaReviewIsClosed(detail = state.livechatAiQaReview.detail) {
@@ -2954,7 +3020,9 @@ function aiQaReviewTagChips(tags, empty = "-") {
 
 async function fetchLivechatAiQaReviewDetail(reviewId, { silent = false } = {}) {
   if (!reviewId) return;
+  const selectionChanged = state.livechatAiQaReview.selectedId !== reviewId;
   state.livechatAiQaReview.selectedId = reviewId;
+  if (selectionChanged) state.livechatAiQaReview.decisionPanel = "auto";
   state.livechatAiQaReview.detailLoading = true;
   state.livechatAiQaReview.actionError = null;
   state.livechatAiQaReview.dirty = false;
@@ -2990,10 +3058,14 @@ async function fetchLivechatAiQaReviews({ keepSelection = false } = {}) {
     state.livechatAiQaReview.page = Number(response.page || state.livechatAiQaReview.page);
     state.livechatAiQaReview.pageSize = Number(response.pageSize || state.livechatAiQaReview.pageSize);
     state.livechatAiQaReview.loaded = true;
+    const previousSelectedId = state.livechatAiQaReview.selectedId;
     const stillVisible = rows.some((row) => row.id === state.livechatAiQaReview.selectedId);
     if (!keepSelection || !stillVisible) {
       state.livechatAiQaReview.selectedId = rows[0]?.id || "";
       state.livechatAiQaReview.detail = null;
+    }
+    if (state.livechatAiQaReview.selectedId !== previousSelectedId) {
+      state.livechatAiQaReview.decisionPanel = "auto";
     }
     if (state.livechatAiQaReview.selectedId) {
       await fetchLivechatAiQaReviewDetail(state.livechatAiQaReview.selectedId, { silent: true });
@@ -3107,7 +3179,8 @@ async function approveLivechatAiQaReview() {
         applyToLiveChat: document.getElementById("aiQaApplyToLiveChat")?.checked !== false,
       },
     });
-    await fetchLivechatAiQaReviews({ keepSelection: true });
+    await fetchLivechatAiQaReviewDetail(detail.id, { silent: true });
+    state.livechatAiQaReview.decisionPanel = "agent";
     const failedTags = response.applyResult?.failed?.map((item) => item.tag).filter(Boolean) || [];
     setMessage(
       statusMessage,
@@ -3149,7 +3222,8 @@ async function correctLivechatAiQaReview() {
         ...decision,
       },
     });
-    await fetchLivechatAiQaReviews({ keepSelection: true });
+    await fetchLivechatAiQaReviewDetail(detail.id, { silent: true });
+    state.livechatAiQaReview.decisionPanel = "agent";
     const failedTags = response.applyResult?.failed?.map((item) => item.tag).filter(Boolean) || [];
     setMessage(
       statusMessage,
@@ -3170,11 +3244,15 @@ async function correctLivechatAiQaReview() {
 function renderAiQaReviewFilters() {
   const filters = state.livechatAiQaReview.filters;
   return `
+    <section class="qa-workspace-hero qa-workspace-hero-combined">
+      <div><span class="ui-eyebrow">LiveChat quality</span><h1>Combined AI QA Review</h1><p>Review AI auto-tagging and Agent QA in one focused workspace.</p></div>
+      <div class="qa-workspace-hero-metric"><strong>${Number(state.livechatAiQaReview.total || 0).toLocaleString()}</strong><span>chats in queue</span></div>
+    </section>
     <div class="card-shell ai-qa-review-filter-shell">
       <div class="tickets-toolbar">
         <div>
-          <div class="section-title">Combined AI QA Review</div>
-          <div class="subtle">${Number(state.livechatAiQaReview.total || 0).toLocaleString()} chat(s) · Auto-tagging and Agent QA are reviewed separately</div>
+          <div class="section-title">Queue filters</div>
+          <div class="subtle">Auto-tagging and Agent QA are reviewed separately</div>
         </div>
         <div class="analytics-actions">
           ${isAdminRole() ? `<button id="aiQaReviewsProcessBtn" class="btn btn-sm btn-outline-secondary" type="button" ${state.livechatAiQaReview.actionLoading ? "disabled" : ""}>Process pending</button>` : ""}
@@ -3326,9 +3404,9 @@ function renderAiQaReviewQueue() {
       </div>
       ${
         state.livechatAiQaReview.loading
-          ? '<div class="empty-state">Loading reviews...</div>'
+          ? renderLoadingState("Loading review queue")
           : state.livechatAiQaReview.error
-            ? `<div class="empty-state analytics-error">${escapeHtml(state.livechatAiQaReview.error)}</div>`
+            ? renderErrorState(state.livechatAiQaReview.error)
             : rows.length
               ? `<div class="ai-qa-review-list">
                   ${rows
@@ -3349,7 +3427,7 @@ function renderAiQaReviewQueue() {
                     })
                     .join("")}
                 </div>`
-              : '<div class="empty-state">No reviews match the current filters.</div>'
+              : renderEmptyState("No reviews match the current filters", "bi-funnel")
       }
     </aside>
   `;
@@ -3357,10 +3435,10 @@ function renderAiQaReviewQueue() {
 
 function renderAiQaReviewTranscript(detail) {
   if (state.livechatAiQaReview.detailLoading) {
-    return `<main class="ai-qa-review-thread"><div class="empty-state">Loading selected review...</div></main>`;
+    return `<main class="ai-qa-review-thread">${renderLoadingState("Loading selected review")}</main>`;
   }
   if (!detail) {
-    return `<main class="ai-qa-review-thread"><div class="empty-state">Select a review.</div></main>`;
+    return `<main class="ai-qa-review-thread">${renderEmptyState("Select a review to open the conversation", "bi-chat-square-text")}</main>`;
   }
   const transcript = detail.transcript || [];
   return `
@@ -3368,7 +3446,7 @@ function renderAiQaReviewTranscript(detail) {
       <div class="ai-qa-review-thread-head">
         <div>
           <div class="section-title">Chat transcript</div>
-          <div class="subtle">${renderLivechatChatLink(detail.chatId, detail.threadId)} / ${escapeHtml(detail.threadId)}</div>
+          <div class="subtle">${escapeHtml(detail.chatId || "-")} / ${renderLivechatChatLink(detail.chatId, detail.threadId)}</div>
         </div>
         <div class="chip-list">
           ${aiQaReviewStatusChip(detail.status, detail.aiStatus)}
@@ -3464,7 +3542,7 @@ function renderAiQaFinalTagControls(detail) {
 function renderAiQaFeedbackControls(detail) {
   const finalTags = new Set(aiQaReviewFinalTags(detail));
   const suggestedTags = new Set(aiQaReviewSuggestedTags(detail));
-  const existingTags = new Set(detail?.existingTags || []);
+  const existingTags = new Set((detail?.existingTags || []).map(canonicalAiQaContentTag).filter(Boolean));
   const closed = aiQaReviewIsClosed(detail);
   return `
     <div class="ai-qa-feedback-grid">
@@ -3480,7 +3558,7 @@ function renderAiQaFeedbackControls(detail) {
               <strong>${escapeHtml(tag)}</strong>
               <small data-ai-qa-feedback-state="${escapeHtml(tag)}">${suggested ? "AI suggested" : ""}${existing ? `${suggested ? " · " : ""}Existing` : ""}${suggested && selected ? " · kept" : ""}${!suggested && selected ? "Selected" : ""}</small>
             </span>
-            <textarea class="form-control" rows="2" data-ai-qa-feedback-tag="${escapeHtml(tag)}" placeholder="Correction comment for AI"></textarea>
+            <textarea class="form-control" rows="2" data-ai-qa-feedback-tag="${escapeHtml(tag)}" placeholder="Use this tag when… Do not use it when… Evidence from this chat…"></textarea>
           </label>
         `;
       }).join("")}
@@ -3587,6 +3665,7 @@ function renderAiQaReviewDecisionPanel(detail) {
 function renderLivechatAiQaReview() {
   const detail = state.livechatAiQaReview.detail;
   const agentDetail = state.livechatAgentQaReview.detail;
+  const showAgentQa = state.livechatAiQaReview.decisionPanel === "agent";
   return `
     <section class="ai-qa-review-page">
       ${renderLivechatAiQaManagement()}
@@ -3596,20 +3675,27 @@ function renderLivechatAiQaReview() {
         ${renderAiQaReviewTranscript(detail)}
         <div class="combined-ai-qa-decisions">
           <div class="combined-ai-qa-section">
-            <div class="combined-ai-qa-title"><strong>1. AI auto-tagging</strong><span>${escapeHtml(detail?.status || "not loaded")}</span></div>
-            ${renderAiQaReviewDecisionPanel(detail)}
-          </div>
-          <div class="combined-ai-qa-section">
-            <div class="combined-ai-qa-title"><strong>2. Agent QA</strong><span>${escapeHtml(agentDetail?.status || "not available")}</span></div>
-            ${agentDetail
-              ? renderAgentQaReviewDecisionPanel(agentDetail)
-              : `<aside class="ai-qa-review-decision">
+            <div class="combined-ai-qa-title">
+              <strong>${showAgentQa ? "2. Agent QA" : "1. AI auto-tagging"}</strong>
+              <div class="combined-ai-qa-title-actions">
+                <button id="combinedAiQaPanelToggle" class="btn btn-sm btn-outline-secondary" type="button">
+                  <i class="bi bi-arrow-left-right"></i>
+                  ${showAgentQa ? "AI Auto-Tagging" : "QA"}
+                </button>
+                <span>${escapeHtml(showAgentQa ? agentDetail?.status || "not available" : detail?.status || "not loaded")}</span>
+              </div>
+            </div>
+            ${showAgentQa
+              ? agentDetail
+                ? renderAgentQaReviewDecisionPanel(agentDetail)
+                : `<aside class="ai-qa-review-decision">
                   <div class="empty-state">Agent QA review has not been created for this historical chat.</div>
                   ${state.livechatAgentQaReview.actionError ? `<div class="empty-state analytics-error">${escapeHtml(state.livechatAgentQaReview.actionError)}</div>` : ""}
                   <button id="agentQaCreateAndRunBtn" class="btn btn-primary" type="button" ${state.livechatAgentQaReview.actionLoading ? "disabled" : ""}>
                     ${state.livechatAgentQaReview.actionLoading ? "Running Agent QA..." : "Run Agent QA"}
                   </button>
-                </aside>`}
+                </aside>`
+              : renderAiQaReviewDecisionPanel(detail)}
           </div>
         </div>
       </div>
@@ -4084,7 +4170,7 @@ function renderAgentQaReviewTranscript(detail) {
       <div class="ai-qa-review-thread-head">
         <div>
           <div class="section-title">Chat transcript</div>
-          <div class="subtle">${renderLivechatChatLink(detail.chatId, detail.threadId)} / ${escapeHtml(detail.threadId)}</div>
+          <div class="subtle">${escapeHtml(detail.chatId || "-")} / ${renderLivechatChatLink(detail.chatId, detail.threadId)}</div>
         </div>
         <div class="chip-list">
           ${aiQaReviewStatusChip(detail.status, detail.aiStatus)}
@@ -4186,7 +4272,7 @@ function renderAgentQaFeedbackControls(detail) {
               <strong>${escapeHtml(rule.rule)}</strong>
               <small data-agent-qa-feedback-state="${escapeHtml(rule.rule)}">${escapeHtml([check?.selectedTag ? `AI: ${check.selectedTag}` : "", selected ? "Selected" : ""].filter(Boolean).join(" · "))}</small>
             </span>
-            <textarea class="form-control" rows="2" data-agent-qa-feedback-rule="${escapeHtml(rule.rule)}" placeholder="Correction comment for AI"></textarea>
+            <textarea class="form-control" rows="2" data-agent-qa-feedback-rule="${escapeHtml(rule.rule)}" placeholder="Correct outcome and why… What the AI misunderstood… Evidence…"></textarea>
           </label>
         `;
       }).join("")}
@@ -4230,7 +4316,6 @@ function renderAgentQaReviewDecisionPanel(detail) {
       </div>
       ${detail.aiSummary ? `<div class="ai-qa-summary">${escapeHtml(detail.aiSummary)}</div>` : ""}
       ${detail.aiError ? `<div class="empty-state analytics-error">${escapeHtml(detail.aiError)}</div>` : ""}
-      ${renderExistingHumanTagsBlock(detail)}
       <div class="ai-qa-suggestions-list">
         ${checks.length ? checks.map(renderAgentQaCheckCard).join("") : '<div class="empty-state">No QA checks yet.</div>'}
       </div>
@@ -4324,11 +4409,15 @@ function renderAgentQaLeaderboard() {
   const rows = stateSlice.rows || [];
   return `
     <section class="ai-qa-review-page">
+      <section class="qa-workspace-hero qa-workspace-hero-leaderboard">
+        <div><span class="ui-eyebrow">Team performance</span><h1>AI QA leaderboard</h1><p>Compare quality, spot coaching opportunities and recognize consistent performance.</p></div>
+        <div class="qa-workspace-hero-metric"><strong>${Number(stateSlice.reviewedCount || 0).toLocaleString()}</strong><span>reviewed chats</span></div>
+      </section>
       <div class="card-shell ai-qa-review-filter-shell">
         <div class="tickets-toolbar">
           <div>
-            <div class="section-title">AI QA leaderboard</div>
-            <div class="subtle">${Number(stateSlice.reviewedCount || 0).toLocaleString()} reviewed chat(s)</div>
+            <div class="section-title">Leaderboard filters</div>
+            <div class="subtle">Choose a period or find a specific agent</div>
           </div>
           <button id="agentQaLeaderboardReloadBtn" class="btn btn-sm btn-outline-secondary" type="button">Reload</button>
         </div>
@@ -4354,9 +4443,9 @@ function renderAgentQaLeaderboard() {
       <div class="table-shell agent-qa-leaderboard-shell">
         ${
           stateSlice.loading
-            ? '<div class="empty-state">Loading leaderboard...</div>'
+            ? renderLoadingState("Loading leaderboard")
             : stateSlice.error
-              ? `<div class="empty-state analytics-error">${escapeHtml(stateSlice.error)}</div>`
+              ? renderErrorState(stateSlice.error)
               : rows.length
                 ? `<div class="table-responsive">
                     <table class="table align-middle agent-qa-leaderboard-table">
@@ -4398,7 +4487,7 @@ function renderAgentQaLeaderboard() {
                       </tbody>
                     </table>
                   </div>`
-                : '<div class="empty-state">No reviewed agent QA data yet.</div>'
+                : renderEmptyState("No reviewed Agent QA data yet", "bi-trophy")
         }
       </div>
     </section>
@@ -4412,6 +4501,7 @@ function aiQaPreReviewAnalyticsQueryParams() {
     to: filters.to,
     reviewType: filters.reviewType,
     reviewer: filters.reviewer,
+    billingRange: state.livechatAiQaPreReviewAnalytics.billingRange,
   });
 }
 
@@ -4463,6 +4553,92 @@ function renderAiQaPreReviewTable(title, headers, rows, rowRenderer, emptyText) 
   `;
 }
 
+function formatAiBillingNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  return Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 2 }).format(number);
+}
+
+function aiBillingMeterLabel(meter) {
+  const labels = {
+    input_tokens: "Input tokens",
+    output_tokens: "Output tokens",
+    neurons: "Neurons",
+    text_generation: "Text generation",
+    other: "Other",
+  };
+  return labels[meter?.type] || meter?.id || "Usage";
+}
+
+function renderAiBillingChart(billing) {
+  const meters = billing?.meters || [];
+  const intervals = billing?.intervals || [];
+  const maxTotal = Math.max(...intervals.map((item) => Number(item.total || 0)), 1);
+  const colors = ["#8b7cf6", "#fb923c", "#38bdf8", "#34d399", "#f472b6", "#facc15"];
+  return `
+    <div class="ai-billing-legend">
+      ${meters.map((meter, index) => `<span><i style="--meter-color:${colors[index % colors.length]}"></i>${escapeHtml(aiBillingMeterLabel(meter))} <strong>${escapeHtml(formatAiBillingNumber(meter.total))}</strong></span>`).join("")}
+    </div>
+    <div class="ai-billing-chart" role="img" aria-label="Cloudflare billing usage over time">
+      ${intervals.map((interval) => {
+        const label = new Date(Number(interval.startTime || 0)).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+        return `<div class="ai-billing-bar-wrap" title="${escapeHtml(`${label}: ${formatAiBillingNumber(interval.total)}`)}">
+          <div class="ai-billing-bar">
+            ${meters.map((meter, index) => {
+              const value = Number(interval.values?.[meter.id] || 0);
+              const height = Math.max(0, (value / maxTotal) * 100);
+              return `<i style="height:${height}%;--meter-color:${colors[index % colors.length]}"></i>`;
+            }).join("")}
+          </div>
+        </div>`;
+      }).join("")}
+    </div>
+    <div class="ai-billing-axis"><span>${escapeHtml(intervals.length ? new Date(intervals[0].startTime).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit" }) : "")}</span><span>${escapeHtml(intervals.length ? new Date(intervals.at(-1).startTime).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit" }) : "")}</span></div>
+  `;
+}
+
+function renderCloudflareAiBillingDashboard(billing) {
+  const range = state.livechatAiQaPreReviewAnalytics.billingRange;
+  const rangeLabel = range === "7d" ? "Last 7 days UTC" : range === "30d" ? "Last 30 days UTC" : "Last 24 hours UTC · 30-minute intervals";
+  if (!billing?.configured) {
+    return `<div class="card-shell ai-billing-shell">
+      <div class="ai-billing-head"><div><div class="section-title">Workers AI · real Cloudflare usage</div><div class="subtle">Source: Cloudflare Workers AI Analytics</div></div></div>
+      <div class="empty-state analytics-error">${escapeHtml(billing?.message || "Cloudflare Workers AI Analytics is not configured.")} Add a Cloudflare API token with Account Analytics Read permission.</div>
+    </div>`;
+  }
+  if (billing.error) {
+    return `<div class="card-shell ai-billing-shell"><div class="section-title">Workers AI · real Cloudflare usage</div><div class="empty-state analytics-error">${escapeHtml(billing.error)}</div></div>`;
+  }
+  const meters = billing.meters || [];
+  const totals = billing.totals || {};
+  const neuronTotal = Number(totals.neurons || 0);
+  const totalTokens = Number(totals.inputTokens || 0) + Number(totals.outputTokens || 0);
+  const dailyLimit = Number(billing.dailyLimit || 10000);
+  const todayNeurons = Number(billing.todayNeurons || 0);
+  return `<div class="card-shell ai-billing-shell">
+    <div class="ai-billing-head">
+      <div>
+        <div class="section-title">Workers AI · real Cloudflare usage</div>
+        <div class="subtle">Cloudflare Workers AI Analytics · updated ${escapeHtml(livechatAiQaDateTime(billing.fetchedAt))}</div>
+      </div>
+      <div class="ai-billing-range" aria-label="Billing usage range">
+        ${[["24h", "24 hours"], ["7d", "7 days"], ["30d", "30 days"]].map(([value, label]) => `<button class="btn btn-sm ${range === value ? "btn-primary" : "btn-outline-secondary"}" type="button" data-ai-billing-range="${value}">${label}</button>`).join("")}
+      </div>
+    </div>
+    <div class="ai-billing-daily"><i class="bi bi-calendar3"></i><span>${escapeHtml(rangeLabel)}</span><strong>Neurons: ${escapeHtml(formatAiBillingNumber(neuronTotal))}</strong></div>
+    <div class="ai-billing-summary-grid">
+      <div><span>Today UTC neurons</span><strong>${escapeHtml(formatAiBillingNumber(todayNeurons))}</strong></div>
+      <div><span>QA daily limit</span><strong>${escapeHtml(formatAiBillingNumber(dailyLimit))}</strong></div>
+      <div><span>Daily limit used</span><strong>${escapeHtml(`${Math.min(100, dailyLimit ? (todayNeurons / dailyLimit) * 100 : 0).toFixed(1)}%`)}</strong></div>
+      <div><span>Models used</span><strong>${Number(billing.models?.length || 0)}</strong></div>
+    </div>
+    <div class="ai-billing-chart-card">
+      <div class="ai-billing-chart-title"><span>Token usage history</span><strong>${escapeHtml(formatAiBillingNumber(totalTokens))} tokens</strong></div>
+      ${meters.length && (billing.intervals || []).length ? renderAiBillingChart(billing) : '<div class="empty-state">Cloudflare returned no Workers AI usage for this range.</div>'}
+    </div>
+  </div>`;
+}
+
 function renderLivechatAiQaPreReviewAnalytics() {
   const analytics = state.livechatAiQaPreReviewAnalytics;
   const filters = analytics.filters;
@@ -4472,11 +4648,15 @@ function renderLivechatAiQaPreReviewAnalytics() {
   const pipeline = data?.pipeline || [];
   return `
     <section class="ai-qa-review-page">
+      <section class="qa-workspace-hero qa-workspace-hero-analytics">
+        <div><span class="ui-eyebrow">AI quality intelligence</span><h1>Chats pre-AI QA Review</h1><p>Measure the original AI result before a QA manager approves or corrects it.</p></div>
+        <div class="qa-workspace-hero-metric"><strong>${Number(overall.reviewed || 0).toLocaleString()}</strong><span>reviewed results</span></div>
+      </section>
       <div class="card-shell ai-qa-review-filter-shell">
         <div class="tickets-toolbar">
           <div>
-            <div class="section-title">Chats pre-AI QA Review</div>
-            <div class="subtle">Quality of the original AI result before a QA manager approves or corrects it</div>
+            <div class="section-title">Analytics filters</div>
+            <div class="subtle">Refine the reporting period, review type and reviewer</div>
           </div>
           <button id="aiQaPreAnalyticsReloadBtn" class="btn btn-sm btn-outline-secondary" type="button">Reload</button>
         </div>
@@ -4498,15 +4678,15 @@ function renderLivechatAiQaPreReviewAnalytics() {
       ${analytics.error ? `<div class="empty-state analytics-error">${escapeHtml(analytics.error)}</div>` : ""}
       ${
         analytics.loading && !data
-          ? '<div class="empty-state">Loading pre-AI QA analytics...</div>'
+          ? renderLoadingState("Loading pre-AI QA analytics")
           : `
+            ${renderCloudflareAiBillingDashboard(data?.cloudflareBilling)}
             <div class="stats-grid">
               <div class="card-shell stats-card"><div class="stats-label">Reviewed results</div><div class="stats-value">${Number(overall.reviewed || 0).toLocaleString()}</div></div>
               <div class="card-shell stats-card"><div class="stats-label">Exact AI matches</div><div class="stats-value">${Number(overall.exactMatchRate || 0).toFixed(1)}%</div></div>
               <div class="card-shell stats-card"><div class="stats-label">Correction rate</div><div class="stats-value">${Number(overall.correctionRate || 0).toFixed(1)}%</div></div>
               <div class="card-shell stats-card"><div class="stats-label">Learned guidance</div><div class="stats-value">${Number(data?.knowledge?.total || 0).toLocaleString()}</div><div class="subtle">${Number(data?.knowledge?.autoTag || 0)} auto-tag · ${Number(data?.knowledge?.agentQa || 0)} Agent QA</div></div>
               <div class="card-shell stats-card"><div class="stats-label">AI requests</div><div class="stats-value">${Number(usage.requests || 0).toLocaleString()}</div></div>
-              <div class="card-shell stats-card"><div class="stats-label">Neuron usage</div><div class="stats-value">${Number(usage.utilization || 0).toFixed(1)}%</div><div class="subtle">${Math.round(Number(usage.actualNeurons || 0)).toLocaleString()} / ${Math.round(Number(usage.limit || 0)).toLocaleString()}</div></div>
               <div class="card-shell stats-card"><div class="stats-label">AI failures</div><div class="stats-value">${Number(usage.failed || 0).toLocaleString()}</div></div>
               <div class="card-shell stats-card"><div class="stats-label">Skipped by limit</div><div class="stats-value">${Number(usage.skipped || 0).toLocaleString()}</div></div>
             </div>
@@ -4555,7 +4735,7 @@ function renderLivechatAiQaPreReviewAnalytics() {
               "Latest correction comments",
               ["Time", "Type", "Chat", "AI → final", "Reviewer", "Comment"],
               data?.recentComments || [],
-              (row) => `<tr><td>${escapeHtml(livechatAiQaDateTime(row.createdAt))}</td><td>${aiQaAnalyticsTypeLabel(row.type)}</td><td><strong>${renderLivechatChatLink(row.chatId, row.threadId)}</strong><div class="subtle">${escapeHtml(row.threadId)}</div></td><td>${escapeHtml([row.aiTag || row.tag, row.finalTag].filter(Boolean).join(" → ") || row.feedbackType)}</td><td>${escapeHtml(row.reviewer)}</td><td class="ai-qa-comment-cell">${escapeHtml(row.comment)}</td></tr>`,
+              (row) => `<tr><td>${escapeHtml(livechatAiQaDateTime(row.createdAt))}</td><td>${aiQaAnalyticsTypeLabel(row.type)}</td><td><strong>${renderLivechatChatLink(row.chatId, row.threadId)}</strong><div class="subtle">${escapeHtml(row.chatId)}</div></td><td>${escapeHtml([row.aiTag || row.tag, row.finalTag].filter(Boolean).join(" → ") || row.feedbackType)}</td><td>${escapeHtml(row.reviewer)}</td><td class="ai-qa-comment-cell">${escapeHtml(row.comment)}</td></tr>`,
               "No correction comments for this period.",
             )}
           `
@@ -4972,15 +5152,16 @@ function formatDelta(current, previous) {
 function helpdeskAgentLabel(agent) {
   const id = String(agent.agent_id || agent.id || "");
   const dashboardAgent = helpdeskAnalyticsAgentById(id);
-  return agent.name || dashboardAgent?.name || agent.email || dashboardAgent?.email || id;
+  return agent.email || dashboardAgent?.email || agent.name || dashboardAgent?.name || id;
 }
 
 function helpdeskAgentSubLabel(agent) {
   const id = String(agent.agent_id || agent.id || "");
   const dashboardAgent = helpdeskAnalyticsAgentById(id);
   const email = agent.email || dashboardAgent?.email || "";
+  const name = agent.name || dashboardAgent?.name || "";
   const main = helpdeskAgentLabel(agent);
-  return email && email !== main ? email : id && id !== main ? id : "";
+  return name && name !== main ? name : email && email !== main ? email : id && id !== main ? id : "";
 }
 
 function helpdeskFilterText(item) {
@@ -8559,7 +8740,7 @@ function renderModal() {
 
   modalRoot.innerHTML = `
     <div class="modal-overlay">
-      <div class="modal-card">
+      <div class="modal-card ${isLiveChatUser ? "livechat-agent-modal" : ""}">
         <div class="modal-head">
           <div>
             <div class="modal-title">${escapeHtml(isGroupModal ? state.modalAgent.name : state.modalAgent.email)}</div>
@@ -8602,12 +8783,12 @@ function renderModal() {
                 </div>
               `
               : `
-                <div class="editor-shell">
-                  <div class="section-title">${isLiveChatUser ? "Add groups" : "Change memberships"}</div>
+                <div class="editor-shell ${isLiveChatUser ? "livechat-agent-groups-panel" : ""}">
+                  <div class="agent-groups-heading"><div><span class="ui-eyebrow">Access management</span><div class="section-title">${isLiveChatUser ? "Add groups" : "Change memberships"}</div></div>${isLiveChatUser ? `<span class="chip">${Number(state.modalAgent.groups?.length || 0)} current</span>` : ""}</div>
                   <div class="toolbar-row">
                     <input id="modalSearchInput" class="form-control" type="search" placeholder="Search groups" value="${escapeHtml(state.modalSearch)}" />
-                    <button id="modalSelectAllBtn" class="btn btn-outline-secondary" type="button">Select shown</button>
-                    <button id="modalClearBtn" class="btn btn-outline-secondary" type="button">Clear shown</button>
+                    <button id="modalSelectAllBtn" class="btn btn-outline-secondary" type="button"><i class="bi bi-check2-square"></i> Select shown</button>
+                    <button id="modalClearBtn" class="btn btn-outline-secondary" type="button"><i class="bi bi-x-square"></i> Clear</button>
                     <div class="subtle d-flex align-items-center px-2">${filteredItems.length} shown</div>
                   </div>
                   ${
@@ -8650,7 +8831,7 @@ function renderModal() {
                     }
                   </div>
                   <div class="action-row mt-3">
-                    <button id="saveModalBtn" class="btn btn-primary" type="button">${isLiveChatUser ? "Add groups" : "Save"}</button>
+                    <button id="saveModalBtn" class="btn btn-primary" type="button">${isLiveChatUser ? '<i class="bi bi-plus-lg"></i> Add selected groups' : "Save"}</button>
                   </div>
                 </div>
                 ${
@@ -8672,6 +8853,14 @@ function renderModal() {
 
 function renderApp() {
   const filterBar = document.getElementById("filterBar");
+  const appView = document.getElementById("appView");
+  const sidebarToggle = document.getElementById("sidebarToggleBtn");
+  appView?.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
+  if (sidebarToggle) {
+    sidebarToggle.setAttribute("aria-expanded", state.sidebarCollapsed ? "false" : "true");
+    sidebarToggle.setAttribute("aria-label", state.sidebarCollapsed ? "Show main menu" : "Hide main menu");
+    sidebarToggle.innerHTML = `<i class="bi ${state.sidebarCollapsed ? "bi-layout-sidebar-inset-reverse" : "bi-layout-sidebar-inset"}"></i>`;
+  }
   ensureAllowedSection();
   syncSidebarAccess();
   pageTitle.textContent = currentSectionTitle();
@@ -8864,63 +9053,62 @@ function renderApp() {
 
 async function refreshData() {
   setMessage(statusMessage, "Refreshing...");
+  refreshBtn.disabled = true;
   const canLoadAdminData = canManageAdmins();
   const canLoadManagementData = isAdminRole();
+  const warnings = [];
+  const load = async (label, request, applyResult) => {
+    try {
+      const result = await request;
+      applyResult(result);
+      renderApp();
+    } catch (error) {
+      warnings.push(`${label}: ${error.message}`);
+    }
+  };
 
-  const [
-    livechatResult,
-    helpdeskResult,
-    adminUsersResult,
-    logsResult,
-    workflowsResult,
-    helpdeskAnalyticsWebhookStatsResult,
-  ] = await Promise.allSettled([
-    api("/api/livechat/dashboard"),
-    api("/api/helpdesk/dashboard"),
-    canLoadAdminData ? api("/api/admin-users") : Promise.resolve({ adminUsers: [] }),
-    canLoadAdminData ? api("/api/logs") : Promise.resolve({ logs: [], warning: "" }),
-    canLoadManagementData ? api("/api/helpdesk/workflows") : Promise.resolve({ workflows: [], webhookStats: state.helpdeskWorkflows.webhookStats }),
-    api("/api/helpdesk/analytics-webhooks"),
-  ]);
-
-  if (livechatResult.status === "fulfilled") {
-    state.livechat = livechatResult.value;
+  try {
+    await Promise.all([
+      load("LiveChat", api("/api/livechat/dashboard", { timeoutMs: 20000 }), (result) => {
+        state.livechat = result;
+      }),
+      load("HelpDesk", api("/api/helpdesk/dashboard", { timeoutMs: 20000 }), (result) => {
+        state.helpdesk = result;
+        applyDefaultHelpdeskAnalyticsAgents();
+      }),
+      ...(canLoadAdminData
+        ? [
+            load("Admin users", api("/api/admin-users", { timeoutMs: 15000 }), (result) => {
+              state.adminUsers = result.adminUsers || [];
+            }),
+            load("Logs", api("/api/logs", { timeoutMs: 15000 }), (result) => {
+              state.logs = result.logs || [];
+              state.logsWarning = result.warning || "";
+              if (state.logsWarning) warnings.push(state.logsWarning);
+            }),
+          ]
+        : []),
+      ...(canLoadManagementData
+        ? [
+            load("Workflows", api("/api/helpdesk/workflows", { timeoutMs: 15000 }), (result) => {
+              state.helpdeskWorkflows.workflows = result.workflows || [];
+              state.helpdeskWorkflows.webhookStats = result.webhookStats || state.helpdeskWorkflows.webhookStats;
+            }),
+          ]
+        : []),
+      load("HelpDesk analytics webhooks", api("/api/helpdesk/analytics-webhooks", { timeoutMs: 15000 }), (result) => {
+        state.helpdesk_analytics.webhookStats = result;
+      }),
+    ]);
+  } finally {
+    refreshBtn.disabled = false;
+    renderApp();
+    setMessage(
+      statusMessage,
+      warnings.length ? `Updated with warnings. ${warnings.join(" | ")}` : "Updated.",
+      warnings.length ? "error" : "success",
+    );
   }
-  if (helpdeskResult.status === "fulfilled") {
-    state.helpdesk = helpdeskResult.value;
-    applyDefaultHelpdeskAnalyticsAgents();
-  }
-  if (adminUsersResult.status === "fulfilled") {
-    state.adminUsers = adminUsersResult.value.adminUsers || [];
-  }
-  if (workflowsResult.status === "fulfilled") {
-    state.helpdeskWorkflows.workflows = workflowsResult.value.workflows || [];
-    state.helpdeskWorkflows.webhookStats = workflowsResult.value.webhookStats || state.helpdeskWorkflows.webhookStats;
-  }
-  if (helpdeskAnalyticsWebhookStatsResult.status === "fulfilled") {
-    state.helpdesk_analytics.webhookStats = helpdeskAnalyticsWebhookStatsResult.value;
-  }
-  state.logs = logsResult.status === "fulfilled" ? logsResult.value.logs || [] : [];
-  state.logsWarning = logsResult.status === "fulfilled" ? logsResult.value.warning || "" : "Logs unavailable.";
-
-  renderApp();
-
-  const warnings = [
-    livechatResult.status !== "fulfilled" ? `LiveChat: ${livechatResult.reason.message}` : "",
-    helpdeskResult.status !== "fulfilled" ? `HelpDesk: ${helpdeskResult.reason.message}` : "",
-    canLoadAdminData && adminUsersResult.status !== "fulfilled" ? `Admin users: ${adminUsersResult.reason.message}` : "",
-    state.logsWarning,
-    canLoadManagementData && workflowsResult.status !== "fulfilled" ? `Workflows: ${workflowsResult.reason.message}` : "",
-    helpdeskAnalyticsWebhookStatsResult.status !== "fulfilled"
-      ? `HelpDesk analytics webhooks: ${helpdeskAnalyticsWebhookStatsResult.reason.message}`
-      : "",
-  ].filter(Boolean);
-
-  setMessage(
-    statusMessage,
-    warnings.length ? `Updated. ${warnings.join(" | ")}` : "Updated.",
-    warnings.length ? "info" : "success",
-  );
 }
 
 async function withBusyState(action, successMessage) {
@@ -9095,10 +9283,29 @@ function rerenderPreservingInput(inputId) {
 }
 
 function bindAppEvents() {
+  bindClick("sidebarToggleBtn", () => {
+    state.sidebarCollapsed = !state.sidebarCollapsed;
+    window.localStorage.setItem("mainSidebarCollapsed", state.sidebarCollapsed ? "1" : "0");
+    renderApp();
+  });
+  bindClick("sidebarBackdrop", () => {
+    state.sidebarCollapsed = true;
+    renderApp();
+  });
+  bindClick("qaDashboardOpenCombined", () => {
+    state.section = "livechat-ai-qa-review";
+    renderApp();
+  });
+  bindClick("qaDashboardReload", () => fetchQaDashboard());
+  bindClick("combinedAiQaPanelToggle", () => {
+    state.livechatAiQaReview.decisionPanel = state.livechatAiQaReview.decisionPanel === "agent" ? "auto" : "agent";
+    renderApp();
+  });
   document.querySelectorAll(".sidebar-link").forEach((button) => {
     button.onclick = () => {
       if (!canAccessSection(button.dataset.section)) return;
       state.section = button.dataset.section;
+      if (window.matchMedia("(max-width: 1199.98px)").matches) state.sidebarCollapsed = true;
       renderApp();
     };
   });
@@ -9438,6 +9645,12 @@ function bindAppEvents() {
   bindClick("aiQaPreAnalyticsReloadBtn", () => {
     fetchLivechatAiQaPreReviewAnalytics();
   });
+  document.querySelectorAll("[data-ai-billing-range]").forEach((button) => {
+    button.onclick = () => {
+      state.livechatAiQaPreReviewAnalytics.billingRange = button.dataset.aiBillingRange || "24h";
+      fetchLivechatAiQaPreReviewAnalytics();
+    };
+  });
   document.querySelectorAll("[data-livechat-chat-link]").forEach((link) => {
     link.onclick = (event) => event.stopPropagation();
     link.onkeydown = (event) => event.stopPropagation();
@@ -9461,9 +9674,7 @@ function bindAppEvents() {
     renderApp();
   });
 
-  refreshBtn.onclick = async () => {
-    await withBusyState(async () => refreshData(), "Updated.");
-  };
+  refreshBtn.onclick = () => refreshData();
 
   logoutBtn.onclick = async () => {
     try {

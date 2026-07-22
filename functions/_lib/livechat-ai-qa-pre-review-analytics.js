@@ -10,7 +10,16 @@ function parseJson(value, fallback = []) {
 }
 
 function unique(values = []) {
-  return [...new Set(values.map((value) => `${value || ""}`.trim()).filter(Boolean))];
+  return [...new Set(values.map((value) => canonicalAnalyticsTag(value)).filter(Boolean))];
+}
+
+function canonicalAnalyticsTag(value) {
+  const tag = `${value || ""}`.trim();
+  const aliases = {
+    "promo bonus": "promo_bonus",
+    "loyalty bonus": "loyalty_bonus",
+  };
+  return aliases[tag.toLowerCase()] || tag;
 }
 
 function sameTags(left, right) {
@@ -320,10 +329,10 @@ export async function getLivechatAiQaPreReviewAnalytics(env, filters = {}) {
       type: row.type,
       chatId: row.chat_id,
       threadId: row.thread_id,
-      tag: row.tag || "",
+      tag: canonicalAnalyticsTag(row.tag),
       feedbackType: row.feedback_type || "",
-      aiTag: row.ai_tag || "",
-      finalTag: row.final_tag || "",
+      aiTag: canonicalAnalyticsTag(row.ai_tag),
+      finalTag: canonicalAnalyticsTag(row.final_tag),
       comment: row.comment || "",
       reviewer: row.reviewer || "",
       createdAt: row.created_at,

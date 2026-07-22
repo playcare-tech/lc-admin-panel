@@ -175,7 +175,7 @@ function rawChatExportHeaders() {
 }
 
 function chatArchiveLink(threadId) {
-  return threadId ? `https://my.livechatinc.com/archives/?q=${encodeURIComponent(threadId)}` : "";
+  return threadId ? `https://my.livechatinc.com/archives/${encodeURIComponent(threadId)}` : "";
 }
 
 function groupLabel(groupIds, groupNameById) {

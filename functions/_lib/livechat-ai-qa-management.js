@@ -160,10 +160,22 @@ export async function refillLivechatAiQaQueue(env, preloadedTables, username, re
     const { results } = await env.DB.prepare(`
       SELECT r.id, r.chat_id, r.thread_id
       FROM ${tables.reviews} r
-      LEFT JOIN ${tables.agentQaReviews} aq ON aq.chat_id = r.chat_id AND aq.thread_id = r.thread_id
-      WHERE (r.status = 'pending_review' OR aq.status = 'pending_review')
+      JOIN ${tables.agentQaReviews} aq ON aq.chat_id = r.chat_id AND aq.thread_id = r.thread_id
+      WHERE r.status = 'pending_review'
+        AND aq.status = 'pending_review'
+        AND r.ai_status = 'completed'
+        AND aq.ai_status = 'completed'
         AND (r.assigned_to IS NULL OR r.assigned_to = '')
-      ORDER BY r.queued_at ASC, r.created_at ASC
+        AND (aq.assigned_to IS NULL OR aq.assigned_to = '')
+      ORDER BY
+        CASE
+          WHEN r.suggested_tags_json LIKE '%"other"%' THEN 0
+          WHEN COALESCE(r.ai_overall_confidence, 1) < 0.75 OR COALESCE(aq.ai_overall_confidence, 1) < 0.85 THEN 1
+          ELSE 2
+        END ASC,
+        MIN(COALESCE(r.ai_overall_confidence, 1), COALESCE(aq.ai_overall_confidence, 1)) ASC,
+        r.queued_at DESC,
+        r.created_at DESC
       LIMIT ?
     `).bind(needed).all();
     let assigned = 0;
@@ -191,8 +203,14 @@ export async function refillLivechatAiQaQueue(env, preloadedTables, username, re
   if (!needed) return { assigned: 0 };
   const { results } = await env.DB.prepare(`
     SELECT id FROM ${table}
-    WHERE status = 'pending_review' AND (assigned_to IS NULL OR assigned_to = '')
-    ORDER BY queued_at ASC, created_at ASC
+    WHERE status = 'pending_review'
+      AND ai_status = 'completed'
+      AND (assigned_to IS NULL OR assigned_to = '')
+    ORDER BY
+      CASE WHEN COALESCE(ai_overall_confidence, 1) < 0.85 THEN 0 ELSE 1 END ASC,
+      COALESCE(ai_overall_confidence, 1) ASC,
+      queued_at DESC,
+      created_at DESC
     LIMIT ?
   `).bind(needed).all();
   let assigned = 0;

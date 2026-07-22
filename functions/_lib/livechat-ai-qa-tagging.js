@@ -19,15 +19,17 @@ const FAST_FTR_TAG = "q12a";
 const SLOW_FTR_TAG = "q12b";
 const AI_QA_PRIMARY_MODEL = "@cf/ibm-granite/granite-4.0-h-micro";
 const AI_QA_FALLBACK_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
-const AI_QA_PROMPT_VERSION = "manual-qa-tags-v3";
-const AI_QA_TAXONOMY_VERSION = "2026-07-05-v1";
-const AI_QA_DEFAULT_DAILY_NEURON_LIMIT = 17000;
+const AI_QA_PROMPT_VERSION = "manual-qa-tags-v6";
+const AI_QA_TAXONOMY_VERSION = "2026-07-22-v1";
+const AI_QA_DEFAULT_DAILY_NEURON_LIMIT = 10000;
 const AI_QA_MAX_TRANSCRIPT_EVENTS = 160;
 const AI_QA_MAX_TRANSCRIPT_CHARS = 24000;
+const AI_QA_TRANSCRIPT_HEAD_EVENTS = 24;
+const AI_QA_TRANSCRIPT_TAIL_EVENTS = 48;
 const AI_QA_OUTPUT_TOKEN_BUDGET = 900;
 const AI_QA_KNOWLEDGE_CANDIDATE_LIMIT = 80;
 const AI_QA_PROMPT_KNOWLEDGE_LIMIT = 10;
-const AGENT_QA_PROMPT_VERSION = "manual-agent-qa-v3";
+const AGENT_QA_PROMPT_VERSION = "manual-agent-qa-v4";
 const AGENT_QA_RULES_VERSION = "2026-07-05-v1";
 const AGENT_QA_LOW_CONFIDENCE_THRESHOLD = 0.85;
 const AGENT_QA_OUTPUT_TOKEN_BUDGET = 1100;
@@ -179,6 +181,20 @@ const AI_QA_TAXONOMY = [
     guidance: "Use when the player reports that a bonus was not credited, cannot be activated, does not work, or bonus winnings are missing.",
   },
   {
+    tag: "deposit_problem",
+    description:
+      "Technical deposit issue that support agents cannot resolve themselves and escalate to the finance department for review.",
+    guidance:
+      "Use when a deposit has a technical problem that remains unresolved in chat and the agent escalates or forwards it to Finance for investigation. Do not use for general deposit questions or a simple deposit-status question.",
+  },
+  {
+    tag: "deposit_info",
+    description:
+      "Questions about deposits, including available methods, limits, minimum amount, deposit status, or where to view full deposit history.",
+    guidance:
+      "Use when the player asks for deposit information: payment methods, deposit limits, minimum deposit, the status of a deposit, or how to find their complete deposit history. Do not use when an unresolved technical deposit issue is escalated to Finance.",
+  },
+  {
     tag: "withdrawal_problem",
     description: "Problem withdrawing funds from the account.",
     guidance: "Use when withdrawal methods are unavailable, the withdrawal button/function fails, or the player cannot submit a withdrawal.",
@@ -229,7 +245,7 @@ const AI_QA_TAXONOMY = [
     guidance: "Use when the player asks for a refund or mentions initiating/wanting a chargeback.",
   },
   {
-    tag: "Loyalty bonus",
+    tag: "loyalty_bonus",
     description: "Rewards given as loyalty or retention bonuses, including cash, free spins, no-deposit bonuses, or gifts.",
     guidance: "Use for loyalty/retention offers, including offers to keep a player from closing the account.",
   },
@@ -239,7 +255,7 @@ const AI_QA_TAXONOMY = [
     guidance: "Use when the player specifically refers to live, weekly, sports, or other promotional cashback.",
   },
   {
-    tag: "Promo bonus",
+    tag: "promo_bonus",
     description: "Request to add, reissue, or activate any named bonus from the promo page.",
     guidance: "Use when the player names a promotion they want to receive, activate, or have reissued.",
   },
@@ -591,6 +607,10 @@ async function ensureLivechatAiQaReviewTables(env, tables = livechatAiQaTables(e
       example_thread_id TEXT,
       source_review_id TEXT,
       source_feedback_id INTEGER,
+      content_key TEXT,
+      reason_type TEXT,
+      evidence_json TEXT NOT NULL DEFAULT '[]',
+      occurrence_count INTEGER NOT NULL DEFAULT 1,
       status TEXT NOT NULL DEFAULT 'active',
       created_by TEXT,
       created_at TEXT NOT NULL,
@@ -600,12 +620,17 @@ async function ensureLivechatAiQaReviewTables(env, tables = livechatAiQaTables(e
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS ${tables.usageDaily} (
       usage_date TEXT PRIMARY KEY,
-      neuron_limit INTEGER NOT NULL DEFAULT 17000,
+      neuron_limit INTEGER NOT NULL DEFAULT 10000,
       requests_count INTEGER NOT NULL DEFAULT 0,
       skipped_count INTEGER NOT NULL DEFAULT 0,
       failed_count INTEGER NOT NULL DEFAULT 0,
       estimated_neurons REAL NOT NULL DEFAULT 0,
       actual_neurons REAL NOT NULL DEFAULT 0,
+      reserved_neurons REAL NOT NULL DEFAULT 0,
+      content_actual_neurons REAL NOT NULL DEFAULT 0,
+      content_reserved_neurons REAL NOT NULL DEFAULT 0,
+      agent_actual_neurons REAL NOT NULL DEFAULT 0,
+      agent_reserved_neurons REAL NOT NULL DEFAULT 0,
       prompt_tokens INTEGER NOT NULL DEFAULT 0,
       completion_tokens INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL
@@ -617,6 +642,15 @@ async function ensureLivechatAiQaReviewTables(env, tables = livechatAiQaTables(e
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${tables.feedbackReviewIndex} ON ${tables.feedback}(review_id, created_at)`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${tables.knowledgeTagIndex} ON ${tables.knowledgeBase}(tag, status)`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${tables.knowledgeStatusIndex} ON ${tables.knowledgeBase}(status, updated_at)`).run();
+  await ensureLivechatAiQaColumn(env, tables.knowledgeBase, "content_key", "TEXT");
+  await ensureLivechatAiQaColumn(env, tables.knowledgeBase, "reason_type", "TEXT");
+  await ensureLivechatAiQaColumn(env, tables.knowledgeBase, "evidence_json", "TEXT NOT NULL DEFAULT '[]'");
+  await ensureLivechatAiQaColumn(env, tables.knowledgeBase, "occurrence_count", "INTEGER NOT NULL DEFAULT 1");
+  await ensureLivechatAiQaColumn(env, tables.usageDaily, "reserved_neurons", "REAL NOT NULL DEFAULT 0");
+  await ensureLivechatAiQaColumn(env, tables.usageDaily, "content_actual_neurons", "REAL NOT NULL DEFAULT 0");
+  await ensureLivechatAiQaColumn(env, tables.usageDaily, "content_reserved_neurons", "REAL NOT NULL DEFAULT 0");
+  await ensureLivechatAiQaColumn(env, tables.usageDaily, "agent_actual_neurons", "REAL NOT NULL DEFAULT 0");
+  await ensureLivechatAiQaColumn(env, tables.usageDaily, "agent_reserved_neurons", "REAL NOT NULL DEFAULT 0");
   await ensureLivechatAiQaColumn(env, tables.reviews, "assigned_to", "TEXT");
   await ensureLivechatAiQaColumn(env, tables.reviews, "assigned_at", "TEXT");
   await ensureLivechatAiQaColumn(env, tables.reviews, "completed_by", "TEXT");
@@ -704,6 +738,10 @@ async function ensureLivechatAgentQaTables(env, tables = livechatAiQaTables(env)
       example_thread_id TEXT,
       source_review_id TEXT,
       source_feedback_id INTEGER,
+      content_key TEXT,
+      reason_type TEXT,
+      evidence_json TEXT NOT NULL DEFAULT '[]',
+      occurrence_count INTEGER NOT NULL DEFAULT 1,
       status TEXT NOT NULL DEFAULT 'active',
       created_by TEXT,
       created_at TEXT NOT NULL,
@@ -717,6 +755,10 @@ async function ensureLivechatAgentQaTables(env, tables = livechatAiQaTables(env)
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${tables.agentQaChecksTagIndex} ON ${tables.agentQaChecks}(selected_tag, result)`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${tables.agentQaFeedbackReviewIndex} ON ${tables.agentQaFeedback}(review_id, created_at)`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS ${tables.agentQaKnowledgeTagIndex} ON ${tables.agentQaKnowledgeBase}(rule_key, tag, status)`).run();
+  await ensureLivechatAiQaColumn(env, tables.agentQaKnowledgeBase, "content_key", "TEXT");
+  await ensureLivechatAiQaColumn(env, tables.agentQaKnowledgeBase, "reason_type", "TEXT");
+  await ensureLivechatAiQaColumn(env, tables.agentQaKnowledgeBase, "evidence_json", "TEXT NOT NULL DEFAULT '[]'");
+  await ensureLivechatAiQaColumn(env, tables.agentQaKnowledgeBase, "occurrence_count", "INTEGER NOT NULL DEFAULT 1");
   await ensureLivechatAiQaColumn(env, tables.agentQaReviews, "assigned_to", "TEXT");
   await ensureLivechatAiQaColumn(env, tables.agentQaReviews, "assigned_at", "TEXT");
   await ensureLivechatAiQaColumn(env, tables.agentQaReviews, "completed_by", "TEXT");
@@ -742,10 +784,16 @@ const AI_QA_TAG_BY_KEY = new Map([
   ["cashback", "Сashback"],
   ["trustpilot", "truspilot"],
   ["trust pilot", "truspilot"],
+  ["promo bonus", "promo_bonus"],
+  ["loyalty bonus", "loyalty_bonus"],
 ]);
 
 function canonicalAiQaTag(value) {
   return AI_QA_TAG_BY_KEY.get(normalizeTagKey(value)) || "";
+}
+
+function canonicalAiQaTags(values) {
+  return unique((Array.isArray(values) ? values : []).map(canonicalAiQaTag).filter(Boolean));
 }
 
 const AI_QA_LIVECHAT_TAG_BY_CANONICAL = new Map([
@@ -769,6 +817,18 @@ function envAiQaEnabled(env) {
 function configuredAiQaDailyLimit(env) {
   const value = Number(env.AI_QA_DAILY_NEURON_LIMIT);
   return Number.isFinite(value) && value > 0 ? value : AI_QA_DEFAULT_DAILY_NEURON_LIMIT;
+}
+
+function configuredAiQaLaneShare(env, lane) {
+  const key = lane === "agent" ? "AI_QA_AGENT_MIN_SHARE" : "AI_QA_CONTENT_MIN_SHARE";
+  const fallback = lane === "agent" ? 0.5 : 0.4;
+  const value = Number(env[key]);
+  return Number.isFinite(value) && value >= 0.1 && value <= 0.8 ? value : fallback;
+}
+
+function configuredAiQaSharedShare(env) {
+  const value = Number(env.AI_QA_SHARED_SHARE);
+  return Number.isFinite(value) && value >= 0 && value <= 0.3 ? value : 0.1;
 }
 
 function utcDateKey(value = new Date()) {
@@ -814,18 +874,54 @@ function aiQaTranscriptEvent(row) {
   };
 }
 
-function buildTranscriptSnapshot(eventRows) {
-  const snapshot = [];
-  let totalChars = 0;
-  for (const row of [...(eventRows || [])].sort(compareEventRows)) {
-    const item = aiQaTranscriptEvent(row);
-    if (!item) continue;
-    const itemChars = item.text.length;
-    if (snapshot.length >= AI_QA_MAX_TRANSCRIPT_EVENTS || totalChars + itemChars > AI_QA_MAX_TRANSCRIPT_CHARS) break;
-    totalChars += itemChars;
-    snapshot.push(item);
+const AI_QA_KEY_EVENT_PATTERN =
+  /deposit|withdraw|bonus|finance|escalat|transfer|refund|chargeback|verification|kyc|close|closure|resolved|unresolved|pending|failed|error|problem|issue|manager|technical|депозит|вывод|бонус|финанс|эскалац|перевед|проблем|ошибк/i;
+
+export function buildTranscriptSnapshot(eventRows) {
+  const events = [...(eventRows || [])]
+    .sort(compareEventRows)
+    .map(aiQaTranscriptEvent)
+    .filter(Boolean);
+  const totalChars = events.reduce((sum, item) => sum + item.text.length, 0);
+  if (events.length <= AI_QA_MAX_TRANSCRIPT_EVENTS && totalChars <= AI_QA_MAX_TRANSCRIPT_CHARS) {
+    return events;
   }
-  return snapshot;
+
+  const selected = new Set();
+  let selectedChars = 0;
+  const addWithinBudget = (index, phaseState) => {
+    if (index < 0 || index >= events.length || selected.has(index)) return false;
+    const itemChars = events[index].text.length;
+    if (selected.size >= AI_QA_MAX_TRANSCRIPT_EVENTS || selectedChars + itemChars > AI_QA_MAX_TRANSCRIPT_CHARS) return false;
+    if (phaseState && phaseState.used + itemChars > phaseState.limit) return false;
+    selected.add(index);
+    selectedChars += itemChars;
+    if (phaseState) phaseState.used += itemChars;
+    return true;
+  };
+
+  const tailBudget = { used: 0, limit: Math.floor(AI_QA_MAX_TRANSCRIPT_CHARS * 0.5) };
+  for (let index = events.length - 1; index >= Math.max(0, events.length - AI_QA_TRANSCRIPT_TAIL_EVENTS); index -= 1) {
+    addWithinBudget(index, tailBudget);
+  }
+
+  const headBudget = { used: 0, limit: Math.floor(AI_QA_MAX_TRANSCRIPT_CHARS * 0.25) };
+  for (let index = 0; index < Math.min(events.length, AI_QA_TRANSCRIPT_HEAD_EVENTS); index += 1) {
+    addWithinBudget(index, headBudget);
+  }
+
+  const keyBudget = { used: 0, limit: Math.floor(AI_QA_MAX_TRANSCRIPT_CHARS * 0.2) };
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const item = events[index];
+    if (AI_QA_KEY_EVENT_PATTERN.test(`${item.eventType} ${item.analysisText || item.text}`)) {
+      addWithinBudget(index, keyBudget);
+    }
+  }
+
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    addWithinBudget(index);
+  }
+  return [...selected].sort((left, right) => left - right).map((index) => events[index]);
 }
 
 function analysisTranscriptForAi(transcript) {
@@ -887,6 +983,14 @@ function knowledgeContentScore(row, transcriptText) {
   );
 }
 
+function normalizedKnowledgeContent(value) {
+  return text(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\u00c0-\u024f\u0400-\u04ff]+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function promptKnowledgeEntry(row, scope) {
   const content = truncate(row.content, 500);
   if (!content) return null;
@@ -929,6 +1033,7 @@ async function loadAiQaPromptKnowledge(env, review) {
   const transcriptText = promptKnowledgeTranscriptText(review.transcript);
   const candidateTags = candidateAiQaTagsForPromptKnowledge(review);
   const seen = new Set();
+  const perTag = new Map();
   return (rows.results || [])
     .map((row, index) => ({
       row,
@@ -940,9 +1045,14 @@ async function loadAiQaPromptKnowledge(env, review) {
     .map(({ row }) => promptKnowledgeEntry(row, "content_tagging"))
     .filter((entry) => {
       if (!entry) return false;
-      const key = `${entry.tag}|${entry.polarity}|${entry.guidance.toLowerCase()}`;
+      if (normalizedKnowledgeContent(entry.guidance).length < 20) return false;
+      const tagKey = `${entry.tag}|${entry.polarity}`;
+      const tagCount = perTag.get(tagKey) || 0;
+      if (tagCount >= 2) return false;
+      const key = `${tagKey}|${normalizedKnowledgeContent(entry.guidance)}`;
       if (seen.has(key)) return false;
       seen.add(key);
+      perTag.set(tagKey, tagCount + 1);
       return true;
     })
     .slice(0, AI_QA_PROMPT_KNOWLEDGE_LIMIT);
@@ -1019,14 +1129,41 @@ async function ensureAiQaUsageDay(env, tables, usageDate, limit) {
     .run();
 }
 
-async function reserveAiQaUsage(env, estimatedNeurons) {
+async function reserveAiQaUsage(env, estimatedNeurons, requestedLane = "content") {
   const tables = await ensureLivechatAiQaTables(env);
+  const lane = requestedLane === "agent" ? "agent" : "content";
+  const laneActualColumn = lane === "agent" ? "agent_actual_neurons" : "content_actual_neurons";
+  const laneReservedColumn = lane === "agent" ? "agent_reserved_neurons" : "content_reserved_neurons";
   const usageDate = utcDateKey();
   const limit = configuredAiQaDailyLimit(env);
+  const laneLimit = limit * Math.min(1, configuredAiQaLaneShare(env, lane) + configuredAiQaSharedShare(env));
   await ensureAiQaUsageDay(env, tables, usageDate, limit);
-  const row = await env.DB.prepare(`SELECT * FROM ${tables.usageDaily} WHERE usage_date = ?`).bind(usageDate).first();
-  const used = Math.max(Number(row?.actual_neurons || 0), Number(row?.estimated_neurons || 0));
-  if (used + estimatedNeurons > limit) {
+  const result = await env.DB.prepare(`
+    UPDATE ${tables.usageDaily}
+    SET requests_count = requests_count + 1,
+        estimated_neurons = estimated_neurons + ?,
+        reserved_neurons = reserved_neurons + ?,
+        ${laneReservedColumn} = ${laneReservedColumn} + ?,
+        updated_at = ?
+    WHERE usage_date = ?
+      AND actual_neurons + reserved_neurons + ? <= neuron_limit
+      AND ${laneActualColumn} + ${laneReservedColumn} + ? <= ?
+  `)
+    .bind(
+      estimatedNeurons,
+      estimatedNeurons,
+      estimatedNeurons,
+      nowIso(),
+      usageDate,
+      estimatedNeurons,
+      estimatedNeurons,
+      laneLimit,
+    )
+    .run();
+  if (!Number(result.meta?.changes || 0)) {
+    const row = await env.DB.prepare(`SELECT * FROM ${tables.usageDaily} WHERE usage_date = ?`).bind(usageDate).first();
+    const used = Number(row?.actual_neurons || 0) + Number(row?.reserved_neurons || 0);
+    const laneUsed = Number(row?.[laneActualColumn] || 0) + Number(row?.[laneReservedColumn] || 0);
     await env.DB.prepare(`
       UPDATE ${tables.usageDaily}
       SET skipped_count = skipped_count + 1, updated_at = ?
@@ -1034,26 +1171,32 @@ async function reserveAiQaUsage(env, estimatedNeurons) {
     `)
       .bind(nowIso(), usageDate)
       .run();
-    return { allowed: false, usageDate, limit, used, estimatedNeurons };
+    return { allowed: false, usageDate, limit, lane, laneLimit, laneUsed, used, estimatedNeurons };
   }
-
-  await env.DB.prepare(`
-    UPDATE ${tables.usageDaily}
-    SET requests_count = requests_count + 1,
-        estimated_neurons = estimated_neurons + ?,
-        updated_at = ?
-    WHERE usage_date = ?
-  `)
-    .bind(estimatedNeurons, nowIso(), usageDate)
-    .run();
-  return { allowed: true, usageDate, limit, used, estimatedNeurons };
+  const row = await env.DB.prepare(`SELECT * FROM ${tables.usageDaily} WHERE usage_date = ?`).bind(usageDate).first();
+  return {
+    allowed: true,
+    usageDate,
+    limit,
+    lane,
+    laneLimit,
+    used: Number(row?.actual_neurons || 0) + Number(row?.reserved_neurons || 0),
+    estimatedNeurons,
+  };
 }
 
-async function recordAiQaUsageResult(env, usageDate, result = {}) {
+async function recordAiQaUsageResult(env, reservation, result = {}) {
   const tables = livechatAiQaTables(env);
+  const lane = reservation?.lane === "agent" ? "agent" : "content";
+  const laneActualColumn = lane === "agent" ? "agent_actual_neurons" : "content_actual_neurons";
+  const laneReservedColumn = lane === "agent" ? "agent_reserved_neurons" : "content_reserved_neurons";
+  const reservedNeurons = Number(reservation?.estimatedNeurons || 0);
   await env.DB.prepare(`
     UPDATE ${tables.usageDaily}
     SET actual_neurons = actual_neurons + ?,
+        reserved_neurons = MAX(0, reserved_neurons - ?),
+        ${laneActualColumn} = ${laneActualColumn} + ?,
+        ${laneReservedColumn} = MAX(0, ${laneReservedColumn} - ?),
         prompt_tokens = prompt_tokens + ?,
         completion_tokens = completion_tokens + ?,
         failed_count = failed_count + ?,
@@ -1062,13 +1205,37 @@ async function recordAiQaUsageResult(env, usageDate, result = {}) {
   `)
     .bind(
       Number(result.actualNeurons || 0),
+      reservedNeurons,
+      Number(result.actualNeurons || 0),
+      reservedNeurons,
       Number(result.promptTokens || 0),
       Number(result.completionTokens || 0),
       result.failed ? 1 : 0,
       nowIso(),
-      usageDate,
+      reservation?.usageDate || utcDateKey(),
     )
     .run();
+}
+
+async function claimAiQaProcessing(env, table, reviewId, model, force = false) {
+  const startedAt = nowIso();
+  const staleCutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const condition = force
+    ? "id = ?"
+    : "id = ? AND (ai_status IN ('pending', 'failed', 'skipped') OR (ai_status = 'running' AND updated_at < ?))";
+  const result = await env.DB.prepare(`
+    UPDATE ${table}
+    SET ai_status = 'running',
+        ai_model = ?,
+        ai_fallback_model = '',
+        ai_error = '',
+        ai_started_at = ?,
+        updated_at = ?
+    WHERE ${condition}
+  `)
+    .bind(model, startedAt, startedAt, reviewId, ...(force ? [] : [staleCutoff]))
+    .run();
+  return { claimed: Number(result.meta?.changes || 0) > 0, startedAt };
 }
 
 function buildAiQaMessages(review) {
@@ -1079,9 +1246,14 @@ function buildAiQaMessages(review) {
     "Use learnedQaGuidance as reviewer-provided correction memory. Apply it only when it is relevant to this transcript.",
     "The allowed taxonomy remains the source of valid tag names. Do not invent tags from learnedQaGuidance.",
     "Read the full conversation and classify the customer's actual intent, not an isolated keyword or one message.",
+    "First identify the support domain, then the intent subtype such as info, request, problem, hold, or status. Use this hierarchy to avoid choosing neighboring tags from keywords alone.",
+    "The transcript may contain the opening, important middle events, and the ending of a long chat. Give the final resolution and escalation outcome strong weight.",
     "Bonus_request means the player directly asks to receive, credit, activate, restore, or reissue a bonus.",
     "Bonus_info means the player asks only for bonus terms, eligibility, wagering requirements, or instructions.",
     "bonus_problem means an expected bonus is missing, broken, incorrectly issued, cannot be activated, or requires technical or escalation handling.",
+    "deposit_info means the player asks about deposit methods, limits, minimum amounts, deposit status, or deposit history.",
+    "deposit_problem means there is an unresolved technical deposit issue that the agent escalates to the finance department. Prefer deposit_info for a simple status question without such an unresolved technical escalation.",
+    "For each single customer intent, choose only one of deposit_info/deposit_problem and only one of Bonus_info/Bonus_request/bonus_problem. Return more than one from a group only when the transcript clearly contains separate intents, and explain each separately.",
     "Do not use other when any specific taxonomy tag fits. Never combine other with another content tag.",
     "Return JSON only. Do not include markdown.",
     "For every suggested tag include confidence from 0 to 1, a short why, and evidence from the transcript.",
@@ -1092,6 +1264,7 @@ function buildAiQaMessages(review) {
     allowedTags: AI_QA_TAXONOMY,
     expectedJsonShape: {
       summary: "short chat summary",
+      identified_intents: [{ domain: "deposit", subtype: "problem", evidence: "short transcript evidence" }],
       suggested_tags: [
         {
           tag: "one allowed tag",
@@ -1217,11 +1390,11 @@ function normalizeAiQaResponse(payload) {
   };
 }
 
-async function runAiQaModel(env, model, messages, jsonMode = false) {
+async function runAiQaModel(env, model, messages, jsonMode = false, maxTokens = AI_QA_OUTPUT_TOKEN_BUDGET) {
   const input = {
     messages,
     temperature: 0.1,
-    max_tokens: AI_QA_OUTPUT_TOKEN_BUDGET,
+    max_tokens: maxTokens,
   };
   if (jsonMode) {
     input.response_format = { type: "json_object" };
@@ -1239,7 +1412,7 @@ async function runAiQaModel(env, model, messages, jsonMode = false) {
 function reviewFromRows(reviewRow, suggestionRows = []) {
   const suggestions = suggestionRows.map((row) => ({
     id: row.id,
-    tag: row.tag,
+    tag: canonicalAiQaTag(row.tag) || row.tag,
     confidence: row.confidence,
     why: row.why || "",
     evidence: parseJson(row.evidence_json, []),
@@ -1259,7 +1432,7 @@ function reviewFromRows(reviewRow, suggestionRows = []) {
     taxonomyVersion: reviewRow.taxonomy_version || "",
     transcript: parseJson(reviewRow.transcript_snapshot_json, []),
     existingTags: parseJson(reviewRow.existing_tags_json, []),
-    suggestedTags: parseJson(reviewRow.suggested_tags_json, []),
+    suggestedTags: canonicalAiQaTags(parseJson(reviewRow.suggested_tags_json, [])),
     suggestions,
     aiSummary: reviewRow.ai_summary || "",
     aiOverallConfidence: reviewRow.ai_overall_confidence,
@@ -1272,7 +1445,7 @@ function reviewFromRows(reviewRow, suggestionRows = []) {
     reviewer: reviewRow.reviewer || "",
     assignedTo: reviewRow.assigned_to || "",
     assignedAt: reviewRow.assigned_at || "",
-    finalTags: parseJson(reviewRow.final_tags_json, []),
+    finalTags: canonicalAiQaTags(parseJson(reviewRow.final_tags_json, [])),
     decisionNote: reviewRow.decision_note || "",
     livechatTagsAppliedAt: reviewRow.livechat_tags_applied_at || "",
     createdAt: reviewRow.created_at,
@@ -1415,12 +1588,17 @@ export async function processLivechatAiQaReview(env, reviewId, options = {}) {
     return { processed: false, reason: "missing_ai_binding" };
   }
 
+  const claim = await claimAiQaProcessing(env, tables.reviews, reviewId, AI_QA_PRIMARY_MODEL, options.force === true);
+  if (!claim.claimed) {
+    return { processed: false, reason: "already_running", review: await getLivechatAiQaReview(env, reviewId) };
+  }
+
   input.promptKnowledge = await loadAiQaPromptKnowledge(env, input);
   const messages = buildAiQaMessages(input);
   const promptText = messages.map((message) => `${message.role}: ${message.content}`).join("\n");
   const inputTokens = estimateTokens(promptText);
   const estimatedNeurons = estimateAiQaNeurons(inputTokens, AI_QA_OUTPUT_TOKEN_BUDGET, AI_QA_PRIMARY_MODEL);
-  const reservation = await reserveAiQaUsage(env, estimatedNeurons);
+  const reservation = await reserveAiQaUsage(env, estimatedNeurons, "content");
   if (!reservation.allowed) {
     await env.DB.prepare(`
       UPDATE ${tables.reviews}
@@ -1435,20 +1613,6 @@ export async function processLivechatAiQaReview(env, reviewId, options = {}) {
       .run();
     return { processed: false, reason: "daily_limit", reservation };
   }
-
-  const startedAt = nowIso();
-  await env.DB.prepare(`
-    UPDATE ${tables.reviews}
-    SET ai_status = 'running',
-        ai_model = ?,
-        ai_fallback_model = '',
-        ai_error = '',
-        ai_started_at = ?,
-        updated_at = ?
-    WHERE id = ?
-  `)
-    .bind(AI_QA_PRIMARY_MODEL, startedAt, startedAt, reviewId)
-    .run();
 
   let payload;
   let parsed;
@@ -1466,7 +1630,7 @@ export async function processLivechatAiQaReview(env, reviewId, options = {}) {
     await saveAiQaSuggestions(env, reviewId, parsed);
     const usage = usageFromAiPayload(payload, inputTokens, AI_QA_OUTPUT_TOKEN_BUDGET);
     const actualNeurons = estimateAiQaNeurons(usage.promptTokens, usage.completionTokens, fallbackModel || AI_QA_PRIMARY_MODEL);
-    await recordAiQaUsageResult(env, reservation.usageDate, {
+    await recordAiQaUsageResult(env, reservation, {
       actualNeurons,
       promptTokens: usage.promptTokens,
       completionTokens: usage.completionTokens,
@@ -1498,9 +1662,11 @@ export async function processLivechatAiQaReview(env, reviewId, options = {}) {
         reviewId,
       )
       .run();
+    const management = await import("./livechat-ai-qa-management.js");
+    await management.refillAllEnabledLivechatAiQaQueues(env, "auto_tag");
   } catch (error) {
     failed = true;
-    await recordAiQaUsageResult(env, reservation.usageDate, {
+    await recordAiQaUsageResult(env, reservation, {
       actualNeurons: estimatedNeurons,
       promptTokens: inputTokens,
       completionTokens: 0,
@@ -1535,7 +1701,10 @@ export async function processPendingLivechatAiQaReviews(env, options = {}) {
   const rows = await env.DB.prepare(`
     SELECT id FROM ${tables.reviews}
     WHERE ${where}
-    ORDER BY queued_at ASC, created_at ASC
+    ORDER BY
+      CASE WHEN ai_status = 'pending' THEN 0 WHEN ai_status = 'running' THEN 1 ELSE 2 END ASC,
+      queued_at DESC,
+      created_at DESC
     LIMIT ?
   `)
     .bind(...(options.force ? [] : [staleRunningCutoff]), limit)
@@ -1644,8 +1813,8 @@ export async function listLivechatAiQaReviews(env, filters = {}) {
       aiStatus: row.ai_status,
       aiSummary: row.ai_summary || "",
       aiOverallConfidence: row.ai_overall_confidence,
-      suggestedTags: parseJson(row.suggested_tags_json, []),
-      finalTags: parseJson(row.final_tags_json, []),
+      suggestedTags: canonicalAiQaTags(parseJson(row.suggested_tags_json, [])),
+      finalTags: canonicalAiQaTags(parseJson(row.final_tags_json, [])),
       existingTags: parseJson(row.existing_tags_json, []),
       systemTags: parseJson(row.system_tags_json, []),
       agentLabel: row.agent_label || "",
@@ -1701,7 +1870,7 @@ export async function getLivechatAiQaReview(env, reviewId) {
       : null,
     feedback: (feedbackRows.results || []).map((row) => ({
       id: row.id,
-      tag: row.tag,
+      tag: canonicalAiQaTag(row.tag) || row.tag,
       type: row.feedback_type,
       comment: row.comment || "",
       aiSuggested: Boolean(row.ai_suggested),
@@ -1771,6 +1940,72 @@ async function applyLivechatAiQaFinalTags(env, review, tags) {
   return { applied, skipped, markedSystem, failed };
 }
 
+function correctionEvidenceFromReview(review) {
+  return analysisTranscriptForAi(parseJson(review?.transcript_snapshot_json, []))
+    .filter((event) => ["customer", "agent"].includes(event.actorType))
+    .slice(-6)
+    .map((event) => ({
+      actorType: event.actorType,
+      text: truncate(event.text, 280),
+    }));
+}
+
+async function reinforceContentKnowledge(env, tables, entry) {
+  const contentKey = normalizedKnowledgeContent(entry.content).slice(0, 800);
+  if (!contentKey) return;
+  const existing = await env.DB.prepare(`
+    SELECT id, occurrence_count, status
+    FROM ${tables.knowledgeBase}
+    WHERE tag = ? AND polarity = ?
+      AND (content_key = ? OR (content_key IS NULL AND lower(trim(content)) = lower(trim(?))))
+    ORDER BY id DESC
+    LIMIT 1
+  `).bind(entry.tag, entry.polarity, contentKey, entry.content).first();
+  const isSubstantive = contentKey.length >= 30;
+  if (existing) {
+    const nextCount = Number(existing.occurrence_count || 1) + 1;
+    await env.DB.prepare(`
+      UPDATE ${tables.knowledgeBase}
+      SET content_key = ?, reason_type = ?, evidence_json = ?, occurrence_count = ?,
+          status = ?, source_review_id = ?, source_feedback_id = ?, updated_at = ?
+      WHERE id = ?
+    `).bind(
+      contentKey,
+      entry.reasonType,
+      jsonText(entry.evidence),
+      nextCount,
+      isSubstantive || nextCount >= 2 ? "active" : existing.status,
+      entry.reviewId,
+      entry.feedbackId,
+      entry.now,
+      existing.id,
+    ).run();
+    return;
+  }
+  await env.DB.prepare(`
+    INSERT INTO ${tables.knowledgeBase}
+      (tag, entry_type, polarity, content, example_chat_id, example_thread_id,
+       source_review_id, source_feedback_id, content_key, reason_type, evidence_json,
+       occurrence_count, status, created_by, created_at, updated_at)
+    VALUES (?, 'correction', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+  `).bind(
+    entry.tag,
+    entry.polarity,
+    entry.content,
+    entry.chatId,
+    entry.threadId,
+    entry.reviewId,
+    entry.feedbackId,
+    contentKey,
+    entry.reasonType,
+    jsonText(entry.evidence),
+    isSubstantive ? "active" : "candidate",
+    entry.reviewer,
+    entry.now,
+    entry.now,
+  ).run();
+}
+
 async function insertAiQaFeedback(env, review, feedback, finalTags, reviewer) {
   const tables = livechatAiQaTables(env);
   const finalTagSet = new Set(finalTags);
@@ -1797,25 +2032,19 @@ async function insertAiQaFeedback(env, review, feedback, finalTags, reviewer) {
       )
       .run();
     if (comment) {
-      await env.DB.prepare(`
-        INSERT INTO ${tables.knowledgeBase}
-          (tag, entry_type, polarity, content, example_chat_id, example_thread_id,
-           source_review_id, source_feedback_id, status, created_by, created_at, updated_at)
-        VALUES (?, 'correction', ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
-      `)
-        .bind(
-          tag,
-          finalTagSet.has(tag) ? "positive" : "negative",
-          comment,
-          review.chat_id,
-          review.thread_id,
-          review.id,
-          result.meta?.last_row_id || null,
-          reviewer,
-          now,
-          now,
-        )
-        .run();
+      await reinforceContentKnowledge(env, tables, {
+        tag,
+        polarity: finalTagSet.has(tag) ? "positive" : "negative",
+        content: comment,
+        reasonType: feedbackType || "comment",
+        evidence: correctionEvidenceFromReview(review),
+        chatId: review.chat_id,
+        threadId: review.thread_id,
+        reviewId: review.id,
+        feedbackId: result.meta?.last_row_id || null,
+        reviewer,
+        now,
+      });
     }
   }
 }
@@ -1828,7 +2057,7 @@ export async function decideLivechatAiQaReview(env, reviewId, decision = {}) {
   if (!review) return { decided: false, reason: "not_found" };
 
   const suggestions = await loadReviewSuggestions(env, reviewId);
-  const suggestedTags = suggestions.map((item) => item.tag);
+  const suggestedTags = canonicalAiQaTags(suggestions.map((item) => item.tag));
   const action = text(decision.action).toLowerCase();
   const isApprove = action === "approve";
   const isCorrect = ["correct", "decline", "decline_apply", "decline_and_apply"].includes(action);
@@ -2138,6 +2367,10 @@ function buildAgentQaMessages(review) {
     "If a q1-q8 procedure is not relevant, omit that rule completely; never mark a non-applicable rule as passed or failed.",
     "Do not treat withdrawal wagering, payment processing, KYC, bonus, or account-policy questions as q7/q8 unless there is a clear website or game technical malfunction.",
     "q9, q10, and q11 are general communication checks. When there is any real communication between the customer and a human agent, checks must include q9, q10, and q11.",
+    "For q9, fail only for clearly rude, hostile, sarcastic, disrespectful, or offensive agent language; a brief neutral answer is not automatically rude.",
+    "For q10, map every material customer question or problem to the agent's answer, next step, timeframe, or escalation. Fail when an important request is unanswered, the explanation is materially incomplete, or promised next steps are unclear.",
+    "For q11, assess warmth, professionalism, helpfulness, and empathy across the whole agent conversation. Do not fail solely because a message is concise; fail for consistently cold, dismissive, robotic, passive-aggressive, or unhelpful tone.",
+    "The transcript may be a selected opening/key-events/ending view of a long chat. Give the ending and final resolution strong weight.",
     "If no human agent participated, do not assess q1-q11. Agent communication scores are not applicable to chatbot-only or no-agent chats.",
     "A q0x or q0l deterministic outcome is exclusive and must never be combined with q9, q10, q11, or any other agent performance tag.",
     "Use learnedQaGuidance as reviewer-provided correction memory. Apply it only when it is relevant to this transcript and rule.",
@@ -2393,6 +2626,7 @@ async function loadAgentQaPromptKnowledge(env, review) {
   const transcriptText = promptKnowledgeTranscriptText(review.transcript);
   const candidateRules = candidateAgentQaRulesForPromptKnowledge(review.transcript);
   const seen = new Set();
+  const perRuleTag = new Map();
   return (rows.results || [])
     .filter((row) => isAiEvaluatedAgentQaRule(row.rule_key) && canonicalAgentQaTag(row.tag))
     .map((row, index) => ({
@@ -2405,9 +2639,14 @@ async function loadAgentQaPromptKnowledge(env, review) {
     .map(({ row }) => promptKnowledgeEntry(row, "agent_qa"))
     .filter((entry) => {
       if (!entry) return false;
-      const key = `${entry.rule}|${entry.tag}|${entry.polarity}|${entry.guidance.toLowerCase()}`;
+      if (normalizedKnowledgeContent(entry.guidance).length < 20) return false;
+      const ruleTagKey = `${entry.rule}|${entry.tag}|${entry.polarity}`;
+      const ruleTagCount = perRuleTag.get(ruleTagKey) || 0;
+      if (ruleTagCount >= 2) return false;
+      const key = `${ruleTagKey}|${normalizedKnowledgeContent(entry.guidance)}`;
       if (seen.has(key)) return false;
       seen.add(key);
+      perRuleTag.set(ruleTagKey, ruleTagCount + 1);
       return true;
     })
     .slice(0, AGENT_QA_PROMPT_KNOWLEDGE_LIMIT);
@@ -2567,12 +2806,17 @@ export async function processLivechatAgentQaReview(env, reviewId, options = {}) 
     return { processed: false, reason: "missing_ai_binding" };
   }
 
+  const claim = await claimAiQaProcessing(env, tables.agentQaReviews, reviewId, AI_QA_PRIMARY_MODEL, options.force === true);
+  if (!claim.claimed) {
+    return { processed: false, reason: "already_running", review: await getLivechatAgentQaReview(env, reviewId) };
+  }
+
   input.promptKnowledge = await loadAgentQaPromptKnowledge(env, input);
   const messages = buildAgentQaMessages(input);
   const promptText = messages.map((message) => `${message.role}: ${message.content}`).join("\n");
   const inputTokens = estimateTokens(promptText);
   const estimatedNeurons = estimateAiQaNeurons(inputTokens, AGENT_QA_OUTPUT_TOKEN_BUDGET, AI_QA_PRIMARY_MODEL);
-  const reservation = await reserveAiQaUsage(env, estimatedNeurons);
+  const reservation = await reserveAiQaUsage(env, estimatedNeurons, "agent");
   if (!reservation.allowed) {
     await env.DB.prepare(`UPDATE ${tables.agentQaReviews} SET ai_status = 'skipped', ai_error = ?, updated_at = ? WHERE id = ?`)
       .bind(`Daily AI QA neuron limit reached (${Math.round(reservation.used)} / ${reservation.limit}).`, nowIso(), reviewId)
@@ -2580,26 +2824,17 @@ export async function processLivechatAgentQaReview(env, reviewId, options = {}) 
     return { processed: false, reason: "daily_limit", reservation };
   }
 
-  const startedAt = nowIso();
-  await env.DB.prepare(`
-    UPDATE ${tables.agentQaReviews}
-    SET ai_status = 'running', ai_model = ?, ai_fallback_model = '', ai_error = '', ai_started_at = ?, updated_at = ?
-    WHERE id = ?
-  `)
-    .bind(AI_QA_PRIMARY_MODEL, startedAt, startedAt, reviewId)
-    .run();
-
   let payload;
   let parsed;
   let fallbackModel = "";
   let failed = false;
   try {
-    payload = await runAiQaModel(env, AI_QA_PRIMARY_MODEL, messages, false);
+    payload = await runAiQaModel(env, AI_QA_PRIMARY_MODEL, messages, false, AGENT_QA_OUTPUT_TOKEN_BUDGET);
     try {
       parsed = normalizeAgentQaResponse(payload);
     } catch (_parseError) {
       fallbackModel = AI_QA_FALLBACK_MODEL;
-      payload = await runAiQaModel(env, AI_QA_FALLBACK_MODEL, messages, true);
+      payload = await runAiQaModel(env, AI_QA_FALLBACK_MODEL, messages, true, AGENT_QA_OUTPUT_TOKEN_BUDGET);
       parsed = normalizeAgentQaResponse(payload);
     }
     parsed.checks = filterAgentQaChecksByApplicability(parsed.checks, input.transcript);
@@ -2608,7 +2843,7 @@ export async function processLivechatAgentQaReview(env, reviewId, options = {}) 
     const tags = await refreshAgentQaReviewTags(env, reviewId);
     const usage = usageFromAiPayload(payload, inputTokens, AGENT_QA_OUTPUT_TOKEN_BUDGET);
     const actualNeurons = estimateAiQaNeurons(usage.promptTokens, usage.completionTokens, fallbackModel || AI_QA_PRIMARY_MODEL);
-    await recordAiQaUsageResult(env, reservation.usageDate, {
+    await recordAiQaUsageResult(env, reservation, {
       actualNeurons,
       promptTokens: usage.promptTokens,
       completionTokens: usage.completionTokens,
@@ -2640,9 +2875,12 @@ export async function processLivechatAgentQaReview(env, reviewId, options = {}) 
         reviewId,
       )
       .run();
+    const management = await import("./livechat-ai-qa-management.js");
+    await management.refillAllEnabledLivechatAiQaQueues(env, "auto_tag");
+    await management.refillAllEnabledLivechatAiQaQueues(env, "agent_qa");
   } catch (error) {
     failed = true;
-    await recordAiQaUsageResult(env, reservation.usageDate, {
+    await recordAiQaUsageResult(env, reservation, {
       actualNeurons: estimatedNeurons,
       promptTokens: inputTokens,
       completionTokens: 0,
@@ -2670,7 +2908,10 @@ export async function processPendingLivechatAgentQaReviews(env, options = {}) {
   const rows = await env.DB.prepare(`
     SELECT id FROM ${tables.agentQaReviews}
     WHERE ${where}
-    ORDER BY queued_at ASC, created_at ASC
+    ORDER BY
+      CASE WHEN ai_status = 'pending' THEN 0 WHEN ai_status = 'running' THEN 1 ELSE 2 END ASC,
+      queued_at DESC,
+      created_at DESC
     LIMIT ?
   `)
     .bind(...(options.force ? [] : [staleRunningCutoff]), limit)
@@ -2850,6 +3091,63 @@ async function applyLivechatAgentQaFinalTags(env, review, tags) {
   return { applied, skipped, markedSystem, failed, systemTags: [...systemTags] };
 }
 
+async function reinforceAgentKnowledge(env, tables, entry) {
+  const contentKey = normalizedKnowledgeContent(entry.content).slice(0, 800);
+  if (!contentKey) return;
+  const existing = await env.DB.prepare(`
+    SELECT id, occurrence_count, status
+    FROM ${tables.agentQaKnowledgeBase}
+    WHERE rule_key = ? AND tag = ? AND polarity = ?
+      AND (content_key = ? OR (content_key IS NULL AND lower(trim(content)) = lower(trim(?))))
+    ORDER BY id DESC
+    LIMIT 1
+  `).bind(entry.ruleKey, entry.tag, entry.polarity, contentKey, entry.content).first();
+  const isSubstantive = contentKey.length >= 30;
+  if (existing) {
+    const nextCount = Number(existing.occurrence_count || 1) + 1;
+    await env.DB.prepare(`
+      UPDATE ${tables.agentQaKnowledgeBase}
+      SET content_key = ?, reason_type = ?, evidence_json = ?, occurrence_count = ?,
+          status = ?, source_review_id = ?, source_feedback_id = ?, updated_at = ?
+      WHERE id = ?
+    `).bind(
+      contentKey,
+      entry.reasonType,
+      jsonText(entry.evidence),
+      nextCount,
+      isSubstantive || nextCount >= 2 ? "active" : existing.status,
+      entry.reviewId,
+      entry.feedbackId,
+      entry.now,
+      existing.id,
+    ).run();
+    return;
+  }
+  await env.DB.prepare(`
+    INSERT INTO ${tables.agentQaKnowledgeBase}
+      (rule_key, tag, entry_type, polarity, content, example_chat_id, example_thread_id,
+       source_review_id, source_feedback_id, content_key, reason_type, evidence_json,
+       occurrence_count, status, created_by, created_at, updated_at)
+    VALUES (?, ?, 'correction', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+  `).bind(
+    entry.ruleKey,
+    entry.tag,
+    entry.polarity,
+    entry.content,
+    entry.chatId,
+    entry.threadId,
+    entry.reviewId,
+    entry.feedbackId,
+    contentKey,
+    entry.reasonType,
+    jsonText(entry.evidence),
+    isSubstantive ? "active" : "candidate",
+    entry.reviewer,
+    entry.now,
+    entry.now,
+  ).run();
+}
+
 async function insertAgentQaFeedback(env, review, checks, feedback, finalTags, reviewer) {
   const tables = livechatAiQaTables(env);
   const finalTagSet = new Set(finalTags);
@@ -2886,26 +3184,20 @@ async function insertAgentQaFeedback(env, review, checks, feedback, finalTags, r
       )
       .run();
     if (comment) {
-      await env.DB.prepare(`
-        INSERT INTO ${tables.agentQaKnowledgeBase}
-          (rule_key, tag, entry_type, polarity, content, example_chat_id, example_thread_id,
-           source_review_id, source_feedback_id, status, created_by, created_at, updated_at)
-        VALUES (?, ?, 'correction', ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
-      `)
-        .bind(
-          ruleKey,
-          tag,
-          finalTagSet.has(tag) ? "positive" : "negative",
-          comment,
-          review.chat_id,
-          review.thread_id,
-          review.id,
-          result.meta?.last_row_id || null,
-          reviewer,
-          now,
-          now,
-        )
-        .run();
+      await reinforceAgentKnowledge(env, tables, {
+        ruleKey,
+        tag,
+        polarity: finalTagSet.has(tag) ? "positive" : "negative",
+        content: comment,
+        reasonType: feedbackType || "comment",
+        evidence: correctionEvidenceFromReview(review),
+        chatId: review.chat_id,
+        threadId: review.thread_id,
+        reviewId: review.id,
+        feedbackId: result.meta?.last_row_id || null,
+        reviewer,
+        now,
+      });
     }
   }
 }

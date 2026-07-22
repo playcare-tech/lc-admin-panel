@@ -25,7 +25,10 @@
 
     <section id="loginView" class="login-screen">
       <div class="login-card">
-        <div class="brand-mark">Playcare CS Admin Panel</div>
+        <div class="brand-lockup">
+          <span class="brand-symbol"><i class="bi bi-stars"></i></span>
+          <div><div class="brand-mark">Playcare</div><div class="brand-kicker">Customer operations</div></div>
+        </div>
         <div class="login-subtitle">Internal management console</div>
         <form id="loginForm" class="row g-2 mt-3">
           <div class="col-12">
@@ -45,52 +48,64 @@
 
     <section id="appView" class="app-layout d-none">
       <aside class="sidebar">
-        <div class="sidebar-brand">Playcare CS Admin Panel</div>
+        <div class="sidebar-brand">
+          <span class="brand-symbol"><i class="bi bi-stars"></i></span>
+          <div><strong>Playcare</strong><small>Customer operations</small></div>
+        </div>
+        <div class="sidebar-scroll">
         <div class="sidebar-group">
           <div class="sidebar-label">Home</div>
-          <button class="sidebar-link" data-section="qa-dashboard">QA dashboard</button>
+          <button class="sidebar-link" data-section="qa-dashboard"><i class="bi bi-grid-1x2"></i><span>QA dashboard</span></button>
         </div>
         <div class="sidebar-group">
           <div class="sidebar-label">LiveChat</div>
-          <button class="sidebar-link active" data-section="livechat-users">Users</button>
-          <button class="sidebar-link" data-section="livechat-groups">Groups</button>
-          <button class="sidebar-link" data-section="create-livechat-user">Create user</button>
-          <button class="sidebar-link" data-section="livechat-analytics">Analytics</button>
-          <button class="sidebar-link" data-section="livechat-ai-qa-tagging">Chats pre-AI-analysis</button>
+          <button class="sidebar-link active" data-section="livechat-users"><i class="bi bi-people"></i><span>Users</span></button>
+          <button class="sidebar-link" data-section="livechat-groups"><i class="bi bi-collection"></i><span>Groups</span></button>
+          <button class="sidebar-link" data-section="create-livechat-user"><i class="bi bi-person-plus"></i><span>Create user</span></button>
+          <button class="sidebar-link" data-section="livechat-analytics"><i class="bi bi-bar-chart-line"></i><span>Analytics</span></button>
+          <button class="sidebar-link" data-section="livechat-ai-qa-tagging"><i class="bi bi-stars"></i><span>Chats pre-AI-analysis</span></button>
           <div class="sidebar-submenu">
-            <button class="sidebar-link sidebar-sublink" data-section="livechat-ai-qa-review">Combined AI QA Review</button>
-            <button class="sidebar-link sidebar-sublink" data-section="livechat-agent-qa-leaderboard">AI QA leaderboard</button>
-            <button class="sidebar-link sidebar-sublink" data-section="livechat-ai-qa-pre-review-analytics">Chats pre-AI QA Review</button>
+            <button class="sidebar-link sidebar-sublink" data-section="livechat-ai-qa-review"><span>Combined AI QA Review</span></button>
+            <button class="sidebar-link sidebar-sublink" data-section="livechat-agent-qa-leaderboard"><span>AI QA leaderboard</span></button>
+            <button class="sidebar-link sidebar-sublink" data-section="livechat-ai-qa-pre-review-analytics"><span>Chats pre-AI QA Review</span></button>
           </div>
         </div>
         <div class="sidebar-group">
           <div class="sidebar-label">HelpDesk</div>
-          <button class="sidebar-link" data-section="helpdesk-users">Users</button>
-          <button class="sidebar-link" data-section="helpdesk-groups">Groups</button>
-          <button class="sidebar-link" data-section="create-helpdesk-user">Create user</button>
-          <button class="sidebar-link" data-section="helpdesk-tickets">Tickets</button>
-          <button class="sidebar-link" data-section="helpdesk-workflows">Workflows</button>
+          <button class="sidebar-link" data-section="helpdesk-users"><i class="bi bi-people"></i><span>Users</span></button>
+          <button class="sidebar-link" data-section="helpdesk-groups"><i class="bi bi-collection"></i><span>Groups</span></button>
+          <button class="sidebar-link" data-section="create-helpdesk-user"><i class="bi bi-person-plus"></i><span>Create user</span></button>
+          <button class="sidebar-link" data-section="helpdesk-tickets"><i class="bi bi-inboxes"></i><span>Tickets</span></button>
+          <button class="sidebar-link" data-section="helpdesk-workflows"><i class="bi bi-diagram-3"></i><span>Workflows</span></button>
           <button class="sidebar-link" data-section="helpdesk-analytics">
-            <i class="bi bi-graph-up"></i> Analytics
+            <i class="bi bi-graph-up"></i><span>Analytics</span>
           </button>
         </div>
         <div class="sidebar-group">
           <div class="sidebar-label">Access</div>
-          <button class="sidebar-link" data-section="admin-users">Admin users</button>
-          <button class="sidebar-link" data-section="logs">Logs</button>
+          <button class="sidebar-link" data-section="admin-users"><i class="bi bi-shield-check"></i><span>Admin users</span></button>
+          <button class="sidebar-link" data-section="logs"><i class="bi bi-terminal"></i><span>Logs</span></button>
         </div>
+        </div>
+        <div class="sidebar-foot"><span class="system-pulse"></span><span>Systems operational</span></div>
       </aside>
+      <button id="sidebarBackdrop" class="sidebar-backdrop" type="button" aria-label="Close navigation"></button>
 
       <main class="workspace">
         <header class="workspace-topbar">
-          <div>
-            <div id="pageTitle" class="page-title">LiveChat Users</div>
-            <div id="statusMessage" class="status-line mt-1" aria-live="polite"></div>
+          <div class="workspace-title-row">
+            <button id="sidebarToggleBtn" class="btn btn-sm btn-outline-secondary sidebar-toggle" type="button" aria-label="Hide main menu" aria-expanded="true">
+              <i class="bi bi-layout-sidebar-inset"></i>
+            </button>
+            <div>
+              <div id="pageTitle" class="page-title">LiveChat Users</div>
+              <div id="statusMessage" class="status-line mt-1" aria-live="polite"></div>
+            </div>
           </div>
           <div class="topbar-actions">
             <span id="sessionBadge" class="session-badge"></span>
-            <button id="refreshBtn" class="btn btn-sm btn-outline-secondary">Refresh</button>
-            <button id="logoutBtn" class="btn btn-sm btn-outline-secondary">Logout</button>
+            <button id="refreshBtn" class="btn btn-sm btn-outline-secondary icon-action"><i class="bi bi-arrow-clockwise"></i><span>Refresh</span></button>
+            <button id="logoutBtn" class="btn btn-sm btn-outline-secondary icon-action"><i class="bi bi-box-arrow-right"></i><span>Logout</span></button>
           </div>
         </header>
 

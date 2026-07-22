@@ -1,0 +1,39 @@
+"$schema" = "./node_modules/wrangler/config-schema.json"
+name = "lc-admin-ai-qa-consumer"
+main = "workers/livechat-ai-qa-queue.js"
+compatibility_date = "2026-07-22"
+
+[vars]
+LIVECHAT_API_VERSION = "v3.6"
+AI_QA_DAILY_NEURON_LIMIT = "10000"
+AI_QA_CONTENT_MIN_SHARE = "0.4"
+AI_QA_AGENT_MIN_SHARE = "0.5"
+AI_QA_SHARED_SHARE = "0.1"
+
+[ai]
+binding = "AI"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "live_chat_admin"
+database_id = "d70ce44b-5209-4e02-b565-e3429d7d6288"
+
+[[queues.consumers]]
+queue = "livechat-ai-qa-analysis"
+max_batch_size = 3
+max_batch_timeout = 5
+max_retries = 12
+retry_delay = 30
+dead_letter_queue = "livechat-ai-qa-analysis-dlq"
+max_concurrency = 4
+
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 0.05

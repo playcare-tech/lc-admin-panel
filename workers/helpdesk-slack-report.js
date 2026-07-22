@@ -54,7 +54,7 @@ const DEFAULT_INCLUDED_AGENT_EMAILS = [
   "aleksandr.b@playcare.tech",
   "ryhor.a@playcare.tech",
   "tamazi.m@playcare.tech",
-  "kiryl.ch@playcare.tech",
+  "kyril.ch@playcare.tech",
   "elijah.b@playcare.tech",
   "mikhail.g@playcare.tech",
   "aytun.m@playcare.tech",

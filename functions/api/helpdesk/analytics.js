@@ -1000,7 +1000,10 @@ export async function onRequest(context) {
       groupIds: splitParam(url.searchParams.get("groups")),
     };
 
-    const agentDirectory = filters.groupIds.length > 0 ? buildAgentDirectory(await getHelpDeskDashboard(context.env)) : new Map();
+    // HelpDesk message events commonly contain only an agent ID and nickname.
+    // Always load the current directory so cached analytics rows can be
+    // attributed to the agent's email, even when no group filter is selected.
+    const agentDirectory = buildAgentDirectory(await getHelpDeskDashboard(context.env));
     const rangeFromDate = metricDateKey(metric, from, timezoneOffsetMinutes);
     const rangeToDate = metricDateKey(metric, new Date(to.getTime() - 1), timezoneOffsetMinutes);
     if (metric === METRIC_COMBINED) {
