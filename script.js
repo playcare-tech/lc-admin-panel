@@ -3000,16 +3000,22 @@ function aiQaReviewConfidence(value) {
 }
 
 function aiQaReviewStatusChip(status, aiStatus = "") {
-  const value = status || aiStatus || "unknown";
-  const tone =
-    value === "approved" || value === "corrected" || aiStatus === "completed"
-      ? "chip-success"
-      : value === "pending_review" || aiStatus === "running" || aiStatus === "pending"
-        ? "chip-warning"
-        : aiStatus === "failed" || aiStatus === "skipped"
-          ? "chip-danger"
-          : "";
-  return `<span class="chip ${tone}">${escapeHtml(value)}</span>`;
+  if (["approved", "corrected"].includes(status)) {
+    return `<span class="chip chip-success">${escapeHtml(status)}</span>`;
+  }
+  if (status === "pending_review" && aiStatus === "completed") {
+    return '<span class="chip chip-success">Ready for review</span>';
+  }
+  if (aiStatus === "failed" || aiStatus === "skipped") {
+    return `<span class="chip chip-danger">AI ${escapeHtml(aiStatus)}</span>`;
+  }
+  if (aiStatus === "running") {
+    return '<span class="chip chip-warning">AI running</span>';
+  }
+  if (aiStatus === "pending") {
+    return '<span class="chip chip-warning">AI queued</span>';
+  }
+  return `<span class="chip chip-warning">${escapeHtml(status || aiStatus || "Pending review")}</span>`;
 }
 
 function aiQaReviewTagChips(tags, empty = "-") {

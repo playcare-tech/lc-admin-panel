@@ -2877,7 +2877,6 @@ export async function processLivechatAgentQaReview(env, reviewId, options = {}) 
       .run();
     const management = await import("./livechat-ai-qa-management.js");
     await management.refillAllEnabledLivechatAiQaQueues(env, "auto_tag");
-    await management.refillAllEnabledLivechatAiQaQueues(env, "agent_qa");
   } catch (error) {
     failed = true;
     await recordAiQaUsageResult(env, reservation, {

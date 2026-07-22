@@ -81,6 +81,42 @@ async function ensureLivechatAiQaManagementTablesUncached(env) {
   return tables;
 }
 
+async function releaseUnavailableCombinedAssignments(env, tables, username) {
+  const now = new Date().toISOString();
+  const autoResult = await env.DB.prepare(`
+    UPDATE ${tables.reviews}
+    SET assigned_to = NULL, assigned_at = NULL, updated_at = ?
+    WHERE assigned_to = ?
+      AND status = 'pending_review'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${tables.agentQaReviews} aq
+        WHERE aq.chat_id = ${tables.reviews}.chat_id
+          AND aq.thread_id = ${tables.reviews}.thread_id
+          AND ${tables.reviews}.ai_status = 'completed'
+          AND aq.ai_status = 'completed'
+          AND aq.status = 'pending_review'
+      )
+  `).bind(now, username).run();
+  const agentResult = await env.DB.prepare(`
+    UPDATE ${tables.agentQaReviews}
+    SET assigned_to = NULL, assigned_at = NULL, updated_at = ?
+    WHERE assigned_to = ?
+      AND status = 'pending_review'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${tables.reviews} r
+        WHERE r.chat_id = ${tables.agentQaReviews}.chat_id
+          AND r.thread_id = ${tables.agentQaReviews}.thread_id
+          AND r.assigned_to = ?
+          AND r.status = 'pending_review'
+          AND r.ai_status = 'completed'
+          AND ${tables.agentQaReviews}.ai_status = 'completed'
+      )
+  `).bind(now, username, username).run();
+  return Number(autoResult.meta?.changes || 0) + Number(agentResult.meta?.changes || 0);
+}
+
 export async function recordLivechatAiQaDecisionHistory(env, entry) {
   await ensureLivechatAiQaManagementTables(env);
   const now = new Date().toISOString();
@@ -273,11 +309,12 @@ export async function refillAllEnabledLivechatAiQaQueues(env, reviewType) {
 
 export async function getLivechatAiQaManagementOverview(env, { username, from, to, includeAllUsers = false }) {
   const tables = await ensureLivechatAiQaManagementTables(env);
+  await releaseUnavailableCombinedAssignments(env, tables, username);
   const settings = await getLivechatAiQaQueueSettings(env, username);
   const queue = {};
   for (const type of REVIEW_TYPES) {
     const setting = settings.find((item) => item.reviewType === type);
-    if (setting?.enabled) {
+    if (type === "auto_tag" && setting?.enabled) {
       await refillLivechatAiQaQueue(env, tables, username, type, setting.targetQueueSize);
     }
     const table = reviewTable(tables, type);
